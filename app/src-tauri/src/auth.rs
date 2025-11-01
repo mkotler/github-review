@@ -5,10 +5,14 @@ use rand::{distributions::Alphanumeric, Rng};
 use reqwest::{header::ACCEPT, StatusCode};
 use sha2::{Digest, Sha256};
 use tokio::{io::AsyncReadExt, io::AsyncWriteExt, net::TcpListener, net::TcpStream, time};
+use tracing::info;
 use url::Url;
 
 use crate::error::{AppError, AppResult};
-use crate::github::{fetch_authenticated_user, get_pull_request, list_pull_requests};
+use crate::github::{
+    fetch_authenticated_user, get_pull_request, list_pull_requests, submit_file_comment,
+    submit_general_comment, CommentMode,
+};
 use crate::models::{AuthStatus, PullRequestDetail, PullRequestSummary};
 use crate::storage::{delete_token, read_token, store_token};
 
@@ -18,12 +22,17 @@ const SCOPES: &str = "repo pull_request:write";
 const OAUTH_TIMEOUT: Duration = Duration::from_secs(180);
 
 pub async fn check_auth_status() -> AppResult<AuthStatus> {
+    tracing::info!("checking auth status");
     if let Some(token) = read_token()? {
         match fetch_authenticated_user(&token).await {
             Ok(user) => Ok(AuthStatus {
                 is_authenticated: true,
                 login: Some(user.login),
                 avatar_url: user.avatar_url,
+            })
+            .map(|status| {
+                tracing::info!(user = status.login.as_deref().unwrap_or("unknown"), "auth status resolved");
+                status
             }),
             Err(err) => match err {
                 AppError::Http(http_err) => {
@@ -33,6 +42,10 @@ pub async fn check_auth_status() -> AppResult<AuthStatus> {
                             is_authenticated: false,
                             login: None,
                             avatar_url: None,
+                        })
+                        .map(|status| {
+                            tracing::info!("auth status resolved after unauthorized");
+                            status
                         })
                     } else {
                         Err(AppError::Http(http_err))
@@ -47,6 +60,10 @@ pub async fn check_auth_status() -> AppResult<AuthStatus> {
             login: None,
             avatar_url: None,
         })
+        .map(|status| {
+            tracing::info!("auth status resolved without token");
+            status
+        })
     }
 }
 
@@ -56,8 +73,8 @@ pub async fn logout() -> AppResult<()> {
 
 pub async fn start_oauth_flow(_app: &tauri::AppHandle) -> AppResult<AuthStatus> {
     dotenvy::dotenv().ok();
-    let client_id = env::var("GITHUB_CLIENT_ID")
-        .map_err(|_| AppError::MissingConfig("GITHUB_CLIENT_ID"))?;
+    let client_id =
+        env::var("GITHUB_CLIENT_ID").map_err(|_| AppError::MissingConfig("GITHUB_CLIENT_ID"))?;
     let client_secret = env::var("GITHUB_CLIENT_SECRET")
         .map_err(|_| AppError::MissingConfig("GITHUB_CLIENT_SECRET"))?;
 
@@ -81,7 +98,8 @@ pub async fn start_oauth_flow(_app: &tauri::AppHandle) -> AppResult<AuthStatus> 
     open::that(url.as_str())
         .map_err(|err| AppError::Io(io::Error::new(io::ErrorKind::Other, err)))?;
 
-    let (code, returned_state) = time::timeout(OAUTH_TIMEOUT, wait_for_callback(listener)).await??;
+    let (code, returned_state) =
+        time::timeout(OAUTH_TIMEOUT, wait_for_callback(listener)).await??;
     if returned_state != state {
         return Err(AppError::InvalidOAuthCallback);
     }
@@ -105,18 +123,76 @@ pub async fn start_oauth_flow(_app: &tauri::AppHandle) -> AppResult<AuthStatus> 
     })
 }
 
-pub async fn list_repo_pull_requests(owner: &str, repo: &str) -> AppResult<Vec<PullRequestSummary>> {
+pub async fn list_repo_pull_requests(
+    owner: &str,
+    repo: &str,
+) -> AppResult<Vec<PullRequestSummary>> {
     let token = require_token()?;
-    list_pull_requests(&token, owner, repo).await
+    let pulls = list_pull_requests(&token, owner, repo).await?;
+
+    info!(owner, repo, count = pulls.len(), "fetched pull requests");
+    for pr in &pulls {
+        info!(
+            owner,
+            repo,
+            number = pr.number,
+            title = %pr.title,
+            author = %pr.author,
+            head = %pr.head_ref,
+            "pull request summary"
+        );
+    }
+
+    Ok(pulls)
 }
 
 pub async fn fetch_pull_request_details(
     owner: &str,
     repo: &str,
     number: u64,
+    current_login: Option<&str>,
 ) -> AppResult<PullRequestDetail> {
     let token = require_token()?;
-    get_pull_request(&token, owner, repo, number).await
+    get_pull_request(&token, owner, repo, number, current_login).await
+}
+
+pub async fn publish_review_comment(
+    owner: &str,
+    repo: &str,
+    number: u64,
+    body: String,
+) -> AppResult<()> {
+    let token = require_token()?;
+    submit_general_comment(&token, owner, repo, number, &body).await
+}
+
+pub async fn publish_file_comment(
+    owner: &str,
+    repo: &str,
+    number: u64,
+    path: &str,
+    body: &str,
+    commit_id: &str,
+    line: Option<u64>,
+    side: Option<&str>,
+    subject_type: Option<&str>,
+    mode: CommentMode,
+) -> AppResult<()> {
+    let token = require_token()?;
+    submit_file_comment(
+        &token,
+        owner,
+        repo,
+        number,
+        path,
+        body,
+        commit_id,
+        line,
+        side,
+        subject_type,
+        mode,
+    )
+    .await
 }
 
 fn require_token() -> AppResult<String> {

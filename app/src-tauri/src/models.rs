@@ -25,6 +25,7 @@ pub struct PullRequestDetail {
     pub head_sha: String,
     pub base_sha: String,
     pub files: Vec<PullRequestFile>,
+    pub my_comments: Vec<PullRequestComment>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -45,4 +46,19 @@ pub enum FileLanguage {
     Markdown,
     #[serde(rename = "yaml")]
     Yaml,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct PullRequestComment {
+    pub id: u64,
+    pub body: String,
+    pub author: String,
+    pub created_at: String,
+    pub url: String,
+    pub path: Option<String>,
+    pub line: Option<u64>,
+    pub side: Option<String>,
+    pub is_review_comment: bool,
+    pub is_draft: bool,
+    pub state: Option<String>,
 }

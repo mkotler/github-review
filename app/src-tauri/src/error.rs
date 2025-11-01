@@ -24,6 +24,10 @@ pub enum AppError {
     Keyring(#[from] keyring::Error),
     #[error("operation timed out")]
     Timeout,
+    #[error("{0}")]
+    SsoAuthorizationRequired(String),
+    #[error("{0}")]
+    Api(String),
 }
 
 impl From<tokio::time::error::Elapsed> for AppError {
