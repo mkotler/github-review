@@ -70,6 +70,9 @@ const openDevtoolsWindow = () => {
   });
 };
 
+const MIN_SIDEBAR_WIDTH = 320;
+const MIN_CONTENT_WIDTH = 480;
+
 function App() {
   const [repoRef, setRepoRef] = useState<RepoRef | null>(null);
   const [repoInput, setRepoInput] = useState("");
@@ -94,8 +97,13 @@ function App() {
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
   const [splitRatio, setSplitRatio] = useState(0.5);
   const [isResizing, setIsResizing] = useState(false);
+  const [sidebarWidth, setSidebarWidth] = useState<number>(MIN_SIDEBAR_WIDTH);
+  const [isSidebarResizing, setIsSidebarResizing] = useState(false);
   const workspaceBodyRef = useRef<HTMLDivElement | null>(null);
+  const appShellRef = useRef<HTMLDivElement | null>(null);
   const userMenuRef = useRef<HTMLDivElement | null>(null);
+  const previousBodyCursorRef = useRef<string | null>(null);
+  const previousBodyUserSelectRef = useRef<string | null>(null);
   const queryClient = useQueryClient();
 
   const authQuery = useQuery({
@@ -197,6 +205,17 @@ function App() {
     setIsResizing(true);
   }, []);
 
+  const handleSidebarResizeStart = useCallback(
+    (event: React.MouseEvent<HTMLDivElement>) => {
+      if (isSidebarCollapsed) {
+        return;
+      }
+      event.preventDefault();
+      setIsSidebarResizing(true);
+    },
+    [isSidebarCollapsed],
+  );
+
   const openInlineComment = useCallback(() => {
     if (!selectedFilePath) {
       return;
@@ -251,6 +270,7 @@ function App() {
 
   const toggleSidebar = useCallback(() => {
     setIsSidebarCollapsed((prev) => !prev);
+    setIsSidebarResizing(false);
     closeUserMenu();
   }, [closeUserMenu]);
 
@@ -399,19 +419,72 @@ function App() {
   }, [isResizing]);
 
   useEffect(() => {
-    if (!isResizing) {
+    if (!isSidebarResizing) {
       return;
     }
-    const previousCursor = document.body.style.cursor;
-    const previousUserSelect = document.body.style.userSelect;
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
+    if (isSidebarCollapsed) {
+      setIsSidebarResizing(false);
+      return;
+    }
+
+    const handleMouseMove = (event: MouseEvent) => {
+      const shell = appShellRef.current;
+      if (!shell) {
+        return;
+      }
+      const rect = shell.getBoundingClientRect();
+      const rawWidth = event.clientX - rect.left;
+      const maxWidth = rect.width - MIN_CONTENT_WIDTH;
+      const upperBound = Math.max(MIN_SIDEBAR_WIDTH, maxWidth);
+      const clamped = Math.min(Math.max(rawWidth, MIN_SIDEBAR_WIDTH), upperBound);
+      setSidebarWidth(clamped);
+    };
+
+    const stopResizing = () => {
+      setIsSidebarResizing(false);
+    };
+
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", stopResizing);
+    window.addEventListener("mouseleave", stopResizing);
 
     return () => {
-      document.body.style.cursor = previousCursor;
-      document.body.style.userSelect = previousUserSelect;
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", stopResizing);
+      window.removeEventListener("mouseleave", stopResizing);
     };
-  }, [isResizing]);
+  }, [isSidebarResizing, isSidebarCollapsed]);
+
+  useEffect(() => {
+    if (isResizing || isSidebarResizing) {
+      if (previousBodyCursorRef.current === null) {
+        previousBodyCursorRef.current = document.body.style.cursor;
+        previousBodyUserSelectRef.current = document.body.style.userSelect;
+      }
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+    } else if (
+      previousBodyCursorRef.current !== null ||
+      previousBodyUserSelectRef.current !== null
+    ) {
+      document.body.style.cursor = previousBodyCursorRef.current ?? "";
+      document.body.style.userSelect = previousBodyUserSelectRef.current ?? "";
+      previousBodyCursorRef.current = null;
+      previousBodyUserSelectRef.current = null;
+    }
+  }, [isResizing, isSidebarResizing]);
+
+  useEffect(() => {
+    const shell = appShellRef.current;
+    if (!shell) {
+      return;
+    }
+    if (isSidebarCollapsed) {
+      shell.style.removeProperty("--sidebar-width");
+      return;
+    }
+    shell.style.setProperty("--sidebar-width", `${Math.round(sidebarWidth)}px`);
+  }, [sidebarWidth, isSidebarCollapsed]);
 
   useEffect(() => {
     const element = workspaceBodyRef.current;
@@ -624,12 +697,21 @@ function App() {
     : null;
   const repoPanelExpanded = repoRef ? !isRepoPanelCollapsed : true;
   const prPanelExpanded = selectedPr ? !isPrPanelCollapsed : true;
-  const repoPanelAriaExpanded: "true" | "false" = repoPanelExpanded ? "true" : "false";
-  const prPanelAriaExpanded: "true" | "false" = prPanelExpanded ? "true" : "false";
-  const userMenuAriaExpanded: "true" | "false" = isUserMenuOpen ? "true" : "false";
+  const userMenuAriaProps = isUserMenuOpen
+    ? { "aria-expanded": "true" as const }
+    : { "aria-expanded": "false" as const };
+  const repoPanelAriaProps = repoPanelExpanded
+    ? { "aria-expanded": "true" as const }
+    : { "aria-expanded": "false" as const };
+  const prPanelAriaProps = prPanelExpanded
+    ? { "aria-expanded": "true" as const }
+    : { "aria-expanded": "false" as const };
 
   return (
-    <div className={`app-shell${isSidebarCollapsed ? " app-shell--sidebar-collapsed" : ""}`}>
+    <div
+      ref={appShellRef}
+      className={`app-shell${isSidebarCollapsed ? " app-shell--sidebar-collapsed" : ""}`}
+    >
       <aside className={`sidebar${isSidebarCollapsed ? " sidebar--collapsed" : ""}`}>
         <div className="sidebar__top">
           <button
@@ -647,7 +729,7 @@ function App() {
                 className={`user-chip user-chip--button${isUserMenuOpen ? " user-chip--open" : ""}`}
                 onClick={toggleUserMenu}
                 aria-haspopup="menu"
-                aria-expanded={userMenuAriaExpanded}
+                {...userMenuAriaProps}
               >
                 {authData.avatar_url ? (
                   <img src={authData.avatar_url} alt={authData.login ?? "GitHub user"} />
@@ -836,7 +918,7 @@ function App() {
                       type="button"
                       className="panel__title-button panel__title-button--inline"
                       onClick={handleToggleRepoPanel}
-                      aria-expanded={repoPanelAriaExpanded}
+                      {...repoPanelAriaProps}
                     >
                       <span className="panel__expando-icon" aria-hidden="true">
                         {isRepoPanelCollapsed && repoRef ? ">" : "v"}
@@ -910,7 +992,7 @@ function App() {
                       className="panel__title-button panel__title-button--inline"
                       onClick={handleTogglePrPanel}
                       disabled={!pullRequests.length}
-                      aria-expanded={prPanelAriaExpanded}
+                      {...prPanelAriaProps}
                     >
                       <span className="panel__expando-icon" aria-hidden="true">
                         {isPrPanelCollapsed && selectedPr ? ">" : "v"}
@@ -1008,6 +1090,17 @@ function App() {
               </>
             )}
           </div>
+        )}
+        {!isSidebarCollapsed && (
+          <div
+            className={`sidebar__resize-handle${
+              isSidebarResizing ? " sidebar__resize-handle--active" : ""
+            }`}
+            onMouseDown={handleSidebarResizeStart}
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize sidebar"
+          />
         )}
       </aside>
 
