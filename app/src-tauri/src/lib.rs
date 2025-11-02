@@ -129,11 +129,6 @@ fn cmd_open_devtools(window: tauri::WebviewWindow) -> Result<(), String> {
     open_devtools_impl(window)
 }
 
-#[tauri::command]
-fn cmd_log_frontend(message: String) {
-    tracing::info!(target: "frontend", "{message}");
-}
-
 #[cfg(debug_assertions)]
 fn open_devtools_impl(window: tauri::WebviewWindow) -> Result<(), String> {
     window.open_devtools();
@@ -161,8 +156,7 @@ pub fn run() {
             cmd_get_pull_request,
             cmd_submit_review_comment,
             cmd_submit_file_comment,
-            cmd_open_devtools,
-            cmd_log_frontend
+            cmd_open_devtools
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

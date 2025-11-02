@@ -90,72 +90,17 @@ function App() {
   const [isRepoPanelCollapsed, setIsRepoPanelCollapsed] = useState(false);
   const [isPrPanelCollapsed, setIsPrPanelCollapsed] = useState(false);
   const [isInlineCommentOpen, setIsInlineCommentOpen] = useState(false);
+  const [isGeneralCommentOpen, setIsGeneralCommentOpen] = useState(false);
+  const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
   const [splitRatio, setSplitRatio] = useState(0.5);
   const [isResizing, setIsResizing] = useState(false);
   const workspaceBodyRef = useRef<HTMLDivElement | null>(null);
+  const userMenuRef = useRef<HTMLDivElement | null>(null);
   const queryClient = useQueryClient();
 
   const authQuery = useQuery({
     queryKey: AUTH_QUERY_KEY,
     queryFn: () => invoke<AuthStatus>("cmd_check_auth_status"),
-  });
-
-  useEffect(() => {
-    void invoke("cmd_log_frontend", {
-      message: `auth-status:${authQuery.status}`,
-    });
-  }, [authQuery.status]);
-
-  useEffect(() => {
-    void invoke("cmd_log_frontend", { message: "App mounted" });
-  }, []);
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => {
-      const html = document.body.innerHTML;
-      void invoke("cmd_log_frontend", {
-        message: `body-after:${html.slice(0, 200)}`,
-      });
-    }, 1000);
-    return () => window.clearTimeout(timer);
-  }, []);
-
-  useEffect(() => {
-    const handleError = (event: ErrorEvent) => {
-      void invoke("cmd_log_frontend", {
-        message: `error:${event.message}`,
-      });
-    };
-    const handleRejection = (event: PromiseRejectionEvent) => {
-      const reasonMessage = event.reason instanceof Error ? event.reason.message : String(event.reason);
-      void invoke("cmd_log_frontend", {
-        message: `unhandledrejection:${reasonMessage}`,
-      });
-    };
-    window.addEventListener("error", handleError);
-    window.addEventListener("unhandledrejection", handleRejection);
-    return () => {
-      window.removeEventListener("error", handleError);
-      window.removeEventListener("unhandledrejection", handleRejection);
-    };
-  }, []);
-
-  useEffect(() => {
-    window.setTimeout(() => {
-      const root = document.getElementById("root");
-      const text = root?.textContent ?? "";
-      const html = root?.innerHTML ?? "";
-      void invoke("cmd_log_frontend", {
-        message: `root-text:${text.slice(0, 160)}|root-html:${html.slice(0, 160)}`,
-      });
-    }, 400);
-  }, [authQuery.status]);
-
-  console.log("App render", {
-    status: authQuery.status,
-    hasData: Boolean(authQuery.data),
-    isLoading: authQuery.isLoading,
-    isError: authQuery.isError,
   });
 
   const loginMutation = useMutation({
@@ -267,6 +212,36 @@ function App() {
     setFileCommentSuccess(false);
   }, []);
 
+  const toggleGeneralCommentComposer = useCallback(() => {
+    setIsGeneralCommentOpen((previous) => {
+      const next = !previous;
+      if (next) {
+        setCommentError(null);
+        setCommentSuccess(false);
+        setIsInlineCommentOpen(false);
+      }
+      return next;
+    });
+  }, []);
+
+  const toggleUserMenu = useCallback(() => {
+    setIsUserMenuOpen((previous) => !previous);
+  }, []);
+
+  const closeUserMenu = useCallback(() => {
+    setIsUserMenuOpen(false);
+  }, []);
+
+  const handleOpenDevtools = useCallback(() => {
+    closeUserMenu();
+    openDevtoolsWindow();
+  }, [closeUserMenu]);
+
+  const handleLogout = useCallback(() => {
+    closeUserMenu();
+    logoutMutation.mutate();
+  }, [closeUserMenu, logoutMutation]);
+
   const prDetail = pullDetailQuery.data;
   const pullsErrorMessage = pullsQuery.isError
     ? pullsQuery.error instanceof Error
@@ -276,7 +251,8 @@ function App() {
 
   const toggleSidebar = useCallback(() => {
     setIsSidebarCollapsed((prev) => !prev);
-  }, []);
+    closeUserMenu();
+  }, [closeUserMenu]);
 
   const selectedFile = useMemo(() => {
     if (!prDetail || !selectedFilePath) return null;
@@ -318,6 +294,36 @@ function App() {
   }, [commentSuccess]);
 
   useEffect(() => {
+    if (!isUserMenuOpen) {
+      return;
+    }
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!userMenuRef.current) {
+        return;
+      }
+      if (userMenuRef.current.contains(event.target as Node)) {
+        return;
+      }
+      closeUserMenu();
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        closeUserMenu();
+      }
+    };
+
+    window.addEventListener("pointerdown", handlePointerDown);
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      window.removeEventListener("pointerdown", handlePointerDown);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [closeUserMenu, isUserMenuOpen]);
+
+  useEffect(() => {
     setCommentDraft("");
     setCommentError(null);
     setCommentSuccess(false);
@@ -329,6 +335,7 @@ function App() {
     setFileCommentMode("single");
     setFileCommentSide("RIGHT");
     setIsInlineCommentOpen(false);
+    setIsGeneralCommentOpen(false);
   }, [prDetail?.number]);
 
   useEffect(() => {
@@ -339,6 +346,7 @@ function App() {
     setFileCommentMode("single");
     setFileCommentSide("RIGHT");
     setIsInlineCommentOpen(false);
+    setIsGeneralCommentOpen(false);
   }, [selectedFilePath]);
 
   useEffect(() => {
@@ -462,6 +470,7 @@ function App() {
       setCommentDraft("");
       setCommentError(null);
       setCommentSuccess(true);
+      setIsGeneralCommentOpen(false);
       void refetchPullDetail();
     },
     onError: (error: unknown) => {
@@ -629,54 +638,107 @@ function App() {
             {isSidebarCollapsed ? ">" : "<"}
           </button>
           {!isSidebarCollapsed && (
-            <div className="user-chip">
-              {authData.avatar_url ? (
-                <img src={authData.avatar_url} alt={authData.login ?? "GitHub user"} />
-              ) : (
-                <div className="user-chip__avatar-fallback">
-                  {(authData.login ?? "").slice(0, 1).toUpperCase()}
+            <div className="user-menu" ref={userMenuRef}>
+              <button
+                type="button"
+                className={`user-chip user-chip--button${isUserMenuOpen ? " user-chip--open" : ""}`}
+                onClick={toggleUserMenu}
+                aria-haspopup="menu"
+                aria-expanded={isUserMenuOpen ? "true" : "false"}
+              >
+                {authData.avatar_url ? (
+                  <img src={authData.avatar_url} alt={authData.login ?? "GitHub user"} />
+                ) : (
+                  <div className="user-chip__avatar-fallback">
+                    {(authData.login ?? "").slice(0, 1).toUpperCase()}
+                  </div>
+                )}
+                <div className="user-chip__details">
+                  <span className="chip-label">Signed in</span>
+                  <span className="chip-value">{authData.login}</span>
+                </div>
+                <span className="user-chip__chevron" aria-hidden="true">
+                  {isUserMenuOpen ? "^" : "v"}
+                </span>
+              </button>
+              {isUserMenuOpen && (
+                <div className="user-menu__popover" role="menu">
+                  {import.meta.env.DEV && (
+                    <button
+                      type="button"
+                      className="user-menu__item"
+                      onClick={handleOpenDevtools}
+                      role="menuitem"
+                    >
+                      Devtools
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="user-menu__item"
+                    onClick={handleLogout}
+                    disabled={logoutMutation.isPending}
+                    role="menuitem"
+                  >
+                    {logoutMutation.isPending ? "Signing out…" : "Logout"}
+                  </button>
                 </div>
               )}
-              <div className="user-chip__details">
-                <span className="chip-label">Signed in</span>
-                <span className="chip-value">{authData.login}</span>
-              </div>
             </div>
           )}
         </div>
         {!isSidebarCollapsed && (
           <div className="sidebar__content">
             <div
-              className={`panel panel--collapsible${
+              className={`panel panel--collapsible panel--repo${
                 isRepoPanelCollapsed && repoRef ? " panel--collapsed" : ""
               }`}
             >
-              <div className="panel__header">
+              <div
+                className={`panel__header${
+                  isRepoPanelCollapsed && repoRef ? " panel__header--condensed" : ""
+                }`}
+              >
                 <button
                   type="button"
-                  className="panel__title-button"
+                  className="panel__title-button panel__title-button--inline"
                   onClick={handleToggleRepoPanel}
-                  aria-expanded={repoPanelExpanded}
+                  aria-expanded={repoPanelExpanded ? "true" : "false"}
                 >
-                  <span>Repository</span>
+                  <span className="panel__expando-icon" aria-hidden="true">
+                    {isRepoPanelCollapsed && repoRef ? ">" : "v"}
+                  </span>
+                  <span className="panel__title-text">Repository</span>
                   {repoRef && (
-                    <span className="panel__toggle-icon">
-                      {isRepoPanelCollapsed ? ">" : "v"}
+                    <span className="panel__summary panel__summary--inline" title={formattedRepo}>
+                      {formattedRepo}
                     </span>
                   )}
                 </button>
                 {repoRef && (
                   <button
                     type="button"
-                    className="panel__icon-button"
+                    className="panel__icon-button panel__icon-button--icon-only"
                     onClick={handleRefreshPulls}
                     title="Refresh pull requests"
+                    aria-label="Refresh pull requests"
                   >
-                      Refresh
+                    <svg
+                      className="panel__icon-svg"
+                      viewBox="0 0 24 24"
+                      aria-hidden="true"
+                      focusable="false"
+                    >
+                      <path
+                        d="M17.65 6.35A7.95 7.95 0 0 0 12 4a8 8 0 0 0-8 8h2a6 6 0 0 1 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35Z"
+                        fill="currentColor"
+                      />
+                    </svg>
+                    <span className="sr-only">Refresh pull requests</span>
                   </button>
                 )}
               </div>
-              {(!isRepoPanelCollapsed || !repoRef) && (
+              {!isRepoPanelCollapsed && (
                 <div className="panel__body">
                   <form className="repo-form" onSubmit={handleRepoSubmit}>
                     <input
@@ -698,11 +760,6 @@ function App() {
                   )}
                 </div>
               )}
-              {isRepoPanelCollapsed && repoRef && (
-                <div className="panel__collapsed-body">
-                  <span className="panel__summary">{formattedRepo}</span>
-                </div>
-              )}
             </div>
 
             <div
@@ -710,23 +767,39 @@ function App() {
                 isPrPanelCollapsed && selectedPr ? " panel--collapsed" : ""
               }`}
             >
-              <div className="panel__header">
+              <div
+                className={`panel__header${
+                  isPrPanelCollapsed && selectedPr ? " panel__header--condensed" : ""
+                }`}
+              >
                 <button
                   type="button"
-                  className="panel__title-button"
+                  className="panel__title-button panel__title-button--inline"
                   onClick={handleTogglePrPanel}
                   disabled={!pullRequests.length}
-                  aria-expanded={prPanelExpanded}
+                  aria-expanded={prPanelExpanded ? "true" : "false"}
                 >
-                  <span>Open Pull Requests</span>
-                  {selectedPr && (
-                    <span className="panel__toggle-icon">
-                      {isPrPanelCollapsed ? ">" : "v"}
+                  <span className="panel__expando-icon" aria-hidden="true">
+                    {isPrPanelCollapsed && selectedPr ? ">" : "v"}
+                  </span>
+                  <span className="panel__title-text">Open Pull Requests</span>
+                  {selectedPrSummary ? (
+                    <span
+                      className="panel__summary panel__summary--inline"
+                      title={`#${selectedPrSummary.number} · ${selectedPrSummary.title}`}
+                    >
+                      #{selectedPrSummary.number} · {selectedPrSummary.title}
                     </span>
+                  ) : (
+                    selectedPr && (
+                      <span className="panel__summary panel__summary--inline">
+                        Pull request #{selectedPr}
+                      </span>
+                    )
                   )}
                 </button>
               </div>
-              {(!isPrPanelCollapsed || !selectedPr) && (
+              {!isPrPanelCollapsed && (
                 <div className="panel__body panel__body--scroll">
                   {pullsQuery.isError ? (
                     <div className="empty-state empty-state--subtle">
@@ -761,17 +834,6 @@ function App() {
                         </span>
                       </button>
                     ))
-                  )}
-                </div>
-              )}
-              {isPrPanelCollapsed && selectedPr && (
-                <div className="panel__collapsed-body">
-                  {selectedPrSummary ? (
-                    <span className="panel__summary">
-                      #{selectedPrSummary.number} · {selectedPrSummary.title}
-                    </span>
-                  ) : (
-                    <span className="panel__summary">Pull request #{selectedPr}</span>
                   )}
                 </div>
               )}
@@ -812,83 +874,10 @@ function App() {
             </div>
           </div>
         )}
-        <div className="sidebar__footer">
-          {import.meta.env.DEV && (
-            <button
-              type="button"
-              className="sidebar__button"
-              onClick={openDevtoolsWindow}
-              title="Open developer tools"
-            >
-              <span className="sidebar__button-icon">D</span>
-              <span className="sidebar__button-label">Devtools</span>
-            </button>
-          )}
-          <button
-            type="button"
-            className="sidebar__button"
-            onClick={() => logoutMutation.mutate()}
-            disabled={logoutMutation.isPending}
-            title="Sign out of GitHub"
-          >
-            <span className="sidebar__button-icon">L</span>
-            <span className="sidebar__button-label">
-              {logoutMutation.isPending ? "Signing out..." : "Logout"}
-            </span>
-          </button>
-        </div>
       </aside>
 
       <section className="content-area">
         <div className="workspace">
-          <header className="workspace__header">
-            {prDetail ? (
-              <>
-                <span className="workspace__title">
-                  #{prDetail.number} · {prDetail.title}
-                </span>
-                <span className="workspace__meta">Authored by {prDetail.author}</span>
-              </>
-            ) : (
-              <span className="workspace__title">Choose a pull request to begin</span>
-            )}
-          </header>
-
-          {prDetail && (
-            <form className="comment-composer" onSubmit={handleCommentSubmit}>
-              <label className="comment-composer__label" htmlFor="comment-draft">
-                General feedback
-              </label>
-              <textarea
-                id="comment-draft"
-                value={commentDraft}
-                placeholder="Share your thoughts on this change…"
-                onChange={(event) => {
-                  setCommentDraft(event.target.value);
-                  setCommentError(null);
-                  setCommentSuccess(false);
-                }}
-                rows={4}
-              />
-              <div className="comment-composer__actions">
-                <div className="comment-composer__status">
-                  {commentError && (
-                    <span className="comment-status comment-status--error">{commentError}</span>
-                  )}
-                  {!commentError && commentSuccess && (
-                    <span className="comment-status comment-status--success">Comment published</span>
-                  )}
-                </div>
-                <button
-                  type="submit"
-                  className="comment-submit"
-                  disabled={submitCommentMutation.isPending}
-                >
-                  {submitCommentMutation.isPending ? "Sending…" : "Post comment"}
-                </button>
-              </div>
-            </form>
-          )}
 
           {prDetail && prDetail.my_comments.length > 0 && (
             <div className="my-comments">
@@ -936,18 +925,64 @@ function App() {
                   {selectedFilePath && <span className="pane__subtitle">{selectedFilePath}</span>}
                 </div>
                 <div className="pane__actions">
+                  {commentSuccess && !isGeneralCommentOpen && (
+                    <span className="pane__status comment-status comment-status--success">
+                      Comment published
+                    </span>
+                  )}
                   {selectedFile && (
-                    <button
-                      type="button"
-                      className="pane__action-button"
-                      onClick={isInlineCommentOpen ? closeInlineComment : openInlineComment}
-                    >
-                      {isInlineCommentOpen ? "Close comment" : "Add comment"}
-                    </button>
+                    <>
+                      <button
+                        type="button"
+                        className="pane__action-button"
+                        onClick={toggleGeneralCommentComposer}
+                      >
+                        {isGeneralCommentOpen ? "Close overall comment" : "Overall PR comment"}
+                      </button>
+                      <button
+                        type="button"
+                        className="pane__action-button"
+                        onClick={isInlineCommentOpen ? closeInlineComment : openInlineComment}
+                      >
+                        {isInlineCommentOpen ? "Close file comment" : "Add file comment"}
+                      </button>
+                    </>
                   )}
                 </div>
               </div>
               <div className="pane__content">
+                {isGeneralCommentOpen && prDetail && (
+                  <form className="comment-composer comment-composer--inline" onSubmit={handleCommentSubmit}>
+                    <label className="comment-composer__label" htmlFor="comment-draft">
+                      Pull request feedback
+                    </label>
+                    <textarea
+                      id="comment-draft"
+                      value={commentDraft}
+                      placeholder="Share your thoughts on this change…"
+                      onChange={(event) => {
+                        setCommentDraft(event.target.value);
+                        setCommentError(null);
+                        setCommentSuccess(false);
+                      }}
+                      rows={4}
+                    />
+                    <div className="comment-composer__actions">
+                      <div className="comment-composer__status">
+                        {commentError && (
+                          <span className="comment-status comment-status--error">{commentError}</span>
+                        )}
+                      </div>
+                      <button
+                        type="submit"
+                        className="comment-submit"
+                        disabled={submitCommentMutation.isPending}
+                      >
+                        {submitCommentMutation.isPending ? "Sending…" : "Post comment"}
+                      </button>
+                    </div>
+                  </form>
+                )}
                 {isInlineCommentOpen && selectedFile && (
                   <div className="inline-comment-overlay">
                     <div className="inline-comment-overlay__header">
@@ -1060,22 +1095,26 @@ function App() {
                     </form>
                   </div>
                 )}
-                {selectedFile ? (
-                  <DiffEditor
-                    original={selectedFile.base_content ?? ""}
-                    modified={selectedFile.head_content ?? ""}
-                    language={selectedFile.language === "yaml" ? "yaml" : "markdown"}
-                    options={{
-                      readOnly: true,
-                      renderSideBySide: true,
-                      minimap: { enabled: false },
-                      scrollBeyondLastLine: false,
-                      wordWrap: "on",
-                    }}
-                  />
-                ) : (
-                  <div className="empty-state">Pick a file to see its diff.</div>
-                )}
+                <div className="pane__viewer">
+                  {selectedFile ? (
+                    <DiffEditor
+                      original={selectedFile.base_content ?? ""}
+                      modified={selectedFile.head_content ?? ""}
+                      language={selectedFile.language === "yaml" ? "yaml" : "markdown"}
+                      options={{
+                        readOnly: true,
+                        renderSideBySide: false,
+                        minimap: { enabled: false },
+                        scrollBeyondLastLine: false,
+                        wordWrap: "on",
+                      }}
+                    />
+                  ) : (
+                    <div className="empty-state">
+                      {prDetail ? "Pick a file to see its diff." : "Choose a pull request to begin."}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
 
@@ -1095,21 +1134,25 @@ function App() {
                 </div>
               </div>
               <div className="pane__content">
-                {selectedFile ? (
-                  selectedFile.language === "markdown" ? (
-                    <div className="markdown-preview">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                        {selectedFile.head_content ?? ""}
-                      </ReactMarkdown>
-                    </div>
+                <div className="pane__viewer">
+                  {selectedFile ? (
+                    selectedFile.language === "markdown" ? (
+                      <div className="markdown-preview">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                          {selectedFile.head_content ?? ""}
+                        </ReactMarkdown>
+                      </div>
+                    ) : (
+                      <pre className="markdown-preview">
+                        <code>{selectedFile.head_content ?? ""}</code>
+                      </pre>
+                    )
                   ) : (
-                    <pre className="markdown-preview">
-                      <code>{selectedFile.head_content ?? ""}</code>
-                    </pre>
-                  )
-                ) : (
-                  <div className="empty-state">Preview appears once a file is selected.</div>
-                )}
+                    <div className="empty-state">
+                      {prDetail ? "Preview appears once a file is selected." : "Choose a pull request to begin."}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           </div>
