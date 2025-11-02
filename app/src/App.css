@@ -161,6 +161,11 @@ select {
   padding-right: 2px;
 }
 
+.sidebar__content--comments {
+  gap: 0;
+  padding-right: 0;
+}
+
 .sidebar__footer {
   margin-top: auto;
   display: flex;
@@ -777,42 +782,53 @@ select {
   font-size: 13px;
 }
 
-.inline-comment-overlay {
-  position: absolute;
-  top: 16px;
-  right: 16px;
-  width: min(360px, 90%);
-  max-height: calc(100% - 32px);
-  background: rgba(14, 18, 30, 0.96);
-  border: 1px solid rgba(90, 122, 188, 0.45);
-  border-radius: 12px;
-  box-shadow: 0 24px 48px rgba(6, 10, 22, 0.6);
+.comment-panel {
+  background: linear-gradient(160deg, rgba(25, 30, 44, 0.92), rgba(16, 19, 29, 0.9));
+  border: 1px solid rgba(76, 100, 141, 0.32);
+  border-radius: 14px;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
-  z-index: 5;
-  -webkit-backdrop-filter: blur(18px);
-  backdrop-filter: blur(18px);
+  flex: 1;
+  min-height: 0;
 }
 
-.inline-comment-overlay__header {
+.comment-panel__header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 14px;
-  border-bottom: 1px solid rgba(73, 96, 134, 0.35);
-  font-size: 13px;
-  color: rgba(173, 186, 214, 0.7);
+  padding: 14px 18px;
+  border-bottom: 1px solid rgba(76, 100, 141, 0.26);
+  gap: 12px;
 }
 
-.inline-comment-overlay__close {
+.comment-panel__title-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.comment-panel__title {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.comment-panel__subtitle {
+  font-size: 12px;
+  color: rgba(173, 186, 214, 0.7);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 200px;
+}
+
+.comment-panel__close {
   border: none;
   background: transparent;
-  color: rgba(201, 212, 240, 0.8);
-  font-size: 18px;
+  color: rgba(201, 212, 240, 0.85);
+  font-size: 20px;
   cursor: pointer;
-  width: 28px;
-  height: 28px;
+  width: 32px;
+  height: 32px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -820,37 +836,46 @@ select {
   transition: background 0.18s ease, color 0.18s ease;
 }
 
-.inline-comment-overlay__close:hover {
-  background: rgba(118, 152, 224, 0.18);
+.comment-panel__close:hover {
+  background: rgba(118, 152, 224, 0.2);
   color: #f1f5ff;
 }
 
-.inline-comment-overlay__form {
+.comment-panel__body {
+  padding: 18px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 14px;
+  gap: 16px;
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
 }
 
-.inline-comment-overlay__form textarea {
+.comment-panel__form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  flex: 1;
+}
+
+.comment-panel__form textarea {
   border-radius: 10px;
   border: 1px solid rgba(90, 122, 188, 0.4);
-  background: rgba(12, 15, 23, 0.85);
+  background: rgba(12, 15, 23, 0.8);
   color: #f1f5ff;
   padding: 12px;
   resize: vertical;
-  min-height: 120px;
+  min-height: 140px;
   font-size: 14px;
   line-height: 1.5;
 }
 
-.inline-comment-overlay__form textarea:focus {
+.comment-panel__form textarea:focus {
   border-color: rgba(126, 162, 235, 0.8);
   outline: none;
 }
 
-.inline-comment-overlay__checkbox {
+.comment-panel__checkbox {
   display: inline-flex;
   align-items: center;
   gap: 10px;
@@ -858,18 +883,18 @@ select {
   color: rgba(201, 212, 240, 0.82);
 }
 
-.inline-comment-overlay__checkbox input {
+.comment-panel__checkbox input {
   width: 16px;
   height: 16px;
 }
 
-.inline-comment-overlay__row {
+.comment-panel__row {
   display: flex;
   gap: 14px;
   flex-wrap: wrap;
 }
 
-.inline-comment-overlay__row label {
+.comment-panel__row label {
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -877,8 +902,8 @@ select {
   color: rgba(201, 212, 240, 0.82);
 }
 
-.inline-comment-overlay__row input,
-.inline-comment-overlay__row select {
+.comment-panel__row input,
+.comment-panel__row select {
   border-radius: 8px;
   border: 1px solid rgba(88, 114, 176, 0.3);
   background: rgba(12, 15, 23, 0.8);
@@ -888,20 +913,26 @@ select {
   min-width: 140px;
 }
 
-.inline-comment-overlay__row select {
+.comment-panel__row select {
   cursor: pointer;
 }
 
-.inline-comment-overlay__footer {
+.comment-panel__footer {
   display: flex;
   justify-content: space-between;
   align-items: center;
   gap: 12px;
+  margin-top: auto;
 }
 
-.inline-comment-overlay__status {
+.comment-panel__status {
   min-height: 20px;
   font-size: 13px;
+}
+
+.comment-panel__empty {
+  font-size: 14px;
+  color: rgba(173, 186, 214, 0.7);
 }
 
 .comment-status {

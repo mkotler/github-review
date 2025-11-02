@@ -624,6 +624,9 @@ function App() {
     : null;
   const repoPanelExpanded = repoRef ? !isRepoPanelCollapsed : true;
   const prPanelExpanded = selectedPr ? !isPrPanelCollapsed : true;
+  const repoPanelAriaExpanded: "true" | "false" = repoPanelExpanded ? "true" : "false";
+  const prPanelAriaExpanded: "true" | "false" = prPanelExpanded ? "true" : "false";
+  const userMenuAriaExpanded: "true" | "false" = isUserMenuOpen ? "true" : "false";
 
   return (
     <div className={`app-shell${isSidebarCollapsed ? " app-shell--sidebar-collapsed" : ""}`}>
@@ -644,7 +647,7 @@ function App() {
                 className={`user-chip user-chip--button${isUserMenuOpen ? " user-chip--open" : ""}`}
                 onClick={toggleUserMenu}
                 aria-haspopup="menu"
-                aria-expanded={isUserMenuOpen ? "true" : "false"}
+                aria-expanded={userMenuAriaExpanded}
               >
                 {authData.avatar_url ? (
                   <img src={authData.avatar_url} alt={authData.login ?? "GitHub user"} />
@@ -688,190 +691,322 @@ function App() {
           )}
         </div>
         {!isSidebarCollapsed && (
-          <div className="sidebar__content">
-            <div
-              className={`panel panel--collapsible panel--repo${
-                isRepoPanelCollapsed && repoRef ? " panel--collapsed" : ""
-              }`}
-            >
-              <div
-                className={`panel__header${
-                  isRepoPanelCollapsed && repoRef ? " panel__header--condensed" : ""
-                }`}
-              >
-                <button
-                  type="button"
-                  className="panel__title-button panel__title-button--inline"
-                  onClick={handleToggleRepoPanel}
-                  aria-expanded={repoPanelExpanded ? "true" : "false"}
-                >
-                  <span className="panel__expando-icon" aria-hidden="true">
-                    {isRepoPanelCollapsed && repoRef ? ">" : "v"}
-                  </span>
-                  <span className="panel__title-text">Repository</span>
-                  {repoRef && (
-                    <span className="panel__summary panel__summary--inline" title={formattedRepo}>
-                      {formattedRepo}
-                    </span>
-                  )}
-                </button>
-                {repoRef && (
+          <div
+            className={`sidebar__content${isInlineCommentOpen ? " sidebar__content--comments" : ""}`}
+          >
+            {isInlineCommentOpen ? (
+              <div className="comment-panel">
+                <div className="comment-panel__header">
+                  <div className="comment-panel__title-group">
+                    <span className="comment-panel__title">File comments</span>
+                    {selectedFilePath && (
+                      <span className="comment-panel__subtitle" title={selectedFilePath}>
+                        {selectedFilePath}
+                      </span>
+                    )}
+                  </div>
                   <button
                     type="button"
-                    className="panel__icon-button panel__icon-button--icon-only"
-                    onClick={handleRefreshPulls}
-                    title="Refresh pull requests"
-                    aria-label="Refresh pull requests"
+                    className="comment-panel__close"
+                    onClick={closeInlineComment}
+                    aria-label="Hide comments"
                   >
-                    <svg
-                      className="panel__icon-svg"
-                      viewBox="0 0 24 24"
-                      aria-hidden="true"
-                      focusable="false"
-                    >
-                      <path
-                        d="M17.65 6.35A7.95 7.95 0 0 0 12 4a8 8 0 0 0-8 8h2a6 6 0 0 1 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35Z"
-                        fill="currentColor"
-                      />
-                    </svg>
-                    <span className="sr-only">Refresh pull requests</span>
+                    ×
                   </button>
-                )}
-              </div>
-              {!isRepoPanelCollapsed && (
-                <div className="panel__body">
-                  <form className="repo-form" onSubmit={handleRepoSubmit}>
-                    <input
-                      value={repoInput}
-                      placeholder="docs/handbook"
-                      onChange={(event) => setRepoInput(event.target.value)}
-                    />
-                    <button
-                      type="submit"
-                      className="repo-form__submit"
-                      disabled={pullsQuery.isFetching}
-                    >
-                      {pullsQuery.isFetching ? "Loading" : "Load"}
-                    </button>
-                  </form>
-                  {repoError && <span className="repo-error">{repoError}</span>}
-                  {formattedRepo && (
-                    <span className="chip-label repo-indicator">Viewing {formattedRepo}</span>
-                  )}
                 </div>
-              )}
-            </div>
-
-            <div
-              className={`panel panel--collapsible panel--pulls${
-                isPrPanelCollapsed && selectedPr ? " panel--collapsed" : ""
-              }`}
-            >
-              <div
-                className={`panel__header${
-                  isPrPanelCollapsed && selectedPr ? " panel__header--condensed" : ""
-                }`}
-              >
-                <button
-                  type="button"
-                  className="panel__title-button panel__title-button--inline"
-                  onClick={handleTogglePrPanel}
-                  disabled={!pullRequests.length}
-                  aria-expanded={prPanelExpanded ? "true" : "false"}
-                >
-                  <span className="panel__expando-icon" aria-hidden="true">
-                    {isPrPanelCollapsed && selectedPr ? ">" : "v"}
-                  </span>
-                  <span className="panel__title-text">Open Pull Requests</span>
-                  {selectedPrSummary ? (
-                    <span
-                      className="panel__summary panel__summary--inline"
-                      title={`#${selectedPrSummary.number} · ${selectedPrSummary.title}`}
-                    >
-                      #{selectedPrSummary.number} · {selectedPrSummary.title}
-                    </span>
-                  ) : (
-                    selectedPr && (
-                      <span className="panel__summary panel__summary--inline">
-                        Pull request #{selectedPr}
-                      </span>
-                    )
-                  )}
-                </button>
-              </div>
-              {!isPrPanelCollapsed && (
-                <div className="panel__body panel__body--scroll">
-                  {pullsQuery.isError ? (
-                    <div className="empty-state empty-state--subtle">
-                      Unable to load pull requests.
-                      <br />
-                      {pullsErrorMessage}
-                    </div>
-                  ) : pullsQuery.isLoading || pullsQuery.isFetching ? (
-                    <div className="empty-state empty-state--subtle">Loading pull requests…</div>
-                  ) : pullRequests.length === 0 ? (
-                    <div className="empty-state empty-state--subtle">
-                      {repoRef
-                        ? "No Markdown or YAML pull requests found."
-                        : "Enter a repository to begin."}
-                    </div>
-                  ) : (
-                    pullRequests.map((pr) => (
-                      <button
-                        key={pr.number}
-                        type="button"
-                        className={`pr-item pr-item--compact${selectedPr === pr.number ? " pr-item--active" : ""}`}
-                        onClick={() => {
-                          setSelectedPr(pr.number);
-                          setSelectedFilePath(null);
+                <div className="comment-panel__body">
+                  {selectedFile ? (
+                    <form className="comment-panel__form" onSubmit={handleFileCommentSubmit}>
+                      <textarea
+                        value={fileCommentDraft}
+                        placeholder="Leave feedback on the selected file…"
+                        onChange={(event) => {
+                          setFileCommentDraft(event.target.value);
+                          setFileCommentError(null);
+                          setFileCommentSuccess(false);
                         }}
-                      >
-                        <span className="pr-item__title">#{pr.number} · {pr.title}</span>
-                        <span className="pr-item__meta">
-                          <span>{pr.author}</span>
-                          <span>{new Date(pr.updated_at).toLocaleString()}</span>
-                          <span>{pr.head_ref}</span>
-                        </span>
-                      </button>
-                    ))
+                        rows={6}
+                      />
+                      <label className="comment-panel__checkbox">
+                        <input
+                          type="checkbox"
+                          checked={fileCommentIsFileLevel}
+                          onChange={(event) => {
+                            const checked = event.target.checked;
+                            setFileCommentIsFileLevel(checked);
+                            setFileCommentSuccess(false);
+                            setFileCommentError(null);
+                            if (checked) {
+                              setFileCommentLine("");
+                              setFileCommentMode("single");
+                            }
+                          }}
+                        />
+                        Mark as file-level comment
+                      </label>
+                      {!fileCommentIsFileLevel && (
+                        <div className="comment-panel__row">
+                          <label>
+                            Line number
+                            <input
+                              type="text"
+                              inputMode="numeric"
+                              pattern="[0-9]*"
+                              value={fileCommentLine}
+                              onChange={(event) => {
+                                setFileCommentLine(event.target.value);
+                                setFileCommentError(null);
+                                setFileCommentSuccess(false);
+                              }}
+                            />
+                          </label>
+                          <label>
+                            Comment side
+                            <select
+                              value={fileCommentSide}
+                              onChange={(event) => {
+                                setFileCommentSide(event.target.value as "RIGHT" | "LEFT");
+                                setFileCommentError(null);
+                                setFileCommentSuccess(false);
+                              }}
+                            >
+                              <option value="RIGHT">Head (new code)</option>
+                              <option value="LEFT">Base (original code)</option>
+                            </select>
+                          </label>
+                        </div>
+                      )}
+                      <div className="comment-panel__row">
+                        <label>
+                          Mode
+                          <select
+                            value={fileCommentMode}
+                            onChange={(event) => {
+                              setFileCommentMode(event.target.value as "single" | "review");
+                              setFileCommentError(null);
+                              setFileCommentSuccess(false);
+                            }}
+                            disabled={fileCommentIsFileLevel}
+                          >
+                            <option value="single">Add single comment</option>
+                            <option value="review">Start a review</option>
+                          </select>
+                        </label>
+                      </div>
+                      <div className="comment-panel__footer">
+                        <div className="comment-panel__status">
+                          {fileCommentError && (
+                            <span className="comment-status comment-status--error">{fileCommentError}</span>
+                          )}
+                          {!fileCommentError && fileCommentSuccess && (
+                            <span className="comment-status comment-status--success">Comment saved</span>
+                          )}
+                        </div>
+                        <button
+                          type="submit"
+                          className="comment-submit"
+                          disabled={submitFileCommentMutation.isPending}
+                        >
+                          {submitFileCommentMutation.isPending
+                            ? "Sending…"
+                            : fileCommentMode === "review"
+                              ? "Start review"
+                              : "Post comment"}
+                        </button>
+                      </div>
+                    </form>
+                  ) : (
+                    <div className="comment-panel__empty">Select a file to leave feedback.</div>
                   )}
                 </div>
-              )}
-            </div>
-
-            <div className="panel panel--files">
-              <div className="panel__header panel__header--static">
-                <span>Files</span>
               </div>
-              <div className="panel__body panel__body--flush">
-                {pullDetailQuery.isLoading ? (
-                  <div className="empty-state empty-state--subtle">Loading files…</div>
-                ) : !prDetail ? (
-                  <div className="empty-state empty-state--subtle">Select a pull request.</div>
-                ) : files.length === 0 ? (
-                  <div className="empty-state empty-state--subtle">
-                    No Markdown or YAML files in this pull request.
-                  </div>
-                ) : (
-                  <ul className="file-list file-list--compact">
-                    {files.map((file) => (
-                      <li key={file.path}>
-                        <button
-                          type="button"
-                          className={`file-list__button${
-                            selectedFilePath === file.path ? " file-list__button--active" : ""
-                          }`}
-                          onClick={() => setSelectedFilePath(file.path)}
+            ) : (
+              <>
+                <div
+                  className={`panel panel--collapsible panel--repo${
+                    isRepoPanelCollapsed && repoRef ? " panel--collapsed" : ""
+                  }`}
+                >
+                  <div
+                    className={`panel__header${
+                      isRepoPanelCollapsed && repoRef ? " panel__header--condensed" : ""
+                    }`}
+                  >
+                    <button
+                      type="button"
+                      className="panel__title-button panel__title-button--inline"
+                      onClick={handleToggleRepoPanel}
+                      aria-expanded={repoPanelAriaExpanded}
+                    >
+                      <span className="panel__expando-icon" aria-hidden="true">
+                        {isRepoPanelCollapsed && repoRef ? ">" : "v"}
+                      </span>
+                      <span className="panel__title-text">Repository</span>
+                      {repoRef && (
+                        <span className="panel__summary panel__summary--inline" title={formattedRepo}>
+                          {formattedRepo}
+                        </span>
+                      )}
+                    </button>
+                    {repoRef && (
+                      <button
+                        type="button"
+                        className="panel__icon-button panel__icon-button--icon-only"
+                        onClick={handleRefreshPulls}
+                        title="Refresh pull requests"
+                        aria-label="Refresh pull requests"
+                      >
+                        <svg
+                          className="panel__icon-svg"
+                          viewBox="0 0 24 24"
+                          aria-hidden="true"
+                          focusable="false"
                         >
-                          <span className="file-list__name">{file.path}</span>
-                          <span className="file-list__status">{file.status}</span>
+                          <path
+                            d="M17.65 6.35A7.95 7.95 0 0 0 12 4a8 8 0 0 0-8 8h2a6 6 0 0 1 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35Z"
+                            fill="currentColor"
+                          />
+                        </svg>
+                        <span className="sr-only">Refresh pull requests</span>
+                      </button>
+                    )}
+                  </div>
+                  {!isRepoPanelCollapsed && (
+                    <div className="panel__body">
+                      <form className="repo-form" onSubmit={handleRepoSubmit}>
+                        <input
+                          value={repoInput}
+                          placeholder="docs/handbook"
+                          onChange={(event) => setRepoInput(event.target.value)}
+                        />
+                        <button
+                          type="submit"
+                          className="repo-form__submit"
+                          disabled={pullsQuery.isFetching}
+                        >
+                          {pullsQuery.isFetching ? "Loading" : "Load"}
                         </button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            </div>
+                      </form>
+                      {repoError && <span className="repo-error">{repoError}</span>}
+                      {formattedRepo && (
+                        <span className="chip-label repo-indicator">Viewing {formattedRepo}</span>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                <div
+                  className={`panel panel--collapsible panel--pulls${
+                    isPrPanelCollapsed && selectedPr ? " panel--collapsed" : ""
+                  }`}
+                >
+                  <div
+                    className={`panel__header${
+                      isPrPanelCollapsed && selectedPr ? " panel__header--condensed" : ""
+                    }`}
+                  >
+                    <button
+                      type="button"
+                      className="panel__title-button panel__title-button--inline"
+                      onClick={handleTogglePrPanel}
+                      disabled={!pullRequests.length}
+                      aria-expanded={prPanelAriaExpanded}
+                    >
+                      <span className="panel__expando-icon" aria-hidden="true">
+                        {isPrPanelCollapsed && selectedPr ? ">" : "v"}
+                      </span>
+                      <span className="panel__title-text">Open Pull Requests</span>
+                      {selectedPrSummary ? (
+                        <span
+                          className="panel__summary panel__summary--inline"
+                          title={`#${selectedPrSummary.number} · ${selectedPrSummary.title}`}
+                        >
+                          #{selectedPrSummary.number} · {selectedPrSummary.title}
+                        </span>
+                      ) : (
+                        selectedPr && (
+                          <span className="panel__summary panel__summary--inline">
+                            Pull request #{selectedPr}
+                          </span>
+                        )
+                      )}
+                    </button>
+                  </div>
+                  {!isPrPanelCollapsed && (
+                    <div className="panel__body panel__body--scroll">
+                      {pullsQuery.isError ? (
+                        <div className="empty-state empty-state--subtle">
+                          Unable to load pull requests.
+                          <br />
+                          {pullsErrorMessage}
+                        </div>
+                      ) : pullsQuery.isLoading || pullsQuery.isFetching ? (
+                        <div className="empty-state empty-state--subtle">Loading pull requests…</div>
+                      ) : pullRequests.length === 0 ? (
+                        <div className="empty-state empty-state--subtle">
+                          {repoRef
+                            ? "No Markdown or YAML pull requests found."
+                            : "Enter a repository to begin."}
+                        </div>
+                      ) : (
+                        pullRequests.map((pr) => (
+                          <button
+                            key={pr.number}
+                            type="button"
+                            className={`pr-item pr-item--compact${selectedPr === pr.number ? " pr-item--active" : ""}`}
+                            onClick={() => {
+                              setSelectedPr(pr.number);
+                              setSelectedFilePath(null);
+                            }}
+                          >
+                            <span className="pr-item__title">#{pr.number} · {pr.title}</span>
+                            <span className="pr-item__meta">
+                              <span>{pr.author}</span>
+                              <span>{new Date(pr.updated_at).toLocaleString()}</span>
+                              <span>{pr.head_ref}</span>
+                            </span>
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                <div className="panel panel--files">
+                  <div className="panel__header panel__header--static">
+                    <span>Files</span>
+                  </div>
+                  <div className="panel__body panel__body--flush">
+                    {pullDetailQuery.isLoading ? (
+                      <div className="empty-state empty-state--subtle">Loading files…</div>
+                    ) : !prDetail ? (
+                      <div className="empty-state empty-state--subtle">Select a pull request.</div>
+                    ) : files.length === 0 ? (
+                      <div className="empty-state empty-state--subtle">
+                        No Markdown or YAML files in this pull request.
+                      </div>
+                    ) : (
+                      <ul className="file-list file-list--compact">
+                        {files.map((file) => (
+                          <li key={file.path}>
+                            <button
+                              type="button"
+                              className={`file-list__button${
+                                selectedFilePath === file.path ? " file-list__button--active" : ""
+                              }`}
+                              onClick={() => setSelectedFilePath(file.path)}
+                            >
+                              <span className="file-list__name">{file.path}</span>
+                              <span className="file-list__status">{file.status}</span>
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                </div>
+              </>
+            )}
           </div>
         )}
       </aside>
@@ -944,7 +1079,7 @@ function App() {
                         className="pane__action-button"
                         onClick={isInlineCommentOpen ? closeInlineComment : openInlineComment}
                       >
-                        {isInlineCommentOpen ? "Close file comment" : "Add file comment"}
+                        {isInlineCommentOpen ? "Hide Comments" : "Show Comments"}
                       </button>
                     </>
                   )}
@@ -982,118 +1117,6 @@ function App() {
                       </button>
                     </div>
                   </form>
-                )}
-                {isInlineCommentOpen && selectedFile && (
-                  <div className="inline-comment-overlay">
-                    <div className="inline-comment-overlay__header">
-                      <span>Leave feedback</span>
-                      <button
-                        type="button"
-                        className="inline-comment-overlay__close"
-                        onClick={closeInlineComment}
-                        aria-label="Close inline comment composer"
-                      >
-                        X
-                      </button>
-                    </div>
-                    <form className="inline-comment-overlay__form" onSubmit={handleFileCommentSubmit}>
-                      <textarea
-                        value={fileCommentDraft}
-                        placeholder="Leave feedback on the selected file…"
-                        onChange={(event) => {
-                          setFileCommentDraft(event.target.value);
-                          setFileCommentError(null);
-                          setFileCommentSuccess(false);
-                        }}
-                        rows={4}
-                      />
-                      <label className="inline-comment-overlay__checkbox">
-                        <input
-                          type="checkbox"
-                          checked={fileCommentIsFileLevel}
-                          onChange={(event) => {
-                            setFileCommentIsFileLevel(event.target.checked);
-                            if (event.target.checked) {
-                              setFileCommentLine("");
-                              setFileCommentMode("single");
-                            }
-                            setFileCommentError(null);
-                            setFileCommentSuccess(false);
-                          }}
-                        />
-                        Comment on entire file
-                      </label>
-                      {!fileCommentIsFileLevel && (
-                        <div className="inline-comment-overlay__row">
-                          <label>
-                            Line
-                            <input
-                              type="number"
-                              min={1}
-                              value={fileCommentLine}
-                              onChange={(event) => {
-                                setFileCommentLine(event.target.value);
-                                setFileCommentError(null);
-                                setFileCommentSuccess(false);
-                              }}
-                            />
-                          </label>
-                          <label>
-                            Side
-                            <select
-                              value={fileCommentSide}
-                              onChange={(event) => {
-                                setFileCommentSide(event.target.value as "RIGHT" | "LEFT");
-                                setFileCommentError(null);
-                                setFileCommentSuccess(false);
-                              }}
-                            >
-                              <option value="RIGHT">Head (new code)</option>
-                              <option value="LEFT">Base (original code)</option>
-                            </select>
-                          </label>
-                        </div>
-                      )}
-                      <div className="inline-comment-overlay__row">
-                        <label>
-                          Mode
-                          <select
-                            value={fileCommentMode}
-                            onChange={(event) => {
-                              setFileCommentMode(event.target.value as "single" | "review");
-                              setFileCommentError(null);
-                              setFileCommentSuccess(false);
-                            }}
-                            disabled={fileCommentIsFileLevel}
-                          >
-                            <option value="single">Add single comment</option>
-                            <option value="review">Start a review</option>
-                          </select>
-                        </label>
-                      </div>
-                      <div className="inline-comment-overlay__footer">
-                        <div className="inline-comment-overlay__status">
-                          {fileCommentError && (
-                            <span className="comment-status comment-status--error">{fileCommentError}</span>
-                          )}
-                          {!fileCommentError && fileCommentSuccess && (
-                            <span className="comment-status comment-status--success">Comment saved</span>
-                          )}
-                        </div>
-                        <button
-                          type="submit"
-                          className="comment-submit"
-                          disabled={submitFileCommentMutation.isPending}
-                        >
-                          {submitFileCommentMutation.isPending
-                            ? "Sending…"
-                            : fileCommentMode === "review"
-                              ? "Start review"
-                              : "Post comment"}
-                        </button>
-                      </div>
-                    </form>
-                  </div>
                 )}
                 <div className="pane__viewer">
                   {selectedFile ? (
