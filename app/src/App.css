@@ -879,6 +879,113 @@ select {
   overflow-y: auto;
 }
 
+.comment-panel__existing {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  flex: 1;
+  min-height: 0;
+}
+
+.comment-panel__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.comment-panel__item {
+  border: 1px solid rgba(76, 100, 141, 0.28);
+  background: rgba(16, 20, 32, 0.78);
+  border-radius: 10px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.comment-panel__item-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 12px;
+  color: rgba(173, 186, 214, 0.75);
+}
+
+.comment-panel__item-author {
+  font-weight: 600;
+  color: #f1f5ff;
+}
+
+.comment-panel__item-detail {
+  color: rgba(173, 186, 214, 0.7);
+}
+
+.comment-panel__item-badge {
+  background: rgba(255, 157, 160, 0.18);
+  color: #ff9da0;
+  border-radius: 12px;
+  padding: 2px 8px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.comment-panel__item-body {
+  font-size: 14px;
+  line-height: 1.5;
+  color: #e4e8f5;
+}
+
+.comment-panel__item-body p {
+  margin: 0;
+}
+
+.comment-panel__item-body p + p {
+  margin-top: 8px;
+}
+
+.comment-panel__item-link {
+  align-self: flex-start;
+  font-size: 12px;
+  color: #9fb8ff;
+  text-decoration: none;
+}
+
+.comment-panel__item-link:hover {
+  text-decoration: underline;
+}
+
+.comment-panel__action-button {
+  border: 1px solid rgba(118, 152, 224, 0.45);
+  background: rgba(22, 28, 44, 0.82);
+  color: #e8efff;
+  border-radius: 10px;
+  padding: 8px 16px;
+  font-weight: 600;
+  cursor: pointer;
+  align-self: flex-start;
+  transition: background 0.18s ease, border-color 0.18s ease, color 0.18s ease;
+}
+
+.comment-panel__action-button:hover {
+  background: rgba(118, 152, 224, 0.22);
+  border-color: rgba(146, 174, 235, 0.6);
+}
+
+.comment-panel__action-button--subtle {
+  border-color: rgba(88, 114, 176, 0.28);
+  background: transparent;
+  color: rgba(193, 206, 235, 0.75);
+}
+
+.comment-panel__action-button--subtle:hover {
+  background: rgba(118, 152, 224, 0.16);
+  color: #f1f5ff;
+}
+
 .comment-panel__form {
   display: flex;
   flex-direction: column;

@@ -25,6 +25,7 @@ pub struct PullRequestDetail {
     pub head_sha: String,
     pub base_sha: String,
     pub files: Vec<PullRequestFile>,
+    pub comments: Vec<PullRequestComment>,
     pub my_comments: Vec<PullRequestComment>,
 }
 
@@ -61,4 +62,5 @@ pub struct PullRequestComment {
     pub is_review_comment: bool,
     pub is_draft: bool,
     pub state: Option<String>,
+    pub is_mine: bool,
 }

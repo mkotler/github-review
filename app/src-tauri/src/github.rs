@@ -268,7 +268,12 @@ pub async fn get_pull_request(
     let review_comments = fetch_review_comments(&client, owner, repo, number).await?;
     let issue_comments = fetch_issue_comments(&client, owner, repo, number).await?;
 
-    let my_comments = build_my_comments(current_login, &review_comments, &issue_comments);
+    let comments = build_comments(current_login, &review_comments, &issue_comments);
+    let my_comments = comments
+        .iter()
+        .cloned()
+        .filter(|comment| comment.is_mine)
+        .collect();
 
     Ok(PullRequestDetail {
         number: pr.number,
@@ -278,6 +283,7 @@ pub async fn get_pull_request(
         head_sha,
         base_sha,
         files: collected,
+        comments,
         my_comments,
     })
 }
@@ -476,35 +482,38 @@ async fn fetch_issue_comments(
     Ok(response.json::<Vec<GitHubIssueComment>>().await?)
 }
 
-fn build_my_comments(
+fn build_comments(
     current_login: Option<&str>,
     review_comments: &[GitHubReviewComment],
     issue_comments: &[GitHubIssueComment],
 ) -> Vec<PullRequestComment> {
-    let login = match current_login {
-        Some(login) if !login.is_empty() => login,
-        _ => return Vec::new(),
-    };
+    let normalized_login = current_login
+        .filter(|login| !login.is_empty())
+        .map(|login| login.to_ascii_lowercase());
 
     let mut collected = Vec::new();
 
     for comment in review_comments {
-        if comment.user.login.eq_ignore_ascii_case(login) {
-            collected.push(map_review_comment(comment));
-        }
+        let is_mine = normalized_login
+            .as_ref()
+            .map(|login| comment.user.login.eq_ignore_ascii_case(login))
+            .unwrap_or(false);
+        collected.push(map_review_comment(comment, is_mine));
     }
 
     for comment in issue_comments {
-        if comment.user.login.eq_ignore_ascii_case(login) {
-            collected.push(map_issue_comment(comment));
-        }
+        let is_mine = normalized_login
+            .as_ref()
+            .map(|login| comment.user.login.eq_ignore_ascii_case(login))
+            .unwrap_or(false);
+        collected.push(map_issue_comment(comment, is_mine));
     }
 
     collected.sort_by(|a, b| a.created_at.cmp(&b.created_at));
     collected
 }
 
-fn map_review_comment(comment: &GitHubReviewComment) -> PullRequestComment {
+fn map_review_comment(comment: &GitHubReviewComment, is_mine: bool) -> PullRequestComment {
     PullRequestComment {
         id: comment.id,
         body: comment.body.clone(),
@@ -521,10 +530,11 @@ fn map_review_comment(comment: &GitHubReviewComment) -> PullRequestComment {
             .map(|state| state.eq_ignore_ascii_case("pending"))
             .unwrap_or(false),
         state: comment.state.clone(),
+        is_mine,
     }
 }
 
-fn map_issue_comment(comment: &GitHubIssueComment) -> PullRequestComment {
+fn map_issue_comment(comment: &GitHubIssueComment, is_mine: bool) -> PullRequestComment {
     PullRequestComment {
         id: comment.id,
         body: comment.body.clone(),
@@ -537,6 +547,7 @@ fn map_issue_comment(comment: &GitHubIssueComment) -> PullRequestComment {
         is_review_comment: false,
         is_draft: false,
         state: None,
+        is_mine,
     }
 }
 

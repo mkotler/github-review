@@ -40,6 +40,7 @@ type PullRequestDetail = {
   head_sha: string;
   base_sha: string;
   files: PullRequestFile[];
+  comments: PullRequestComment[];
   my_comments: PullRequestComment[];
 };
 
@@ -60,6 +61,7 @@ type PullRequestComment = {
   is_review_comment: boolean;
   is_draft: boolean;
   state?: string | null;
+  is_mine: boolean;
 };
 
 const AUTH_QUERY_KEY = ["auth-status"] as const;
@@ -99,6 +101,7 @@ function App() {
   const [isResizing, setIsResizing] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState<number>(MIN_SIDEBAR_WIDTH);
   const [isSidebarResizing, setIsSidebarResizing] = useState(false);
+  const [isFileCommentComposerVisible, setIsFileCommentComposerVisible] = useState(false);
   const workspaceBodyRef = useRef<HTMLDivElement | null>(null);
   const appShellRef = useRef<HTMLDivElement | null>(null);
   const userMenuRef = useRef<HTMLDivElement | null>(null);
@@ -178,6 +181,7 @@ function App() {
   });
 
   const { refetch: refetchPullDetail } = pullDetailQuery;
+  const prDetail = pullDetailQuery.data;
 
   const handleToggleRepoPanel = useCallback(() => {
     if (!repoRef) {
@@ -216,6 +220,14 @@ function App() {
     [isSidebarCollapsed],
   );
 
+  const comments = useMemo(() => prDetail?.comments ?? [], [prDetail]);
+  const myComments = useMemo(() => {
+    if (comments.length > 0) {
+      return comments.filter((comment) => comment.is_mine);
+    }
+    return prDetail?.my_comments ?? [];
+  }, [comments, prDetail]);
+
   const openInlineComment = useCallback(() => {
     if (!selectedFilePath) {
       return;
@@ -223,12 +235,15 @@ function App() {
     setIsInlineCommentOpen(true);
     setFileCommentError(null);
     setFileCommentSuccess(false);
-  }, [selectedFilePath]);
+    const hasExistingComments = myComments.some((comment) => comment.path === selectedFilePath);
+    setIsFileCommentComposerVisible(!hasExistingComments);
+  }, [myComments, selectedFilePath]);
 
   const closeInlineComment = useCallback(() => {
     setIsInlineCommentOpen(false);
     setFileCommentError(null);
     setFileCommentSuccess(false);
+    setIsFileCommentComposerVisible(false);
   }, []);
 
   const toggleGeneralCommentComposer = useCallback(() => {
@@ -260,8 +275,6 @@ function App() {
     closeUserMenu();
     logoutMutation.mutate();
   }, [closeUserMenu, logoutMutation]);
-
-  const prDetail = pullDetailQuery.data;
   const pullsErrorMessage = pullsQuery.isError
     ? pullsQuery.error instanceof Error
       ? pullsQuery.error.message
@@ -279,7 +292,16 @@ function App() {
     return prDetail.files.find((file) => file.path === selectedFilePath) ?? null;
   }, [prDetail, selectedFilePath]);
 
+  const fileComments = useMemo(() => {
+    if (!selectedFilePath) {
+      return [] as PullRequestComment[];
+    }
+    return comments.filter((comment) => comment.path === selectedFilePath);
+  }, [comments, selectedFilePath]);
+
   const files = prDetail?.files ?? [];
+  const hasAnyFileComments = fileComments.length > 0;
+  const shouldShowFileCommentComposer = isFileCommentComposerVisible || !hasAnyFileComments;
   const formattedRepo = repoRef ? `${repoRef.owner}/${repoRef.repo}` : "";
 
   useEffect(() => {
@@ -367,23 +389,27 @@ function App() {
     setFileCommentSide("RIGHT");
     setIsInlineCommentOpen(false);
     setIsGeneralCommentOpen(false);
+    setIsFileCommentComposerVisible(false);
   }, [selectedFilePath]);
 
   useEffect(() => {
     if (!fileCommentSuccess) {
       return;
     }
-    const closeTimer = window.setTimeout(() => {
-      setIsInlineCommentOpen(false);
-    }, 1500);
+    setIsFileCommentComposerVisible(false);
     const resetTimer = window.setTimeout(() => {
       setFileCommentSuccess(false);
     }, 2400);
     return () => {
-      window.clearTimeout(closeTimer);
       window.clearTimeout(resetTimer);
     };
   }, [fileCommentSuccess]);
+
+  useEffect(() => {
+    if (!isInlineCommentOpen) {
+      setIsFileCommentComposerVisible(false);
+    }
+  }, [isInlineCommentOpen]);
 
   useEffect(() => {
     if (!isResizing) {
@@ -593,6 +619,7 @@ function App() {
       setFileCommentIsFileLevel(false);
       setFileCommentMode("single");
       setFileCommentSide("RIGHT");
+      setIsFileCommentComposerVisible(false);
       void refetchPullDetail();
     },
     onError: (error: unknown) => {
@@ -798,105 +825,157 @@ function App() {
                 </div>
                 <div className="comment-panel__body">
                   {selectedFile ? (
-                    <form className="comment-panel__form" onSubmit={handleFileCommentSubmit}>
-                      <textarea
-                        value={fileCommentDraft}
-                        placeholder="Leave feedback on the selected file…"
-                        onChange={(event) => {
-                          setFileCommentDraft(event.target.value);
-                          setFileCommentError(null);
-                          setFileCommentSuccess(false);
-                        }}
-                        rows={6}
-                      />
-                      <label className="comment-panel__checkbox">
-                        <input
-                          type="checkbox"
-                          checked={fileCommentIsFileLevel}
+                    shouldShowFileCommentComposer ? (
+                      <form className="comment-panel__form" onSubmit={handleFileCommentSubmit}>
+                        {hasAnyFileComments && (
+                          <button
+                            type="button"
+                            className="comment-panel__action-button comment-panel__action-button--subtle"
+                            onClick={() => setIsFileCommentComposerVisible(false)}
+                          >
+                            ← Back to comments
+                          </button>
+                        )}
+                        <textarea
+                          value={fileCommentDraft}
+                          placeholder="Leave feedback on the selected file…"
                           onChange={(event) => {
-                            const checked = event.target.checked;
-                            setFileCommentIsFileLevel(checked);
-                            setFileCommentSuccess(false);
+                            setFileCommentDraft(event.target.value);
                             setFileCommentError(null);
-                            if (checked) {
-                              setFileCommentLine("");
-                              setFileCommentMode("single");
-                            }
+                            setFileCommentSuccess(false);
                           }}
+                          rows={6}
                         />
-                        Mark as file-level comment
-                      </label>
-                      {!fileCommentIsFileLevel && (
+                        <label className="comment-panel__checkbox">
+                          <input
+                            type="checkbox"
+                            checked={fileCommentIsFileLevel}
+                            onChange={(event) => {
+                              const checked = event.target.checked;
+                              setFileCommentIsFileLevel(checked);
+                              setFileCommentSuccess(false);
+                              setFileCommentError(null);
+                              if (checked) {
+                                setFileCommentLine("");
+                                setFileCommentMode("single");
+                              }
+                            }}
+                          />
+                          Mark as file-level comment
+                        </label>
+                        {!fileCommentIsFileLevel && (
+                          <div className="comment-panel__row">
+                            <label>
+                              Line number
+                              <input
+                                type="text"
+                                inputMode="numeric"
+                                pattern="[0-9]*"
+                                value={fileCommentLine}
+                                onChange={(event) => {
+                                  setFileCommentLine(event.target.value);
+                                  setFileCommentError(null);
+                                  setFileCommentSuccess(false);
+                                }}
+                              />
+                            </label>
+                            <label>
+                              Comment side
+                              <select
+                                value={fileCommentSide}
+                                onChange={(event) => {
+                                  setFileCommentSide(event.target.value as "RIGHT" | "LEFT");
+                                  setFileCommentError(null);
+                                  setFileCommentSuccess(false);
+                                }}
+                              >
+                                <option value="RIGHT">Head (new code)</option>
+                                <option value="LEFT">Base (original code)</option>
+                              </select>
+                            </label>
+                          </div>
+                        )}
                         <div className="comment-panel__row">
                           <label>
-                            Line number
-                            <input
-                              type="text"
-                              inputMode="numeric"
-                              pattern="[0-9]*"
-                              value={fileCommentLine}
-                              onChange={(event) => {
-                                setFileCommentLine(event.target.value);
-                                setFileCommentError(null);
-                                setFileCommentSuccess(false);
-                              }}
-                            />
-                          </label>
-                          <label>
-                            Comment side
+                            Mode
                             <select
-                              value={fileCommentSide}
+                              value={fileCommentMode}
                               onChange={(event) => {
-                                setFileCommentSide(event.target.value as "RIGHT" | "LEFT");
+                                setFileCommentMode(event.target.value as "single" | "review");
                                 setFileCommentError(null);
                                 setFileCommentSuccess(false);
                               }}
+                              disabled={fileCommentIsFileLevel}
                             >
-                              <option value="RIGHT">Head (new code)</option>
-                              <option value="LEFT">Base (original code)</option>
+                              <option value="single">Add single comment</option>
+                              <option value="review">Start a review</option>
                             </select>
                           </label>
                         </div>
-                      )}
-                      <div className="comment-panel__row">
-                        <label>
-                          Mode
-                          <select
-                            value={fileCommentMode}
-                            onChange={(event) => {
-                              setFileCommentMode(event.target.value as "single" | "review");
-                              setFileCommentError(null);
-                              setFileCommentSuccess(false);
-                            }}
-                            disabled={fileCommentIsFileLevel}
+                        <div className="comment-panel__footer">
+                          <div className="comment-panel__status">
+                            {fileCommentError && (
+                              <span className="comment-status comment-status--error">{fileCommentError}</span>
+                            )}
+                            {!fileCommentError && fileCommentSuccess && (
+                              <span className="comment-status comment-status--success">Comment saved</span>
+                            )}
+                          </div>
+                          <button
+                            type="submit"
+                            className="comment-submit"
+                            disabled={submitFileCommentMutation.isPending}
                           >
-                            <option value="single">Add single comment</option>
-                            <option value="review">Start a review</option>
-                          </select>
-                        </label>
-                      </div>
-                      <div className="comment-panel__footer">
-                        <div className="comment-panel__status">
-                          {fileCommentError && (
-                            <span className="comment-status comment-status--error">{fileCommentError}</span>
-                          )}
-                          {!fileCommentError && fileCommentSuccess && (
-                            <span className="comment-status comment-status--success">Comment saved</span>
-                          )}
+                            {submitFileCommentMutation.isPending
+                              ? "Sending…"
+                              : fileCommentMode === "review"
+                                ? "Start review"
+                                : "Post comment"}
+                          </button>
                         </div>
+                      </form>
+                    ) : (
+                      <div className="comment-panel__existing">
+                        <ul className="comment-panel__list">
+                          {fileComments.map((comment) => (
+                            <li key={comment.id} className="comment-panel__item">
+                              <div className="comment-panel__item-meta">
+                                <span className="comment-panel__item-author">{comment.author}</span>
+                                {comment.line && (
+                                  <span className="comment-panel__item-detail">L{comment.line}</span>
+                                )}
+                                <span className="comment-panel__item-detail">
+                                  {new Date(comment.created_at).toLocaleString()}
+                                </span>
+                                {comment.is_draft && (
+                                  <span className="comment-panel__item-badge">Pending</span>
+                                )}
+                              </div>
+                              <div className="comment-panel__item-body">
+                                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                  {comment.body}
+                                </ReactMarkdown>
+                              </div>
+                              <a
+                                className="comment-panel__item-link"
+                                href={comment.url}
+                                target="_blank"
+                                rel="noreferrer"
+                              >
+                                Open on GitHub
+                              </a>
+                            </li>
+                          ))}
+                        </ul>
                         <button
-                          type="submit"
-                          className="comment-submit"
-                          disabled={submitFileCommentMutation.isPending}
+                          type="button"
+                          className="comment-panel__action-button"
+                          onClick={() => setIsFileCommentComposerVisible(true)}
                         >
-                          {submitFileCommentMutation.isPending
-                            ? "Sending…"
-                            : fileCommentMode === "review"
-                              ? "Start review"
-                              : "Post comment"}
+                          Add comment
                         </button>
                       </div>
-                    </form>
+                    )
                   ) : (
                     <div className="comment-panel__empty">Select a file to leave feedback.</div>
                   )}
@@ -1107,11 +1186,11 @@ function App() {
       <section className="content-area">
         <div className="workspace">
 
-          {prDetail && prDetail.my_comments.length > 0 && (
+          {myComments.length > 0 && (
             <div className="my-comments">
               <div className="my-comments__header">My Comments</div>
               <ul className="my-comments__list">
-                {prDetail.my_comments.map((comment) => (
+                {myComments.map((comment) => (
                   <li key={comment.id} className="my-comments__item">
                     <div className="my-comments__meta">
                       <span className="my-comments__type">
