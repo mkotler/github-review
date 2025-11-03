@@ -92,6 +92,74 @@ const openDevtoolsWindow = () => {
 const MIN_SIDEBAR_WIDTH = 320;
 const MIN_CONTENT_WIDTH = 480;
 
+// Component to handle async image loading
+function AsyncImage({ owner, repo, reference, path, alt, ...props }: { 
+  owner: string; 
+  repo: string; 
+  reference: string; 
+  path: string; 
+  alt?: string;
+  [key: string]: any;
+}) {
+  const [imageData, setImageData] = useState<string | null>(null);
+  const [error, setError] = useState<boolean>(false);
+  
+  useEffect(() => {
+    let cancelled = false;
+    
+    const fetchImage = async () => {
+      try {
+        const base64Data = await invoke<string>("cmd_fetch_file_content", {
+          owner,
+          repo,
+          reference,
+          path
+        });
+        
+        if (!cancelled) {
+          // Determine MIME type from extension
+          const ext = path.split('.').pop()?.toLowerCase();
+          const mimeTypes: Record<string, string> = {
+            'png': 'image/png',
+            'jpg': 'image/jpeg',
+            'jpeg': 'image/jpeg',
+            'gif': 'image/gif',
+            'svg': 'image/svg+xml',
+            'webp': 'image/webp'
+          };
+          const mimeType = mimeTypes[ext || ''] || 'image/png';
+          
+          setImageData(`data:${mimeType};base64,${base64Data}`);
+        }
+      } catch (err) {
+        console.error('Failed to fetch image:', { path, error: err });
+        if (!cancelled) {
+          setError(true);
+        }
+      }
+    };
+    
+    fetchImage();
+    
+    return () => {
+      cancelled = true;
+    };
+  }, [owner, repo, reference, path]);
+  
+  if (error) {
+    // Image doesn't exist in the repository - just show alt text or a note
+    return <span className="image-error" title={`Image not found in repository: ${path}`}>
+      {alt ? `[${alt}]` : `[Image: ${path.split('/').pop()}]`}
+    </span>;
+  }
+  
+  if (!imageData) {
+    return null; // Don't show anything while loading to avoid flicker
+  }
+  
+  return <img src={imageData} alt={alt} {...props} />;
+}
+
 function App() {
   const [repoRef, setRepoRef] = useState<RepoRef | null>(null);
   const [repoInput, setRepoInput] = useState("");
@@ -2431,6 +2499,51 @@ function App() {
                         <ReactMarkdown 
                           remarkPlugins={[remarkGfm, [remarkFrontmatter, { type: 'yaml', marker: '-' }]]}
                           rehypePlugins={[rehypeRaw, rehypeSanitize]}
+                          components={{
+                            img: ({src, alt, ...props}) => {
+                              // If src is already a full URL, use it directly
+                              if (!src || src.startsWith('http://') || src.startsWith('https://')) {
+                                return <img src={src} alt={alt} {...props} />;
+                              }
+                              
+                              if (!repoRef || !prDetail || !selectedFile) {
+                                return <img src={src} alt={alt} {...props} />;
+                              }
+                              
+                              // Resolve relative path based on current file location
+                              let resolvedPath = src;
+                              if (src.startsWith('./') || src.startsWith('../') || !src.startsWith('/')) {
+                                const filePath = selectedFile.path || '';
+                                const fileDir = filePath.substring(0, filePath.lastIndexOf('/'));
+                                const parts = fileDir.split('/').filter(Boolean);
+                                
+                                // Process each part of the source path
+                                const srcParts = src.split('/');
+                                for (const part of srcParts) {
+                                  if (part === '..') {
+                                    parts.pop();
+                                  } else if (part !== '.' && part !== '') {
+                                    parts.push(part);
+                                  }
+                                }
+                                
+                                resolvedPath = parts.join('/');
+                              } else {
+                                // Absolute path, remove leading slash
+                                resolvedPath = src.substring(1);
+                              }
+                              
+                              // Use AsyncImage component to handle the fetch
+                              return <AsyncImage 
+                                owner={repoRef.owner} 
+                                repo={repoRef.repo} 
+                                reference={prDetail.head_sha} 
+                                path={resolvedPath} 
+                                alt={alt} 
+                                {...props} 
+                              />;
+                            }
+                          }}
                         >
                           {selectedFile.head_content ?? ""}
                         </ReactMarkdown>

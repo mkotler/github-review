@@ -1082,6 +1082,46 @@ pub async fn create_review_with_comments(
     Ok(succeeded_ids)
 }
 
+pub async fn fetch_file_content(
+    token: &str,
+    owner: &str,
+    repo: &str,
+    reference: &str,
+    path: &str,
+) -> AppResult<String> {
+    let client = build_client(token)?;
+    
+    warn!("Fetching file content: {}/{} @ {} path: {}", owner, repo, reference, path);
+    
+    let response = client
+        .get(format!("{API_BASE}/repos/{owner}/{repo}/contents/{path}"))
+        .query(&[("ref", reference)])
+        .send()
+        .await?;
+    
+    let status = response.status();
+    warn!("Response status: {}", status);
+    
+    if !status.is_success() {
+        let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+        warn!("Error response body: {}", error_text);
+        return Err(AppError::Api(format!("Failed to fetch file ({}): {}", status, error_text)));
+    }
+    
+    let content_json: Value = response.json().await?;
+    
+    // GitHub returns content as base64 in the "content" field
+    if let Some(content) = content_json.get("content").and_then(|c| c.as_str()) {
+        // Remove whitespace/newlines that GitHub adds
+        let cleaned = content.chars().filter(|c| !c.is_whitespace()).collect();
+        warn!("Successfully fetched and cleaned content");
+        Ok(cleaned)
+    } else {
+        warn!("Content field not found in response: {:?}", content_json);
+        Err(AppError::Api("File content not found in response".to_string()))
+    }
+}
+
 pub async fn delete_review(
     token: &str,
     owner: &str,

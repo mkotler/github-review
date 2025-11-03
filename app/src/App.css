@@ -1618,3 +1618,11 @@ select {
 .source-menu__item:not(:last-child) {
   border-bottom: 1px solid rgba(88, 114, 176, 0.15);
 }
+
+/* Image loading states */
+.image-loading,
+.image-error {
+  color: #888;
+  font-style: italic;
+  font-size: 13px;
+}

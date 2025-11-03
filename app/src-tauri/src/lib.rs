@@ -283,6 +283,20 @@ async fn cmd_github_delete_comment(
 }
 
 #[tauri::command]
+async fn cmd_fetch_file_content(
+    owner: String,
+    repo: String,
+    reference: String,
+    path: String,
+) -> Result<String, String> {
+    use auth::require_token;
+    let token = require_token().map_err(|e| e.to_string())?;
+    github::fetch_file_content(&token, &owner, &repo, &reference, &path)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn cmd_local_get_comments(
     owner: String,
     repo: String,
@@ -497,6 +511,7 @@ pub fn run() {
             cmd_local_delete_comment,
             cmd_github_update_comment,
             cmd_github_delete_comment,
+            cmd_fetch_file_content,
             cmd_local_get_comments,
             cmd_local_get_review_metadata,
             cmd_local_abandon_review,
