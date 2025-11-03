@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { DiffEditor } from "@monaco-editor/react";
+import { parse as parseYaml } from "yaml";
 
 type AuthStatus = {
   is_authenticated: boolean;
@@ -228,6 +229,114 @@ function App() {
     return prDetail?.my_comments ?? [];
   }, [comments, prDetail]);
 
+  const formatFileLabel = useCallback((path: string) => {
+    const segments = path.split("/").filter(Boolean);
+    if (segments.length >= 2) {
+      const folder = segments[segments.length - 2];
+      const fileName = segments[segments.length - 1];
+      return `${folder}/${fileName}`;
+    }
+    return path;
+  }, []);
+
+  const formatFileTooltip = useCallback((file: PullRequestFile) => {
+    const status = file.status ? file.status.toUpperCase() : "";
+    return status ? `${file.path} - ${status}` : file.path;
+  }, []);
+
+  const files = prDetail?.files ?? [];
+
+  const sortedFiles = useMemo(() => {
+    if (files.length === 0) {
+      return [] as PullRequestFile[];
+    }
+
+    const originalOrder = [...files];
+    const tocFile = originalOrder.find((file) => file.path.toLowerCase().endsWith("toc.yml"));
+    const orderedPaths: string[] = [];
+
+    if (tocFile) {
+      const content = tocFile.head_content ?? tocFile.base_content ?? "";
+      if (content.trim()) {
+        const baseSegments = tocFile.path.split("/").slice(0, -1);
+        const resolveHref = (href: string) => {
+          const sanitized = href.split("#")[0].split("?")[0];
+          const segments = sanitized.split("/");
+          const resolved = [...baseSegments];
+          for (const segment of segments) {
+            if (!segment || segment === ".") {
+              continue;
+            }
+            if (segment === "..") {
+              resolved.pop();
+            } else {
+              resolved.push(segment);
+            }
+          }
+          return resolved.join("/");
+        };
+
+        const collectMarkdownPaths = (node: unknown) => {
+          if (Array.isArray(node)) {
+            for (const item of node) {
+              collectMarkdownPaths(item);
+            }
+            return;
+          }
+
+          if (!node || typeof node !== "object") {
+            return;
+          }
+
+          const entry = node as Record<string, unknown>;
+          const href = entry.href;
+          if (typeof href === "string") {
+            const resolvedPath = resolveHref(href);
+            if (resolvedPath.toLowerCase().endsWith(".md")) {
+              orderedPaths.push(resolvedPath);
+            }
+          }
+
+          if (entry.items) {
+            collectMarkdownPaths(entry.items);
+          }
+        };
+
+        try {
+          const parsed = parseYaml(content);
+          collectMarkdownPaths(parsed);
+        } catch (error) {
+          console.warn("Failed to parse toc.yml", error);
+        }
+      }
+    }
+
+    const seen = new Set<string>();
+    const ordered: PullRequestFile[] = [];
+
+    if (tocFile) {
+      ordered.push(tocFile);
+      seen.add(tocFile.path);
+    }
+
+    for (const path of orderedPaths) {
+      const matchingFile = originalOrder.find((file) => file.path === path);
+      if (matchingFile && !seen.has(matchingFile.path)) {
+        ordered.push(matchingFile);
+        seen.add(matchingFile.path);
+      }
+    }
+
+    for (const file of originalOrder) {
+      if (!seen.has(file.path)) {
+        ordered.push(file);
+        seen.add(file.path);
+      }
+    }
+
+    return ordered;
+  }, [files]);
+
   const openInlineComment = useCallback(() => {
     if (!selectedFilePath) {
       return;
@@ -235,9 +344,8 @@ function App() {
     setIsInlineCommentOpen(true);
     setFileCommentError(null);
     setFileCommentSuccess(false);
-    const hasExistingComments = myComments.some((comment) => comment.path === selectedFilePath);
-    setIsFileCommentComposerVisible(!hasExistingComments);
-  }, [myComments, selectedFilePath]);
+    setIsFileCommentComposerVisible(false);
+  }, [selectedFilePath]);
 
   const closeInlineComment = useCallback(() => {
     setIsInlineCommentOpen(false);
@@ -299,9 +407,8 @@ function App() {
     return comments.filter((comment) => comment.path === selectedFilePath);
   }, [comments, selectedFilePath]);
 
-  const files = prDetail?.files ?? [];
   const hasAnyFileComments = fileComments.length > 0;
-  const shouldShowFileCommentComposer = isFileCommentComposerVisible || !hasAnyFileComments;
+  const shouldShowFileCommentComposer = isFileCommentComposerVisible;
   const formattedRepo = repoRef ? `${repoRef.owner}/${repoRef.repo}` : "";
 
   useEffect(() => {
@@ -321,12 +428,17 @@ function App() {
   }, [selectedPr]);
 
   useEffect(() => {
-    if (prDetail && prDetail.files.length > 0) {
-      setSelectedFilePath((current) => current ?? prDetail.files[0].path);
+    if (sortedFiles.length > 0) {
+      setSelectedFilePath((current) => {
+        if (current && sortedFiles.some((file) => file.path === current)) {
+          return current;
+        }
+        return sortedFiles[0].path;
+      });
     } else {
       setSelectedFilePath(null);
     }
-  }, [prDetail]);
+  }, [sortedFiles]);
 
   useEffect(() => {
     if (commentSuccess) {
@@ -937,35 +1049,47 @@ function App() {
                     ) : (
                       <div className="comment-panel__existing">
                         <ul className="comment-panel__list">
-                          {fileComments.map((comment) => (
-                            <li key={comment.id} className="comment-panel__item">
-                              <div className="comment-panel__item-meta">
-                                <span className="comment-panel__item-author">{comment.author}</span>
-                                {comment.line && (
-                                  <span className="comment-panel__item-detail">L{comment.line}</span>
-                                )}
-                                <span className="comment-panel__item-detail">
-                                  {new Date(comment.created_at).toLocaleString()}
-                                </span>
-                                {comment.is_draft && (
-                                  <span className="comment-panel__item-badge">Pending</span>
-                                )}
-                              </div>
-                              <div className="comment-panel__item-body">
-                                <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                                  {comment.body}
-                                </ReactMarkdown>
-                              </div>
-                              <a
-                                className="comment-panel__item-link"
-                                href={comment.url}
-                                target="_blank"
-                                rel="noreferrer"
-                              >
-                                Open on GitHub
-                              </a>
-                            </li>
-                          ))}
+                          {fileComments.map((comment) => {
+                            const formattedTimestamp = new Date(comment.created_at).toLocaleString();
+                            return (
+                              <li key={comment.id} className="comment-panel__item">
+                                <div className="comment-panel__item-header" title={formattedTimestamp}>
+                                  <div className="comment-panel__item-header-info">
+                                    <span className="comment-panel__item-author">{comment.author}</span>
+                                    {comment.is_draft && (
+                                      <span className="comment-panel__item-badge">Pending</span>
+                                    )}
+                                  </div>
+                                  <div className="comment-panel__item-actions">
+                                    <a
+                                      className="comment-panel__item-open"
+                                      href={comment.url}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      aria-label="Open on GitHub"
+                                    >
+                                      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                                        <path
+                                          d="M14 3h7v7h-2V6.41l-9.29 9.3-1.42-1.42 9.3-9.29H14V3zm-4 4h2v2H8v9h9v-4h2v6H6V7h4z"
+                                          fill="currentColor"
+                                        />
+                                      </svg>
+                                    </a>
+                                  </div>
+                                </div>
+                                <div className="comment-panel__item-body">
+                                  {comment.line && (
+                                    <span className="comment-panel__item-line">#{comment.line}.</span>
+                                  )}
+                                  <div className="comment-panel__item-content">
+                                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                      {comment.body}
+                                    </ReactMarkdown>
+                                  </div>
+                                </div>
+                              </li>
+                            );
+                          })}
                         </ul>
                         <button
                           type="button"
@@ -1142,26 +1266,30 @@ function App() {
                       <div className="empty-state empty-state--subtle">Loading files…</div>
                     ) : !prDetail ? (
                       <div className="empty-state empty-state--subtle">Select a pull request.</div>
-                    ) : files.length === 0 ? (
+                    ) : sortedFiles.length === 0 ? (
                       <div className="empty-state empty-state--subtle">
                         No Markdown or YAML files in this pull request.
                       </div>
                     ) : (
                       <ul className="file-list file-list--compact">
-                        {files.map((file) => (
-                          <li key={file.path}>
-                            <button
-                              type="button"
-                              className={`file-list__button${
-                                selectedFilePath === file.path ? " file-list__button--active" : ""
-                              }`}
-                              onClick={() => setSelectedFilePath(file.path)}
-                            >
-                              <span className="file-list__name">{file.path}</span>
-                              <span className="file-list__status">{file.status}</span>
-                            </button>
-                          </li>
-                        ))}
+                        {sortedFiles.map((file) => {
+                          const displayName = formatFileLabel(file.path);
+                          const tooltip = formatFileTooltip(file);
+                          return (
+                            <li key={file.path}>
+                              <button
+                                type="button"
+                                className={`file-list__button${
+                                  selectedFilePath === file.path ? " file-list__button--active" : ""
+                                }`}
+                                onClick={() => setSelectedFilePath(file.path)}
+                                title={tooltip}
+                              >
+                                <span className="file-list__name">{displayName}</span>
+                              </button>
+                            </li>
+                          );
+                        })}
                       </ul>
                     )}
                   </div>
