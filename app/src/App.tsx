@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { DiffEditor } from "@monaco-editor/react";
+import { Editor, DiffEditor } from "@monaco-editor/react";
 import { parse as parseYaml } from "yaml";
 
 type AuthStatus = {
@@ -125,9 +125,12 @@ function App() {
   const [editingCommentId, setEditingCommentId] = useState<number | null>(null);
   const [editingComment, setEditingComment] = useState<PullRequestComment | null>(null);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [showDiff, setShowDiff] = useState(false);
+  const [showSourceMenu, setShowSourceMenu] = useState(false);
   const workspaceBodyRef = useRef<HTMLDivElement | null>(null);
   const appShellRef = useRef<HTMLDivElement | null>(null);
   const userMenuRef = useRef<HTMLDivElement | null>(null);
+  const sourceMenuRef = useRef<HTMLDivElement | null>(null);
   const previousBodyCursorRef = useRef<string | null>(null);
   const previousBodyUserSelectRef = useRef<string | null>(null);
   const queryClient = useQueryClient();
@@ -720,6 +723,36 @@ function App() {
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, [closeUserMenu, isUserMenuOpen]);
+
+  useEffect(() => {
+    if (!showSourceMenu) {
+      return;
+    }
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!sourceMenuRef.current) {
+        return;
+      }
+      if (sourceMenuRef.current.contains(event.target as Node)) {
+        return;
+      }
+      setShowSourceMenu(false);
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setShowSourceMenu(false);
+      }
+    };
+
+    window.addEventListener("pointerdown", handlePointerDown);
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      window.removeEventListener("pointerdown", handlePointerDown);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [showSourceMenu]);
 
   useEffect(() => {
     setCommentDraft("");
@@ -2171,7 +2204,7 @@ function App() {
             <div className="pane pane--diff">
               <div className="pane__header">
                 <div className="pane__title-group">
-                  <span>Diff</span>
+                  <span>Source</span>
                   {selectedFilePath && <span className="pane__subtitle">{selectedFilePath}</span>}
                 </div>
                 <div className="pane__actions">
@@ -2185,17 +2218,44 @@ function App() {
                       <button
                         type="button"
                         className="pane__action-button"
-                        onClick={toggleGeneralCommentComposer}
-                      >
-                        {isGeneralCommentOpen ? "Close overall comment" : "Add PR Comment"}
-                      </button>
-                      <button
-                        type="button"
-                        className="pane__action-button"
                         onClick={isInlineCommentOpen ? closeInlineComment : openInlineComment}
                       >
                         {isInlineCommentOpen ? "Hide File Comments" : "Show File Comments"}
                       </button>
+                      <div className="source-menu-container" ref={sourceMenuRef}>
+                        <button
+                          type="button"
+                          className="pane__action-button"
+                          onClick={() => setShowSourceMenu(!showSourceMenu)}
+                          aria-label="More options"
+                        >
+                          …
+                        </button>
+                        {showSourceMenu && (
+                          <div className="source-menu">
+                            <button
+                              type="button"
+                              className="source-menu__item"
+                              onClick={() => {
+                                toggleGeneralCommentComposer();
+                                setShowSourceMenu(false);
+                              }}
+                            >
+                              {isGeneralCommentOpen ? "Close PR Comment" : "Add PR Comment"}
+                            </button>
+                            <button
+                              type="button"
+                              className="source-menu__item"
+                              onClick={() => {
+                                setShowDiff(!showDiff);
+                                setShowSourceMenu(false);
+                              }}
+                            >
+                              {showDiff ? "Show Modified" : "Show Diff"}
+                            </button>
+                          </div>
+                        )}
+                      </div>
                     </>
                   )}
                 </div>
@@ -2235,18 +2295,31 @@ function App() {
                 )}
                 <div className="pane__viewer">
                   {selectedFile ? (
-                    <DiffEditor
-                      original={selectedFile.base_content ?? ""}
-                      modified={selectedFile.head_content ?? ""}
-                      language={selectedFile.language === "yaml" ? "yaml" : "markdown"}
-                      options={{
-                        readOnly: true,
-                        renderSideBySide: false,
-                        minimap: { enabled: false },
-                        scrollBeyondLastLine: false,
-                        wordWrap: "on",
-                      }}
-                    />
+                    showDiff ? (
+                      <DiffEditor
+                        original={selectedFile.base_content ?? ""}
+                        modified={selectedFile.head_content ?? ""}
+                        language={selectedFile.language === "yaml" ? "yaml" : "markdown"}
+                        options={{
+                          readOnly: true,
+                          renderSideBySide: false,
+                          minimap: { enabled: false },
+                          scrollBeyondLastLine: false,
+                          wordWrap: "on",
+                        }}
+                      />
+                    ) : (
+                      <Editor
+                        value={selectedFile.head_content ?? ""}
+                        language={selectedFile.language === "yaml" ? "yaml" : "markdown"}
+                        options={{
+                          readOnly: true,
+                          minimap: { enabled: false },
+                          scrollBeyondLastLine: false,
+                          wordWrap: "on",
+                        }}
+                      />
+                    )
                   ) : (
                     <div className="empty-state">
                       {prDetail ? "Pick a file to see its diff." : "Choose a pull request to begin."}
