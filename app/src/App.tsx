@@ -3,6 +3,9 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkFrontmatter from "remark-frontmatter";
+import rehypeRaw from "rehype-raw";
+import rehypeSanitize from "rehype-sanitize";
 import { Editor, DiffEditor } from "@monaco-editor/react";
 import { parse as parseYaml } from "yaml";
 
@@ -2425,7 +2428,10 @@ function App() {
                           }, 50);
                         }}
                       >
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        <ReactMarkdown 
+                          remarkPlugins={[remarkGfm, [remarkFrontmatter, { type: 'yaml', marker: '-' }]]}
+                          rehypePlugins={[rehypeRaw, rehypeSanitize]}
+                        >
                           {selectedFile.head_content ?? ""}
                         </ReactMarkdown>
                       </div>
