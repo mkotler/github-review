@@ -1,4 +1,4 @@
-use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, USER_AGENT};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, AUTHORIZATION, USER_AGENT};
 use reqwest::StatusCode;
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
@@ -6,11 +6,14 @@ use tracing::warn;
 
 use crate::error::{AppError, AppResult};
 use crate::models::{
-    FileLanguage, PullRequestComment, PullRequestDetail, PullRequestFile, PullRequestSummary,
+    FileLanguage, PullRequestComment, PullRequestDetail, PullRequestFile, PullRequestReview,
+    PullRequestSummary,
 };
 
 const API_BASE: &str = "https://api.github.com";
 const USER_AGENT_VALUE: &str = "github-review-app/0.1";
+const API_VERSION_HEADER: &str = "x-github-api-version";
+const API_VERSION_VALUE: &str = "2022-11-28";
 const SUPPORTED_EXTENSIONS: [&str; 4] = [".md", ".markdown", ".yaml", ".yml"];
 
 struct SsoHeaderInfo {
@@ -77,6 +80,14 @@ async fn ensure_success(
     }
 
     let body = response.text().await.unwrap_or_default();
+
+    // Log the raw error response for debugging
+    warn!(
+        context = context,
+        status = status.as_u16(),
+        response_body = body.as_str(),
+        "GitHub API error response"
+    );
 
     if let Ok(api_error) = serde_json::from_str::<GitHubApiError>(&body) {
         let mut message = api_error
@@ -154,6 +165,11 @@ fn build_client(token: &str) -> AppResult<reqwest::Client> {
         HeaderValue::from_str(&format!("Bearer {}", token))
             .map_err(|_| AppError::MissingConfig("invalid access token"))?,
     );
+    headers.insert(ACCEPT, HeaderValue::from_static("application/vnd.github+json"));
+    headers.insert(
+        HeaderName::from_static(API_VERSION_HEADER),
+        HeaderValue::from_static(API_VERSION_VALUE),
+    );
 
     let client = reqwest::Client::builder()
         .default_headers(headers)
@@ -175,11 +191,13 @@ pub async fn list_pull_requests(
     token: &str,
     owner: &str,
     repo: &str,
+    state: Option<&str>,
 ) -> AppResult<Vec<PullRequestSummary>> {
     let client = build_client(token)?;
+    let state_value = state.unwrap_or("open");
     let pulls = client
         .get(format!("{API_BASE}/repos/{owner}/{repo}/pulls"))
-        .query(&[("state", "open"), ("per_page", "30")])
+        .query(&[("state", state_value), ("per_page", "30")])
         .send()
         .await?;
 
@@ -205,6 +223,7 @@ pub async fn get_pull_request(
     number: u64,
     current_login: Option<&str>,
 ) -> AppResult<PullRequestDetail> {
+    warn!("get_pull_request called with current_login: {:?}", current_login);
     let client = build_client(token)?;
     let pr = client
         .get(format!("{API_BASE}/repos/{owner}/{repo}/pulls/{number}"))
@@ -267,8 +286,11 @@ pub async fn get_pull_request(
 
     let review_comments = fetch_review_comments(&client, owner, repo, number).await?;
     let issue_comments = fetch_issue_comments(&client, owner, repo, number).await?;
+    let reviews = fetch_pull_request_reviews(&client, owner, repo, number).await?;
 
+    warn!("Building reviews with current_login: {:?}", current_login);
     let comments = build_comments(current_login, &review_comments, &issue_comments);
+    let mapped_reviews = build_reviews(current_login, &reviews);
     let my_comments = comments
         .iter()
         .cloned()
@@ -285,6 +307,7 @@ pub async fn get_pull_request(
         files: collected,
         comments,
         my_comments,
+        reviews: mapped_reviews,
     })
 }
 
@@ -316,6 +339,128 @@ pub async fn submit_general_comment(
     Ok(())
 }
 
+pub async fn create_pending_review(
+    token: &str,
+    owner: &str,
+    repo: &str,
+    number: u64,
+    commit_id: Option<&str>,
+    _body: Option<&str>,
+    _current_login: Option<&str>,
+) -> AppResult<PullRequestReview> {
+    let client = build_client(token)?;
+    
+    // Fetch the authenticated user to check review ownership
+    let user = fetch_authenticated_user(token).await?;
+    let normalized_login = user.login.to_ascii_lowercase();
+
+    warn!(
+        context = "create_pending_review",
+        authenticated_user = user.login.as_str(),
+        normalized_login = normalized_login.as_str(),
+        "Authenticated user info"
+    );
+
+    // First check if there's already a pending review - you can only have one at a time
+    let existing_reviews = fetch_pull_request_reviews(&client, owner, repo, number).await?;
+    warn!(
+        context = "create_pending_review",
+        review_count = existing_reviews.len(),
+        "Found existing reviews"
+    );
+    for review in existing_reviews {
+        let mapped = map_review(&review, Some(&normalized_login));
+        warn!(
+            context = "create_pending_review",
+            review_id = review.id,
+            state = review.state.as_str(),
+            review_author = review.user.login.as_str(),
+            is_mine = mapped.is_mine,
+            "Checking review"
+        );
+        if mapped.is_mine && mapped.state.eq_ignore_ascii_case("pending") {
+            // Reuse existing pending review
+            warn!(
+                context = "create_pending_review",
+                review_id = review.id,
+                "Reusing existing pending review"
+            );
+            return Ok(mapped);
+        }
+    }
+
+    // No existing pending review, create a new one
+    // Include commit_id if provided, otherwise GitHub uses the latest commit
+    let mut payload = Map::new();
+    if let Some(commit_id) = commit_id {
+        payload.insert("commit_id".into(), Value::String(commit_id.to_string()));
+    }
+
+    // Log the payload we're sending
+    let payload_json = serde_json::to_string(&Value::Object(payload.clone())).unwrap_or_default();
+    warn!(
+        context = "create_pending_review",
+        owner = owner,
+        repo = repo,
+        number = number,
+        payload = payload_json.as_str(),
+        "Creating pending review with payload"
+    );
+
+    let response = client
+        .post(format!(
+            "{API_BASE}/repos/{owner}/{repo}/pulls/{number}/reviews"
+        ))
+        .json(&Value::Object(payload))
+        .send()
+        .await?;
+
+    let response = ensure_success(
+        response,
+        &format!("create pending review for {owner}/{repo}#{number}"),
+    )
+    .await?;
+
+    let review = response.json::<GitHubPullRequestReview>().await?;
+    Ok(map_review(&review, Some(&normalized_login)))
+}
+
+pub async fn submit_pending_review(
+    token: &str,
+    owner: &str,
+    repo: &str,
+    number: u64,
+    review_id: u64,
+    event: &str,
+    body: Option<&str>,
+) -> AppResult<()> {
+    let client = build_client(token)?;
+    let mut payload = Map::new();
+    payload.insert("event".into(), Value::String(event.to_string()));
+
+    if let Some(body) = body {
+        if !body.trim().is_empty() {
+            payload.insert("body".into(), Value::String(body.to_string()));
+        }
+    }
+
+    let response = client
+        .post(format!(
+            "{API_BASE}/repos/{owner}/{repo}/pulls/{number}/reviews/{review_id}/events"
+        ))
+        .json(&Value::Object(payload))
+        .send()
+        .await?;
+
+    ensure_success(
+        response,
+        &format!("submit review {review_id} for {owner}/{repo}#{number}"),
+    )
+    .await?;
+
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum CommentMode {
     Single,
@@ -334,6 +479,7 @@ pub async fn submit_file_comment(
     side: Option<&str>,
     subject_type: Option<&str>,
     mode: CommentMode,
+    pending_review_id: Option<u64>,
 ) -> AppResult<()> {
     let client = build_client(token)?;
 
@@ -349,19 +495,19 @@ pub async fn submit_file_comment(
         ));
     }
 
-    let mut comment_fields = Map::new();
-    comment_fields.insert("body".into(), Value::String(body.to_string()));
-    comment_fields.insert("path".into(), Value::String(path.to_string()));
-    comment_fields.insert("commit_id".into(), Value::String(commit_id.to_string()));
+    let mut single_comment_fields = Map::new();
+    single_comment_fields.insert("body".into(), Value::String(body.to_string()));
+    single_comment_fields.insert("path".into(), Value::String(path.to_string()));
+    single_comment_fields.insert("commit_id".into(), Value::String(commit_id.to_string()));
 
     if let Some(subject_type) = subject_type {
-        comment_fields.insert(
+        single_comment_fields.insert(
             "subject_type".into(),
             Value::String(subject_type.to_string()),
         );
-    } else if let Some(line) = line {
-        comment_fields.insert("line".into(), Value::Number(line.into()));
-        comment_fields.insert(
+    } else if let Some(line_number) = line {
+        single_comment_fields.insert("line".into(), Value::Number(line_number.into()));
+        single_comment_fields.insert(
             "side".into(),
             Value::String(side.unwrap_or("RIGHT").to_string()),
         );
@@ -369,7 +515,7 @@ pub async fn submit_file_comment(
 
     match mode {
         CommentMode::Single => {
-            let payload = Value::Object(comment_fields);
+            let payload = Value::Object(single_comment_fields);
             let response = client
                 .post(format!(
                     "{API_BASE}/repos/{owner}/{repo}/pulls/{number}/comments"
@@ -385,27 +531,50 @@ pub async fn submit_file_comment(
             .await?;
         }
         CommentMode::Review => {
-            let mut review_payload = Map::new();
-            review_payload.insert(
+            let line_number = line.ok_or_else(|| {
+                AppError::Api(
+                    "Select a specific line before starting a review comment.".into(),
+                )
+            })?;
+
+            let comment_side = side.unwrap_or("RIGHT");
+            let mut review_comment_fields = Map::new();
+            review_comment_fields.insert("body".into(), Value::String(body.to_string()));
+            review_comment_fields.insert("path".into(), Value::String(path.to_string()));
+            review_comment_fields.insert(
+                "line".into(),
+                Value::Number(serde_json::Number::from(line_number)),
+            );
+            review_comment_fields.insert(
+                "side".into(),
+                Value::String(comment_side.to_string()),
+            );
+            review_comment_fields.insert(
                 "commit_id".into(),
                 Value::String(commit_id.to_string()),
             );
-            review_payload.insert(
-                "comments".into(),
-                Value::Array(vec![Value::Object(comment_fields)]),
-            );
 
+            // If we don't have a pending_review_id, the user must call "Start review" first
+            let review_id = pending_review_id.ok_or_else(|| {
+                AppError::Api(
+                    "No pending review found. Please start a review first by clicking 'Start review'.".into(),
+                )
+            })?;
+
+            // Add comment directly to the pending review using the review comments endpoint
             let response = client
                 .post(format!(
-                    "{API_BASE}/repos/{owner}/{repo}/pulls/{number}/reviews"
+                    "{API_BASE}/repos/{owner}/{repo}/pulls/{number}/reviews/{review_id}/comments"
                 ))
-                .json(&Value::Object(review_payload))
+                .json(&Value::Object(review_comment_fields))
                 .send()
                 .await?;
 
             ensure_success(
                 response,
-                &format!("start review with file comment for {owner}/{repo}#{number}"),
+                &format!(
+                    "attach file comment to pending review for {owner}/{repo}#{number}"
+                ),
             )
             .await?;
         }
@@ -456,7 +625,79 @@ async fn fetch_review_comments(
     )
     .await?;
 
-    Ok(response.json::<Vec<GitHubReviewComment>>().await?)
+    let comments = response.json::<Vec<GitHubReviewComment>>().await?;
+    eprintln!("Fetched {} review comments for PR #{}", comments.len(), number);
+    for comment in &comments {
+        eprintln!("  Comment {}: review_id={:?}, state={:?}, is_pending={}", 
+            comment.id, 
+            comment.pull_request_review_id,
+            comment.state,
+            comment.state.as_deref().map(|s| s.eq_ignore_ascii_case("pending")).unwrap_or(false)
+        );
+    }
+    Ok(comments)
+}
+
+pub async fn get_pending_review_comments(
+    token: &str,
+    owner: &str,
+    repo: &str,
+    number: u64,
+    review_id: u64,
+    current_login: Option<&str>,
+) -> AppResult<Vec<PullRequestComment>> {
+    let client = build_client(token)?;
+    let comments = fetch_pending_review_comments(&client, owner, repo, number, review_id).await?;
+    
+    let normalized_login = current_login
+        .filter(|login| !login.is_empty())
+        .map(|login| login.to_ascii_lowercase());
+    
+    let mapped_comments: Vec<PullRequestComment> = comments
+        .iter()
+        .map(|comment| {
+            let is_mine = normalized_login
+                .as_ref()
+                .map(|login| comment.user.login.eq_ignore_ascii_case(login))
+                .unwrap_or(false);
+            map_review_comment(comment, is_mine)
+        })
+        .collect();
+    
+    Ok(mapped_comments)
+}
+
+async fn fetch_pending_review_comments(
+    client: &reqwest::Client,
+    owner: &str,
+    repo: &str,
+    number: u64,
+    review_id: u64,
+) -> AppResult<Vec<GitHubReviewComment>> {
+    let response = client
+        .get(format!(
+            "{API_BASE}/repos/{owner}/{repo}/pulls/{number}/reviews/{review_id}/comments"
+        ))
+        .query(&[("per_page", "100")])
+        .send()
+        .await?;
+
+    let response = ensure_success(
+        response,
+        &format!("list pending review comments for {owner}/{repo}#{number} review {review_id}"),
+    )
+    .await?;
+
+    let comments = response.json::<Vec<GitHubReviewComment>>().await?;
+    eprintln!("Fetched {} pending review comments for review #{}", comments.len(), review_id);
+    for comment in &comments {
+        eprintln!("  Pending comment {}: review_id={:?}, state={:?}", 
+            comment.id, 
+            comment.pull_request_review_id,
+            comment.state
+        );
+    }
+    Ok(comments)
 }
 
 async fn fetch_issue_comments(
@@ -480,6 +721,29 @@ async fn fetch_issue_comments(
     .await?;
 
     Ok(response.json::<Vec<GitHubIssueComment>>().await?)
+}
+
+async fn fetch_pull_request_reviews(
+    client: &reqwest::Client,
+    owner: &str,
+    repo: &str,
+    number: u64,
+) -> AppResult<Vec<GitHubPullRequestReview>> {
+    let response = client
+        .get(format!(
+            "{API_BASE}/repos/{owner}/{repo}/pulls/{number}/reviews"
+        ))
+        .query(&[("per_page", "100")])
+        .send()
+        .await?;
+
+    let response = ensure_success(
+        response,
+        &format!("list pull request reviews for {owner}/{repo}#{number}"),
+    )
+    .await?;
+
+    Ok(response.json::<Vec<GitHubPullRequestReview>>().await?)
 }
 
 fn build_comments(
@@ -513,6 +777,48 @@ fn build_comments(
     collected
 }
 
+fn build_reviews(
+    current_login: Option<&str>,
+    reviews: &[GitHubPullRequestReview],
+) -> Vec<PullRequestReview> {
+    let normalized_login = current_login
+        .filter(|login| !login.is_empty())
+        .map(|login| login.to_ascii_lowercase());
+
+    reviews
+        .iter()
+        .map(|review| map_review(review, normalized_login.as_deref()))
+        .collect()
+}
+
+fn map_review(
+    review: &GitHubPullRequestReview,
+    normalized_login: Option<&str>,
+) -> PullRequestReview {
+    let review_author_normalized = review.user.login.to_ascii_lowercase();
+    let is_mine = normalized_login
+        .map(|login| {
+            let matches = review_author_normalized == login;
+            warn!("Comparing review author '{}' with current login '{}': {}", review_author_normalized, login, matches);
+            matches
+        })
+        .unwrap_or_else(|| {
+            warn!("No current login provided for review comparison");
+            false
+        });
+
+    PullRequestReview {
+        id: review.id,
+        state: review.state.clone(),
+        author: review.user.login.clone(),
+        submitted_at: review.submitted_at.clone(),
+        body: review.body.clone(),
+        html_url: review.html_url.clone(),
+        commit_id: review.commit_id.clone(),
+        is_mine,
+    }
+}
+
 fn map_review_comment(comment: &GitHubReviewComment, is_mine: bool) -> PullRequestComment {
     PullRequestComment {
         id: comment.id,
@@ -531,6 +837,7 @@ fn map_review_comment(comment: &GitHubReviewComment, is_mine: bool) -> PullReque
             .unwrap_or(false),
         state: comment.state.clone(),
         is_mine,
+        review_id: comment.pull_request_review_id,
     }
 }
 
@@ -548,6 +855,7 @@ fn map_issue_comment(comment: &GitHubIssueComment, is_mine: bool) -> PullRequest
         is_draft: false,
         state: None,
         is_mine,
+        review_id: None,
     }
 }
 
@@ -615,6 +923,8 @@ struct GitHubReviewComment {
     pub html_url: String,
     pub state: Option<String>,
     pub created_at: String,
+    #[serde(default)]
+    pub pull_request_review_id: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -624,4 +934,121 @@ struct GitHubIssueComment {
     pub user: GitHubUser,
     pub html_url: String,
     pub created_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GitHubPullRequestReview {
+    pub id: u64,
+    pub state: String,
+    pub user: GitHubUser,
+    pub body: Option<String>,
+    pub html_url: Option<String>,
+    pub commit_id: Option<String>,
+    pub submitted_at: Option<String>,
+}
+
+pub async fn create_review_with_comments(
+    token: &str,
+    owner: &str,
+    repo: &str,
+    number: u64,
+    commit_id: &str,
+    _body: Option<&str>,
+    _event: Option<&str>,
+    comments: &[crate::review_storage::ReviewComment],
+) -> AppResult<Vec<i64>> {
+    let client = build_client(token)?;
+    
+    warn!("Submitting {} comments to {}/{} PR #{}", comments.len(), owner, repo, number);
+    
+    let mut succeeded = 0;
+    let mut failed = 0;
+    let mut errors = Vec::new();
+    let mut succeeded_ids = Vec::new();
+    
+    // Submit each comment individually, continuing even if some fail
+    for comment in comments {
+        let mut comment_obj = Map::new();
+        comment_obj.insert("body".into(), Value::String(comment.body.clone()));
+        comment_obj.insert("commit_id".into(), Value::String(commit_id.to_string()));
+        comment_obj.insert("path".into(), Value::String(comment.file_path.clone()));
+        comment_obj.insert("line".into(), Value::Number(comment.line_number.into()));
+        comment_obj.insert("side".into(), Value::String(comment.side.clone()));
+        
+        warn!("Posting comment to {}:{}: {}", comment.file_path, comment.line_number, comment.body);
+        
+        match client
+            .post(format!("{API_BASE}/repos/{owner}/{repo}/pulls/{number}/comments"))
+            .json(&Value::Object(comment_obj))
+            .send()
+            .await
+        {
+            Ok(response) => {
+                match ensure_success(
+                    response,
+                    &format!("add comment to {owner}/{repo}#{number}"),
+                )
+                .await
+                {
+                    Ok(_) => {
+                        succeeded += 1;
+                        succeeded_ids.push(comment.id);
+                        warn!("✓ Comment posted successfully");
+                    }
+                    Err(e) => {
+                        failed += 1;
+                        let error_msg = format!("Failed to post comment to {}:{} - {}", comment.file_path, comment.line_number, e);
+                        warn!("✗ {}", error_msg);
+                        errors.push(error_msg);
+                    }
+                }
+            }
+            Err(e) => {
+                failed += 1;
+                let error_msg = format!("Failed to post comment to {}:{} - {}", comment.file_path, comment.line_number, e);
+                warn!("✗ {}", error_msg);
+                errors.push(error_msg);
+            }
+        }
+    }
+    
+    warn!("Submission complete: {} succeeded, {} failed", succeeded, failed);
+    
+    if failed > 0 {
+        let error_summary = if succeeded > 0 {
+            format!("Submitted {} of {} comments. Failed comments:\n{}", succeeded, comments.len(), errors.join("\n"))
+        } else {
+            format!("Failed to submit all {} comments:\n{}", comments.len(), errors.join("\n"))
+        };
+        return Err(AppError::Api(error_summary));
+    }
+    
+    Ok(succeeded_ids)
+}
+
+pub async fn delete_review(
+    token: &str,
+    owner: &str,
+    repo: &str,
+    number: u64,
+    review_id: u64,
+) -> AppResult<()> {
+    let client = build_client(token)?;
+    
+    warn!("Deleting review {} for {}/{} PR #{}", review_id, owner, repo, number);
+    
+    let response = client
+        .delete(format!("{API_BASE}/repos/{owner}/{repo}/pulls/{number}/reviews/{review_id}"))
+        .send()
+        .await?;
+    
+    ensure_success(
+        response,
+        &format!("delete review {review_id} for {owner}/{repo}#{number}"),
+    )
+    .await?;
+    
+    warn!("Successfully deleted review {}", review_id);
+    
+    Ok(())
 }

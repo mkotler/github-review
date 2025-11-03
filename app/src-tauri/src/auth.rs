@@ -10,10 +10,10 @@ use url::Url;
 
 use crate::error::{AppError, AppResult};
 use crate::github::{
-    fetch_authenticated_user, get_pull_request, list_pull_requests, submit_file_comment,
-    submit_general_comment, CommentMode,
+    create_pending_review, fetch_authenticated_user, get_pull_request, list_pull_requests,
+    submit_file_comment, submit_general_comment, submit_pending_review, CommentMode,
 };
-use crate::models::{AuthStatus, PullRequestDetail, PullRequestSummary};
+use crate::models::{AuthStatus, PullRequestDetail, PullRequestReview, PullRequestSummary};
 use crate::storage::{delete_token, read_token, store_token};
 
 const AUTHORIZE_URL: &str = "https://github.com/login/oauth/authorize";
@@ -126,9 +126,10 @@ pub async fn start_oauth_flow(_app: &tauri::AppHandle) -> AppResult<AuthStatus> 
 pub async fn list_repo_pull_requests(
     owner: &str,
     repo: &str,
+    state: Option<&str>,
 ) -> AppResult<Vec<PullRequestSummary>> {
     let token = require_token()?;
-    let pulls = list_pull_requests(&token, owner, repo).await?;
+    let pulls = list_pull_requests(&token, owner, repo, state).await?;
 
     info!(owner, repo, count = pulls.len(), "fetched pull requests");
     for pr in &pulls {
@@ -177,6 +178,7 @@ pub async fn publish_file_comment(
     side: Option<&str>,
     subject_type: Option<&str>,
     mode: CommentMode,
+    pending_review_id: Option<u64>,
 ) -> AppResult<()> {
     let token = require_token()?;
     submit_file_comment(
@@ -191,12 +193,75 @@ pub async fn publish_file_comment(
         side,
         subject_type,
         mode,
+        pending_review_id,
     )
     .await
 }
 
-fn require_token() -> AppResult<String> {
+pub async fn start_pending_review(
+    owner: &str,
+    repo: &str,
+    number: u64,
+    commit_id: Option<&str>,
+    body: Option<&str>,
+    current_login: Option<&str>,
+) -> AppResult<PullRequestReview> {
+    let token = require_token()?;
+    create_pending_review(
+        &token,
+        owner,
+        repo,
+        number,
+        commit_id,
+        body,
+        current_login,
+    )
+    .await
+}
+
+pub async fn finalize_pending_review(
+    owner: &str,
+    repo: &str,
+    number: u64,
+    review_id: u64,
+    event: &str,
+    body: Option<&str>,
+) -> AppResult<()> {
+    let token = require_token()?;
+    submit_pending_review(&token, owner, repo, number, review_id, event, body).await
+}
+
+pub async fn submit_review_with_comments(
+    owner: &str,
+    repo: &str,
+    number: u64,
+    commit_id: &str,
+    body: Option<&str>,
+    event: Option<&str>,
+    comments: &[crate::review_storage::ReviewComment],
+) -> AppResult<Vec<i64>> {
+    use crate::github::create_review_with_comments;
+    
+    let token = require_token()?;
+    create_review_with_comments(
+        &token,
+        owner,
+        repo,
+        number,
+        commit_id,
+        body,
+        event,
+        comments,
+    )
+    .await
+}
+
+pub fn require_token() -> AppResult<String> {
     read_token()?.ok_or(AppError::OAuthCancelled)
+}
+
+pub fn require_token_for_delete() -> AppResult<String> {
+    require_token()
 }
 
 fn random_string(len: usize) -> String {

@@ -22,8 +22,12 @@ pub enum AppError {
     Serde(#[from] serde_json::Error),
     #[error("secure storage error: {0}")]
     Keyring(#[from] keyring::Error),
+    #[error("database error: {0}")]
+    Database(#[from] rusqlite::Error),
     #[error("operation timed out")]
     Timeout,
+    #[error("internal error: {0}")]
+    Internal(String),
     #[error("{0}")]
     SsoAuthorizationRequired(String),
     #[error("{0}")]

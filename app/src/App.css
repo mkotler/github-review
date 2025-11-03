@@ -1018,6 +1018,14 @@ select {
   transition: background 0.18s ease, border-color 0.18s ease, color 0.18s ease;
 }
 
+.comment-panel__actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-top: 16px;
+}
+
 .comment-panel__action-button:hover {
   background: rgba(118, 152, 224, 0.22);
   border-color: rgba(146, 174, 235, 0.6);
@@ -1032,6 +1040,15 @@ select {
 .comment-panel__action-button--subtle:hover {
   background: rgba(118, 152, 224, 0.16);
   color: #f1f5ff;
+}
+
+.comment-panel__action-button--secondary {
+  background: rgba(60, 86, 148, 0.5);
+  border-color: rgba(146, 174, 235, 0.7);
+}
+
+.comment-panel__action-button--secondary:hover {
+  background: rgba(118, 152, 224, 0.3);
 }
 
 .comment-panel__form {
