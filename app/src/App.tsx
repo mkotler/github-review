@@ -167,6 +167,7 @@ function App() {
   const [selectedPr, setSelectedPr] = useState<number | null>(null);
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
   const [showClosedPRs, setShowClosedPRs] = useState(false);
+  const [prSearchFilter, setPrSearchFilter] = useState("");
   const [commentDraft, setCommentDraft] = useState("");
   const [commentError, setCommentError] = useState<string | null>(null);
   const [commentSuccess, setCommentSuccess] = useState(false);
@@ -183,6 +184,7 @@ function App() {
   const [isInlineCommentOpen, setIsInlineCommentOpen] = useState(false);
   const [isGeneralCommentOpen, setIsGeneralCommentOpen] = useState(false);
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
+  const [isPrFilterMenuOpen, setIsPrFilterMenuOpen] = useState(false);
   const [splitRatio, setSplitRatio] = useState(0.5);
   const [isResizing, setIsResizing] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState<number>(MIN_SIDEBAR_WIDTH);
@@ -201,6 +203,7 @@ function App() {
   const workspaceBodyRef = useRef<HTMLDivElement | null>(null);
   const appShellRef = useRef<HTMLDivElement | null>(null);
   const userMenuRef = useRef<HTMLDivElement | null>(null);
+  const prFilterMenuRef = useRef<HTMLDivElement | null>(null);
   const sourceMenuRef = useRef<HTMLDivElement | null>(null);
   const previewViewerRef = useRef<HTMLElement | null>(null);
   const editorRef = useRef<any>(null);
@@ -698,6 +701,14 @@ function App() {
     setIsUserMenuOpen(false);
   }, []);
 
+  const togglePrFilterMenu = useCallback(() => {
+    setIsPrFilterMenuOpen((previous) => !previous);
+  }, []);
+
+  const closePrFilterMenu = useCallback(() => {
+    setIsPrFilterMenuOpen(false);
+  }, []);
+
   const handleOpenDevtools = useCallback(() => {
     closeUserMenu();
     openDevtoolsWindow();
@@ -817,6 +828,36 @@ function App() {
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, [closeUserMenu, isUserMenuOpen]);
+
+  useEffect(() => {
+    if (!isPrFilterMenuOpen) {
+      return;
+    }
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!prFilterMenuRef.current) {
+        return;
+      }
+      if (prFilterMenuRef.current.contains(event.target as Node)) {
+        return;
+      }
+      closePrFilterMenu();
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        closePrFilterMenu();
+      }
+    };
+
+    window.addEventListener("pointerdown", handlePointerDown);
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      window.removeEventListener("pointerdown", handlePointerDown);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [closePrFilterMenu, isPrFilterMenuOpen]);
 
   useEffect(() => {
     if (!showSourceMenu) {
@@ -1585,6 +1626,34 @@ function App() {
     ],
   );
 
+  const pullRequests = pullsQuery.data ?? [];
+  
+  // Filter PRs based on search input
+  const filteredPullRequests = useMemo(() => {
+    if (!pullRequests || pullRequests.length === 0) {
+      return [];
+    }
+    if (!prSearchFilter || !prSearchFilter.trim()) {
+      return pullRequests;
+    }
+    const searchNumber = parseInt(prSearchFilter.trim(), 10);
+    if (!isNaN(searchNumber)) {
+      return pullRequests.filter(pr => pr && pr.number === searchNumber);
+    }
+    // Also allow searching by title
+    const searchLower = prSearchFilter.toLowerCase();
+    return pullRequests.filter(pr => 
+      pr && (
+        pr.number.toString().includes(prSearchFilter) ||
+        (pr.title && pr.title.toLowerCase().includes(searchLower)) ||
+        (pr.author && pr.author.toLowerCase().includes(searchLower))
+      )
+    );
+  }, [pullRequests, prSearchFilter]);
+  const selectedPrSummary = selectedPr
+    ? pullRequests.find((pr) => pr.number === selectedPr) ?? null
+    : null;
+
   const authData = authQuery.data;
   if (authQuery.isLoading || authQuery.isPending) {
     return <div className="empty-state">Checking authentication…</div>;
@@ -1607,11 +1676,6 @@ function App() {
       </div>
     );
   }
-
-  const pullRequests = pullsQuery.data ?? [];
-  const selectedPrSummary = selectedPr
-    ? pullRequests.find((pr) => pr.number === selectedPr) ?? null
-    : null;
   const repoPanelExpanded = repoRef ? !isRepoPanelCollapsed : true;
   const prPanelExpanded = selectedPr ? !isPrPanelCollapsed : true;
   const userMenuAriaProps = isUserMenuOpen
@@ -2235,49 +2299,79 @@ function App() {
                     )}
                   </div>
                   {!isPrPanelCollapsed && (
-                    <div className="panel__body panel__body--scroll">
-                      {pullsQuery.isError ? (
-                        <div className="empty-state empty-state--subtle">
-                          Unable to load pull requests.
-                          <br />
-                          {pullsErrorMessage}
-                        </div>
-                      ) : pullsQuery.isLoading || pullsQuery.isFetching ? (
-                        <div className="empty-state empty-state--subtle">Loading pull requests…</div>
-                      ) : pullRequests.length === 0 ? (
-                        <div className="empty-state empty-state--subtle">
-                          {repoRef
-                            ? "No Markdown or YAML pull requests found."
-                            : "Enter a repository to begin."}
-                        </div>
-                      ) : (
-                        pullRequests.map((pr) => (
+                    <div className="panel__body panel__body--with-search">
+                      <div className="panel__search-header">
+                        <input
+                          type="text"
+                          className="panel__search-input"
+                          placeholder="Search PR # or title..."
+                          value={prSearchFilter}
+                          onChange={(e) => setPrSearchFilter(e.target.value)}
+                        />
+                        <div ref={prFilterMenuRef} className="panel__menu-container">
                           <button
-                            key={pr.number}
                             type="button"
-                            className={`pr-item pr-item--compact${selectedPr === pr.number ? " pr-item--active" : ""}`}
-                            onClick={() => {
-                              setSelectedPr(pr.number);
-                              setSelectedFilePath(null);
-                            }}
+                            className={`panel__menu-button${isPrFilterMenuOpen ? " panel__menu-button--open" : ""}`}
+                            onClick={togglePrFilterMenu}
+                            title="Filter options"
+                            aria-label="Filter options"
                           >
-                            <span className="pr-item__title">#{pr.number} · {pr.title}</span>
-                            <span className="pr-item__meta">
-                              <span>{pr.author}</span>
-                              <span>{new Date(pr.updated_at).toLocaleString()}</span>
-                              <span>{pr.head_ref}</span>
-                            </span>
+                            ⋯
                           </button>
-                        ))
-                      )}
-                      <div className="panel__footer">
-                        <button
-                          type="button"
-                          className="comment-panel__action-button comment-panel__action-button--secondary"
-                          onClick={() => setShowClosedPRs(!showClosedPRs)}
-                        >
-                          {showClosedPRs ? "Hide Closed PRs" : "Show Closed PRs"}
-                        </button>
+                          {isPrFilterMenuOpen && (
+                            <div className="pr-filter-menu__popover" role="menu">
+                              <button
+                                type="button"
+                                className="pr-filter-menu__item"
+                                onClick={() => {
+                                  setShowClosedPRs(!showClosedPRs);
+                                  closePrFilterMenu();
+                                }}
+                                role="menuitem"
+                              >
+                                {showClosedPRs ? "Hide Closed PRs" : "Show Closed PRs"}
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                      <div className="panel__scroll-content">
+                        {pullsQuery.isError ? (
+                          <div className="empty-state empty-state--subtle">
+                            Unable to load pull requests.
+                            <br />
+                            {pullsErrorMessage}
+                          </div>
+                        ) : pullsQuery.isLoading || pullsQuery.isFetching ? (
+                          <div className="empty-state empty-state--subtle">Loading pull requests…</div>
+                        ) : filteredPullRequests.length === 0 ? (
+                          <div className="empty-state empty-state--subtle">
+                            {prSearchFilter.trim() 
+                              ? "No pull requests match your search."
+                              : repoRef
+                              ? "No Markdown or YAML pull requests found."
+                              : "Enter a repository to begin."}
+                          </div>
+                        ) : (
+                          filteredPullRequests.map((pr) => (
+                            <button
+                              key={pr.number}
+                              type="button"
+                              className={`pr-item pr-item--compact${selectedPr === pr.number ? " pr-item--active" : ""}`}
+                              onClick={() => {
+                                setSelectedPr(pr.number);
+                                setSelectedFilePath(null);
+                              }}
+                            >
+                              <span className="pr-item__title">#{pr.number} · {pr.title}</span>
+                              <span className="pr-item__meta">
+                                <span>{pr.author}</span>
+                                <span>{new Date(pr.updated_at).toLocaleString()}</span>
+                                <span>{pr.head_ref}</span>
+                              </span>
+                            </button>
+                          ))
+                        )}
                       </div>
                     </div>
                   )}

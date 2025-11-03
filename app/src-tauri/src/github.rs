@@ -195,25 +195,42 @@ pub async fn list_pull_requests(
 ) -> AppResult<Vec<PullRequestSummary>> {
     let client = build_client(token)?;
     let state_value = state.unwrap_or("open");
-    let pulls = client
-        .get(format!("{API_BASE}/repos/{owner}/{repo}/pulls"))
-        .query(&[("state", state_value), ("per_page", "30")])
-        .send()
-        .await?;
+    let mut all_pulls = Vec::new();
+    let mut page = 1;
+    let per_page = 100;
 
-    let pulls = ensure_success(pulls, &format!("list pull requests for {owner}/{repo}")).await?;
+    loop {
+        let pulls = client
+            .get(format!("{API_BASE}/repos/{owner}/{repo}/pulls"))
+            .query(&[
+                ("state", state_value),
+                ("per_page", &per_page.to_string()),
+                ("page", &page.to_string()),
+            ])
+            .send()
+            .await?;
 
-    let parsed = pulls.json::<Vec<GitHubPullRequest>>().await?;
-    Ok(parsed
-        .into_iter()
-        .map(|pr| PullRequestSummary {
+        let pulls = ensure_success(pulls, &format!("list pull requests for {owner}/{repo}")).await?;
+        let parsed = pulls.json::<Vec<GitHubPullRequest>>().await?;
+        
+        let page_count = parsed.len();
+        all_pulls.extend(parsed.into_iter().map(|pr| PullRequestSummary {
             number: pr.number,
             title: pr.title,
             author: pr.user.login,
             updated_at: pr.updated_at,
             head_ref: pr.head.r#ref,
-        })
-        .collect())
+        }));
+
+        // Stop if we got less than per_page results (last page)
+        if page_count < per_page {
+            break;
+        }
+
+        page += 1;
+    }
+
+    Ok(all_pulls)
 }
 
 pub async fn get_pull_request(
