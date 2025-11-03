@@ -7,6 +7,7 @@ A desktop application built with Tauri and React that streamlines the GitHub pul
 - **OAuth Authentication** - Secure GitHub login via OAuth 2.0 flow with credential storage in system keyring
 - **PR Browsing & Viewing** - List and filter pull requests by state (open/closed) with detailed file diffs
 - **Enhanced Code Review** - Monaco editor integration with diff view and side-by-side source/preview panes
+- **Inline Comment Creation** - Hover over line numbers to reveal "+" buttons for quick line-level commenting
 - **Local Review Storage** - SQLite-backed comment drafting with automatic log file generation for crash recovery
 - **Comment Management** - Create, edit, and delete comments locally before submitting to GitHub
 - **Bidirectional Scroll Sync** - Synchronized scrolling between source code and markdown preview
@@ -62,6 +63,14 @@ npm run tauri dev
 ```
 
 This starts the Vite dev server and launches the Tauri application window.
+
+### Using Inline Comments
+
+When viewing a pull request file in the Monaco Editor:
+1. **Hover** your mouse over the line numbers or glyph margin (left of line numbers)
+2. A **"+" button** will appear next to the line
+3. **Click the "+" button** to open the comment composer with the line number pre-filled
+4. Choose to **"Post comment"** (immediate) or **"Start review"** / **"Add to review"** (pending review workflow)
 
 ### Build for Production
 

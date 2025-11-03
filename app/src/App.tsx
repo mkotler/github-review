@@ -207,7 +207,17 @@ function App() {
   const isScrollingSyncRef = useRef(false);
   const previousBodyCursorRef = useRef<string | null>(null);
   const previousBodyUserSelectRef = useRef<string | null>(null);
+  const hoveredLineRef = useRef<number | null>(null);
+  const decorationsRef = useRef<string[]>([]);
+  const fileCommentTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const queryClient = useQueryClient();
+
+  // Auto-focus textarea when comment composer opens
+  useEffect(() => {
+    if (isFileCommentComposerVisible && fileCommentTextareaRef.current) {
+      fileCommentTextareaRef.current.focus();
+    }
+  }, [isFileCommentComposerVisible]);
 
   const authQuery = useQuery({
     queryKey: AUTH_QUERY_KEY,
@@ -1757,6 +1767,7 @@ function App() {
                           </button>
                         )}
                         <textarea
+                          ref={fileCommentTextareaRef}
                           value={fileCommentDraft}
                           placeholder="Leave feedback on the selected file…"
                           onChange={(event) => {
@@ -1766,21 +1777,12 @@ function App() {
                           }}
                           rows={6}
                         />
-                        {editingCommentId === null && (
+                        {editingCommentId === null && fileCommentIsFileLevel && (
                           <label className="comment-panel__checkbox">
                             <input
                               type="checkbox"
-                              checked={fileCommentIsFileLevel}
-                              onChange={(event) => {
-                                const checked = event.target.checked;
-                                setFileCommentIsFileLevel(checked);
-                                setFileCommentSuccess(false);
-                                setFileCommentError(null);
-                                if (checked) {
-                                  setFileCommentLine("");
-                                  setFileCommentMode("single");
-                                }
-                              }}
+                              checked={true}
+                              disabled={true}
                             />
                             Mark as file-level comment
                           </label>
@@ -1801,20 +1803,22 @@ function App() {
                                 }}
                               />
                             </label>
-                            <label>
-                              Comment side
-                              <select
-                                value={fileCommentSide}
-                                onChange={(event) => {
-                                  setFileCommentSide(event.target.value as "RIGHT" | "LEFT");
-                                  setFileCommentError(null);
-                                  setFileCommentSuccess(false);
-                                }}
-                              >
-                                <option value="RIGHT">Head (new code)</option>
-                                <option value="LEFT">Base (original code)</option>
-                              </select>
-                            </label>
+                            {showDiff && (
+                              <label>
+                                Comment side
+                                <select
+                                  value={fileCommentSide}
+                                  onChange={(event) => {
+                                    setFileCommentSide(event.target.value as "RIGHT" | "LEFT");
+                                    setFileCommentError(null);
+                                    setFileCommentSuccess(false);
+                                  }}
+                                >
+                                  <option value="RIGHT">Head (new code)</option>
+                                  <option value="LEFT">Base (original code)</option>
+                                </select>
+                              </label>
+                            )}
                           </div>
                         )}
                         {editingCommentId !== null && (
@@ -1857,19 +1861,79 @@ function App() {
                               </button>
                             </div>
                           ) : (
-                            <button
-                              type="submit"
-                              className="comment-submit"
-                              disabled={submitFileCommentMutation.isPending}
-                            >
-                              {submitFileCommentMutation.isPending
-                                ? "Sending…"
-                                : effectiveFileCommentMode === "review"
-                                  ? pendingReview
-                                    ? (pendingReview.html_url ? "Add comment" : "Add to review")
-                                    : (localComments.length > 0 ? "Show review" : "Start review")
-                                  : "Post comment"}
-                            </button>
+                            <div className="comment-panel__submit-actions">
+                              <button
+                                type="submit"
+                                className="comment-submit"
+                                disabled={submitFileCommentMutation.isPending}
+                                onClick={() => {
+                                  setFileCommentMode("single");
+                                }}
+                              >
+                                {submitFileCommentMutation.isPending ? "Sending…" : "Post comment"}
+                              </button>
+                              {effectiveFileCommentMode === "review" ? (
+                                pendingReview ? (
+                                  pendingReview.html_url ? (
+                                    <button
+                                      type="submit"
+                                      className="comment-submit comment-submit--secondary"
+                                      disabled={submitFileCommentMutation.isPending}
+                                      onClick={() => {
+                                        setFileCommentMode("review");
+                                      }}
+                                    >
+                                      Add comment
+                                    </button>
+                                  ) : (
+                                    <button
+                                      type="submit"
+                                      className="comment-submit comment-submit--secondary"
+                                      disabled={submitFileCommentMutation.isPending}
+                                      onClick={() => {
+                                        setFileCommentMode("review");
+                                      }}
+                                    >
+                                      Add to review
+                                    </button>
+                                  )
+                                ) : (
+                                  <button
+                                    type="button"
+                                    className="comment-submit comment-submit--secondary"
+                                    disabled={startReviewMutation.isPending}
+                                    onClick={(e) => {
+                                      e.preventDefault();
+                                      setFileCommentMode("review");
+                                      if (localComments.length > 0) {
+                                        handleShowReviewClick();
+                                      } else {
+                                        handleStartReviewClick();
+                                      }
+                                    }}
+                                  >
+                                    {startReviewMutation.isPending ? "Starting…" : (localComments.length > 0 ? "Show review" : "Start review")}
+                                  </button>
+                                )
+                              ) : (
+                                <button
+                                  type="button"
+                                  className="comment-submit comment-submit--secondary"
+                                  disabled={startReviewMutation.isPending}
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    setFileCommentMode("review");
+                                    if (localComments.length > 0) {
+                                      handleShowReviewClick();
+                                    } else {
+                                      handleStartReviewClick();
+                                    }
+                                  }}
+                                >
+                                  {startReviewMutation.isPending ? "Starting…" : (localComments.length > 0 ? "Show review" : "Start review")}
+                                </button>
+                              )}
+                            </div>
                           )}
                         </div>
                       </form>
@@ -2018,7 +2082,7 @@ function App() {
                                 Close Review
                               </button>
                             </>
-                          ) : pendingReviewFromServer ? (
+                          ) : (pendingReviewFromServer || localComments.length > 0) ? (
                             <button
                               type="button"
                               className="comment-panel__action-button comment-panel__action-button--secondary"
@@ -2026,16 +2090,7 @@ function App() {
                             >
                               Show Review
                             </button>
-                          ) : (
-                            <button
-                              type="button"
-                              className="comment-panel__action-button comment-panel__action-button--secondary"
-                              onClick={handleStartReviewClick}
-                              disabled={startReviewMutation.isPending}
-                            >
-                              {startReviewMutation.isPending ? "Starting…" : (localComments.length > 0 ? "Show review" : "Start review")}
-                            </button>
-                          )}
+                          ) : null}
                         </div>
                       </div>
                     )
@@ -2331,6 +2386,25 @@ function App() {
                               type="button"
                               className="source-menu__item"
                               onClick={() => {
+                                // Open file-level comment composer
+                                setFileCommentLine("");
+                                setFileCommentSide("RIGHT");
+                                setFileCommentIsFileLevel(true);
+                                setFileCommentDraft("");
+                                setFileCommentError(null);
+                                setFileCommentSuccess(false);
+                                setFileCommentMode("single");
+                                setIsFileCommentComposerVisible(true);
+                                setIsInlineCommentOpen(true);
+                                setShowSourceMenu(false);
+                              }}
+                            >
+                              Add File-level Comment
+                            </button>
+                            <button
+                              type="button"
+                              className="source-menu__item"
+                              onClick={() => {
                                 setShowDiff(!showDiff);
                                 setShowSourceMenu(false);
                               }}
@@ -2381,8 +2455,8 @@ function App() {
                   {selectedFile ? (
                     showDiff ? (
                       <DiffEditor
-                        original={selectedFile.base_content ?? ""}
-                        modified={selectedFile.head_content ?? ""}
+                        original={(selectedFile.base_content ?? "").replace(/\n+$/, "")}
+                        modified={(selectedFile.head_content ?? "").replace(/\n+$/, "")}
                         language={selectedFile.language === "yaml" ? "yaml" : "markdown"}
                         options={{
                           readOnly: true,
@@ -2394,16 +2468,19 @@ function App() {
                       />
                     ) : (
                       <Editor
-                        value={selectedFile.head_content ?? ""}
+                        value={(selectedFile.head_content ?? "").replace(/\n+$/, "")}
                         language={selectedFile.language === "yaml" ? "yaml" : "markdown"}
                         options={{
                           readOnly: true,
                           minimap: { enabled: false },
                           scrollBeyondLastLine: false,
                           wordWrap: "on",
+                          glyphMargin: true,
                         }}
                         onMount={(editor) => {
                           editorRef.current = editor;
+                          
+                          // Scroll synchronization
                           editor.onDidScrollChange(() => {
                             if (isScrollingSyncRef.current) return;
                             if (!previewViewerRef.current) return;
@@ -2433,6 +2510,50 @@ function App() {
                             setTimeout(() => {
                               isScrollingSyncRef.current = false;
                             }, 50);
+                          });
+
+                          // Handle mouse move for line hover detection
+                          editor.onMouseMove((e) => {
+                            const lineNumber = e.target.position?.lineNumber;
+                            
+                            // Only show decoration when hovering over the line number or glyph margin
+                            const isOverGlyphOrLineNumber = 
+                              e.target.type === 2 || // GUTTER_GLYPH_MARGIN
+                              e.target.type === 3;   // GUTTER_LINE_NUMBERS
+                            
+                            if (lineNumber && isOverGlyphOrLineNumber && hoveredLineRef.current !== lineNumber) {
+                              hoveredLineRef.current = lineNumber;
+                              decorationsRef.current = editor.deltaDecorations(decorationsRef.current, [
+                                {
+                                  range: new (window as any).monaco.Range(lineNumber, 1, lineNumber, 1),
+                                  options: {
+                                    glyphMarginClassName: 'monaco-glyph-margin-plus',
+                                    glyphMarginHoverMessage: { value: 'Add comment' }
+                                  }
+                                }
+                              ]);
+                            } else if (!isOverGlyphOrLineNumber && hoveredLineRef.current !== null) {
+                              hoveredLineRef.current = null;
+                              decorationsRef.current = editor.deltaDecorations(decorationsRef.current, []);
+                            }
+                          });
+
+                          // Handle mouse down for clicking on glyph margin
+                          editor.onMouseDown((e) => {
+                            const lineNumber = e.target.position?.lineNumber;
+                            const isGlyphMargin = e.target.type === 2; // GUTTER_GLYPH_MARGIN
+                            
+                            if (lineNumber && isGlyphMargin) {
+                              // Set the line and open directly to composer
+                              setFileCommentLine(lineNumber.toString());
+                              setFileCommentSide("RIGHT");
+                              setFileCommentIsFileLevel(false);
+                              setFileCommentDraft("");
+                              setFileCommentError(null);
+                              setFileCommentSuccess(false);
+                              setIsFileCommentComposerVisible(true);
+                              setIsInlineCommentOpen(true);
+                            }
                           });
                         }}
                       />

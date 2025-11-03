@@ -124,6 +124,8 @@ File type for syntax highlighting: "markdown" | "yaml".
 - `userMenuRef` - User menu dropdown for click-outside detection
 - `sourceMenuRef` - Source menu dropdown for click-outside detection
 - `isScrollingSyncRef` - Flag to prevent scroll sync loops
+- `hoveredLineRef` - Currently hovered line number for glyph margin decoration
+- `decorationsRef` - Monaco Editor decoration IDs for hover state
 
 ---
 
@@ -153,6 +155,7 @@ File type for syntax highlighting: "markdown" | "yaml".
 - Diff Editor shows inline changes with color coding
 - Markdown preview with scroll synchronization
 - Preview supports GitHub Flavored Markdown (GFM), frontmatter, raw HTML (sanitized)
+- Inline comment creation via hover-to-reveal "+" buttons on line numbers
 
 ### Scroll Synchronization
 - Links Monaco Editor scroll position to markdown preview scroll
@@ -170,8 +173,9 @@ File type for syntax highlighting: "markdown" | "yaml".
 **File Comments:**
 - Single mode: Post immediately as standalone review comment
 - Review mode: Attach to pending review for batch submission
-- Line-level: Select line number and side (LEFT/RIGHT)
+- Line-level: Select line number and side (LEFT/RIGHT) via hover "+" button on line numbers or manual input
 - File-level: Comment on file without specific line (single mode only per GitHub API limitation)
+- Dual-button UI: Shows "Post comment" (immediate) and "Add to review" or "Start review" (pending) side-by-side
 
 **Local Draft Comments:**
 - Stored in SQLite via `cmd_add_pending_comment`
@@ -243,12 +247,40 @@ File type for syntax highlighting: "markdown" | "yaml".
 - Minimap: disabled
 - Line numbers: enabled
 - Word wrap: enabled
+- Glyph margin: enabled for inline comment buttons
 
 ### Diff Editor
 - Modified Editor (right): HEAD content
 - Original Editor (left): BASE content
 - Inline diff view with syntax highlighting
 - Scroll sync between modified and original
+
+### Inline Comment Buttons
+
+**Hover Detection:**
+- Detects mouse hover over line numbers and glyph margin (left of line numbers)
+- Dynamically adds "+" button decoration using Monaco decorations API
+- Button appears immediately on hover, disappears when mouse leaves area
+- Uses `onMouseMove` event with target type checking (GUTTER_GLYPH_MARGIN and GUTTER_LINE_NUMBERS)
+
+**Click Handling:**
+- Detects clicks on glyph margin using `onMouseDown` event
+- Extracts clicked line number from event position
+- Opens inline comment composer with prefilled line number
+- Sets comment side to "RIGHT" (HEAD content) automatically
+- Comment composer shows two buttons: "Post comment" (immediate) and "Start review" or "Add to review" (based on pending review state)
+
+**CSS Styling:**
+- `.monaco-glyph-margin-plus` class renders "+" character in button
+- Button styled with rounded corners, subtle background, and hover effects
+- Color scheme matches application theme (blue-gray palette)
+- Smooth transitions for hover state and scaling
+
+**State Management:**
+- `hoveredLineRef` tracks currently hovered line (null when not hovering)
+- `decorationsRef` stores Monaco decoration IDs for cleanup
+- Decorations updated via `deltaDecorations` API to add/remove dynamically
+- Cleanup on component unmount prevents memory leaks
 
 ---
 
