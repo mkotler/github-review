@@ -256,6 +256,33 @@ async fn cmd_local_delete_comment(comment_id: i64) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn cmd_github_update_comment(
+    owner: String,
+    repo: String,
+    comment_id: u64,
+    body: String,
+) -> Result<(), String> {
+    use auth::require_token;
+    let token = require_token().map_err(|e| e.to_string())?;
+    github::update_review_comment(&token, &owner, &repo, comment_id, &body)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn cmd_github_delete_comment(
+    owner: String,
+    repo: String,
+    comment_id: u64,
+) -> Result<(), String> {
+    use auth::require_token;
+    let token = require_token().map_err(|e| e.to_string())?;
+    github::delete_review_comment(&token, &owner, &repo, comment_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn cmd_local_get_comments(
     owner: String,
     repo: String,
@@ -468,6 +495,8 @@ pub fn run() {
             cmd_local_add_comment,
             cmd_local_update_comment,
             cmd_local_delete_comment,
+            cmd_github_update_comment,
+            cmd_github_delete_comment,
             cmd_local_get_comments,
             cmd_local_get_review_metadata,
             cmd_local_abandon_review,

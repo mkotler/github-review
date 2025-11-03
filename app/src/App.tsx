@@ -122,6 +122,9 @@ function App() {
   const [pendingReviewOverride, setPendingReviewOverride] = useState<PullRequestReview | null>(null);
   const [localComments, setLocalComments] = useState<PullRequestComment[]>([]);
   const [isLoadingPendingComments, setIsLoadingPendingComments] = useState(false);
+  const [editingCommentId, setEditingCommentId] = useState<number | null>(null);
+  const [editingComment, setEditingComment] = useState<PullRequestComment | null>(null);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const workspaceBodyRef = useRef<HTMLDivElement | null>(null);
   const appShellRef = useRef<HTMLDivElement | null>(null);
   const userMenuRef = useRef<HTMLDivElement | null>(null);
@@ -1121,7 +1124,108 @@ function App() {
     },
   });
 
+  const updateCommentMutation = useMutation({
+    mutationFn: async ({ commentId, body }: { commentId: number; body: string }) => {
+      console.log("Updating comment", { commentId, body, editingComment });
+      // Check if this is a local comment (local comments have url="#")
+      const isLocalComment = editingComment?.url === "#" || !editingComment?.url;
+      console.log("Is local comment:", isLocalComment, "url:", editingComment?.url);
+      
+      if (isLocalComment) {
+        // Update local comment
+        console.log("Calling cmd_local_update_comment");
+        await invoke("cmd_local_update_comment", {
+          commentId,
+          body,
+        });
+        console.log("Comment updated successfully");
+      } else {
+        // Update GitHub comment
+        console.log("Calling cmd_github_update_comment");
+        if (!repoRef) throw new Error("Repository information not available");
+        await invoke("cmd_github_update_comment", {
+          owner: repoRef.owner,
+          repo: repoRef.repo,
+          commentId,
+          body,
+        });
+        console.log("GitHub comment updated successfully");
+      }
+    },
+    onSuccess: () => {
+      console.log("Update comment success");
+      setFileCommentDraft("");
+      setFileCommentError(null);
+      setFileCommentSuccess(true);
+      setEditingCommentId(null);
+      setEditingComment(null);
+      setIsFileCommentComposerVisible(false);
+      
+      // Reload appropriate data based on comment type
+      if (editingComment?.url === "#" || !editingComment?.url) {
+        void loadLocalComments();
+      } else {
+        void refetchPullDetail();
+      }
+    },
+    onError: (error: unknown) => {
+      console.error("Update comment error:", error);
+      const message = error instanceof Error ? error.message : "Failed to update comment.";
+      setFileCommentError(message);
+    },
+  });
+
+  const deleteCommentMutation = useMutation({
+    mutationFn: async (commentId: number) => {
+      console.log("Deleting comment", { commentId, editingComment });
+      // Check if this is a local comment (local comments have url="#")
+      const isLocalComment = editingComment?.url === "#" || !editingComment?.url;
+      console.log("Is local comment:", isLocalComment, "url:", editingComment?.url);
+      
+      if (isLocalComment) {
+        // Delete local comment
+        console.log("Calling cmd_local_delete_comment");
+        await invoke("cmd_local_delete_comment", {
+          commentId,
+        });
+        console.log("Comment deleted successfully");
+      } else {
+        // Delete GitHub comment
+        console.log("Calling cmd_github_delete_comment");
+        if (!repoRef) throw new Error("Repository information not available");
+        await invoke("cmd_github_delete_comment", {
+          owner: repoRef.owner,
+          repo: repoRef.repo,
+          commentId,
+        });
+        console.log("GitHub comment deleted successfully");
+      }
+    },
+    onSuccess: () => {
+      console.log("Delete comment success");
+      setFileCommentDraft("");
+      setFileCommentError(null);
+      setEditingCommentId(null);
+      setEditingComment(null);
+      setIsFileCommentComposerVisible(false);
+      
+      // Reload appropriate data based on comment type
+      if (editingComment?.url === "#" || !editingComment?.url) {
+        void loadLocalComments();
+      } else {
+        void refetchPullDetail();
+      }
+    },
+    onError: (error: unknown) => {
+      console.error("Delete comment error:", error);
+      const message = error instanceof Error ? error.message : "Failed to delete comment.";
+      setFileCommentError(message);
+    },
+  });
+
   const handleAddCommentClick = useCallback(() => {
+    setEditingCommentId(null);
+    setEditingComment(null);
     openFileCommentComposer(pendingReview ? "review" : "single");
   }, [openFileCommentComposer, pendingReview]);
 
@@ -1165,6 +1269,7 @@ function App() {
             author: authQuery.data?.login ?? "You",
             submitted_at: metadata.created_at,
             html_url: null, // Local reviews don't have URLs
+            is_mine: true,
           };
           setPendingReviewOverride(localReview);
         }
@@ -1269,6 +1374,24 @@ function App() {
   const handleFileCommentSubmit = useCallback(
     (event: React.FormEvent) => {
       event.preventDefault();
+      
+      // Check if we're editing an existing comment
+      if (editingCommentId !== null) {
+        const trimmed = fileCommentDraft.trim();
+        if (!trimmed) {
+          setFileCommentError("Add your feedback before updating.");
+          return;
+        }
+        
+        setFileCommentError(null);
+        updateCommentMutation.mutate({
+          commentId: editingCommentId,
+          body: trimmed,
+        });
+        return;
+      }
+      
+      // Normal comment submission flow
       if (!selectedFilePath) {
         setFileCommentError("Select a file before commenting.");
         return;
@@ -1320,6 +1443,7 @@ function App() {
       });
     },
     [
+      editingCommentId,
       fileCommentDraft,
       fileCommentIsFileLevel,
       fileCommentLine,
@@ -1329,6 +1453,8 @@ function App() {
       pendingReview,
       selectedFilePath,
       submitFileCommentMutation,
+      updateCommentMutation,
+      selectedFile,
     ],
   );
 
@@ -1498,11 +1624,17 @@ function App() {
                   {selectedFile ? (
                     shouldShowFileCommentComposer ? (
                       <form className="comment-panel__form" onSubmit={handleFileCommentSubmit}>
-                        {hasAnyFileComments && (
+                        {(hasAnyFileComments || editingCommentId !== null) && (
                           <button
                             type="button"
                             className="comment-panel__action-button comment-panel__action-button--subtle"
-                            onClick={() => setIsFileCommentComposerVisible(false)}
+                            onClick={() => {
+                              setIsFileCommentComposerVisible(false);
+                              setEditingCommentId(null);
+                              setEditingComment(null);
+                              setFileCommentDraft("");
+                              setFileCommentError(null);
+                            }}
                           >
                             ← Back to comments
                           </button>
@@ -1517,24 +1649,26 @@ function App() {
                           }}
                           rows={6}
                         />
-                        <label className="comment-panel__checkbox">
-                          <input
-                            type="checkbox"
-                            checked={fileCommentIsFileLevel}
-                            onChange={(event) => {
-                              const checked = event.target.checked;
-                              setFileCommentIsFileLevel(checked);
-                              setFileCommentSuccess(false);
-                              setFileCommentError(null);
-                              if (checked) {
-                                setFileCommentLine("");
-                                setFileCommentMode("single");
-                              }
-                            }}
-                          />
-                          Mark as file-level comment
-                        </label>
-                        {!fileCommentIsFileLevel && (
+                        {editingCommentId === null && (
+                          <label className="comment-panel__checkbox">
+                            <input
+                              type="checkbox"
+                              checked={fileCommentIsFileLevel}
+                              onChange={(event) => {
+                                const checked = event.target.checked;
+                                setFileCommentIsFileLevel(checked);
+                                setFileCommentSuccess(false);
+                                setFileCommentError(null);
+                                if (checked) {
+                                  setFileCommentLine("");
+                                  setFileCommentMode("single");
+                                }
+                              }}
+                            />
+                            Mark as file-level comment
+                          </label>
+                        )}
+                        {!fileCommentIsFileLevel && editingCommentId === null && (
                           <div className="comment-panel__row">
                             <label>
                               Line number
@@ -1566,7 +1700,7 @@ function App() {
                             </label>
                           </div>
                         )}
-                        <div className="comment-panel__footer">
+                        {editingCommentId !== null && (
                           <div className="comment-panel__status">
                             {fileCommentError && (
                               <span className="comment-status comment-status--error">{fileCommentError}</span>
@@ -1575,19 +1709,51 @@ function App() {
                               <span className="comment-status comment-status--success">Comment saved</span>
                             )}
                           </div>
-                          <button
-                            type="submit"
-                            className="comment-submit"
-                            disabled={submitFileCommentMutation.isPending}
-                          >
-                            {submitFileCommentMutation.isPending
-                              ? "Sending…"
-                              : effectiveFileCommentMode === "review"
-                                ? pendingReview
-                                  ? (pendingReview.html_url ? "Add comment" : "Add to review")
-                                  : (localComments.length > 0 ? "Show review" : "Start review")
-                                : "Post comment"}
-                          </button>
+                        )}
+                        <div className="comment-panel__footer">
+                          {editingCommentId === null && (
+                            <div className="comment-panel__status">
+                              {fileCommentError && (
+                                <span className="comment-status comment-status--error">{fileCommentError}</span>
+                              )}
+                              {!fileCommentError && fileCommentSuccess && (
+                                <span className="comment-status comment-status--success">Comment saved</span>
+                              )}
+                            </div>
+                          )}
+                          {editingCommentId !== null ? (
+                            <div className="comment-panel__edit-actions">
+                              <button
+                                type="submit"
+                                className="comment-submit"
+                                disabled={updateCommentMutation.isPending}
+                              >
+                                {updateCommentMutation.isPending ? "Updating…" : "Update Comment"}
+                              </button>
+                              <button
+                                type="button"
+                                className="comment-panel__action-button comment-panel__action-button--danger"
+                                onClick={() => setShowDeleteConfirm(true)}
+                                disabled={deleteCommentMutation.isPending}
+                              >
+                                {deleteCommentMutation.isPending ? "Deleting…" : "Delete Comment"}
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              type="submit"
+                              className="comment-submit"
+                              disabled={submitFileCommentMutation.isPending}
+                            >
+                              {submitFileCommentMutation.isPending
+                                ? "Sending…"
+                                : effectiveFileCommentMode === "review"
+                                  ? pendingReview
+                                    ? (pendingReview.html_url ? "Add comment" : "Add to review")
+                                    : (localComments.length > 0 ? "Show review" : "Start review")
+                                  : "Post comment"}
+                            </button>
+                          )}
                         </div>
                       </form>
                     ) : (
@@ -1630,6 +1796,21 @@ function App() {
                         <ul className="comment-panel__list">
                           {fileComments.map((comment) => {
                             const formattedTimestamp = new Date(comment.created_at).toLocaleString();
+                            // Check if this is a pending GitHub review comment
+                            const isPendingGitHubReviewComment = comment.review_id === pendingReview?.id && pendingReview?.html_url;
+                            // Show edit button for local comments OR submitted GitHub comments (not pending GitHub review comments)
+                            const showEditButton = !isPendingGitHubReviewComment && 
+                              ((comment.is_draft && !pendingReview?.html_url) || (comment.is_mine && !comment.is_draft));
+                            console.log('Comment icon logic:', {
+                              commentId: comment.id,
+                              is_draft: comment.is_draft,
+                              is_mine: comment.is_mine,
+                              review_id: comment.review_id,
+                              pendingReviewId: pendingReview?.id,
+                              pendingReviewHtmlUrl: pendingReview?.html_url,
+                              isPendingGitHubReviewComment,
+                              showEditButton
+                            });
                             return (
                               <li key={comment.id} className="comment-panel__item">
                                 <div className="comment-panel__item-header" title={formattedTimestamp}>
@@ -1640,21 +1821,31 @@ function App() {
                                     )}
                                   </div>
                                   <div className="comment-panel__item-actions">
-                                    {comment.url && pendingReview?.html_url && (
-                                      <a
-                                        className="comment-panel__item-open"
-                                        href={comment.url}
-                                        target="_blank"
-                                        rel="noreferrer"
-                                        aria-label="Open on GitHub"
+                                    {/* Show edit button for local comments OR submitted GitHub comments (not pending GitHub review) */}
+                                    {showEditButton && (
+                                      <button
+                                        type="button"
+                                        className="comment-panel__item-edit"
+                                        onClick={() => {
+                                          setEditingCommentId(comment.id);
+                                          setEditingComment(comment);
+                                          setFileCommentDraft(comment.body);
+                                          setFileCommentLine(comment.line?.toString() || "");
+                                          setFileCommentSide(comment.side || "RIGHT");
+                                          setFileCommentIsFileLevel(!comment.line);
+                                          setFileCommentError(null);
+                                          setFileCommentSuccess(false);
+                                          setIsFileCommentComposerVisible(true);
+                                        }}
+                                        aria-label="Edit comment"
                                       >
-                                        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                                        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" width="16" height="16">
                                           <path
-                                            d="M14 3h7v7h-2V6.41l-9.29 9.3-1.42-1.42 9.3-9.29H14V3zm-4 4h2v2H8v9h9v-4h2v6H6V7h4z"
+                                            d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"
                                             fill="currentColor"
                                           />
                                         </svg>
-                                      </a>
+                                      </button>
                                     )}
                                   </div>
                                 </div>
@@ -2105,6 +2296,40 @@ function App() {
           </div>
         </div>
       </section>
+
+      {showDeleteConfirm && (
+        <div className="modal-overlay" onClick={() => setShowDeleteConfirm(false)}>
+          <div className="modal-dialog" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>Delete Comment</h3>
+            </div>
+            <div className="modal-body">
+              <p>Are you sure you want to delete this comment?</p>
+            </div>
+            <div className="modal-footer">
+              <button
+                type="button"
+                className="modal-button modal-button--secondary"
+                onClick={() => setShowDeleteConfirm(false)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="modal-button modal-button--danger"
+                onClick={() => {
+                  if (editingCommentId !== null) {
+                    deleteCommentMutation.mutate(editingCommentId);
+                  }
+                  setShowDeleteConfirm(false);
+                }}
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

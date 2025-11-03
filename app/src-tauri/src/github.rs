@@ -723,6 +723,62 @@ async fn fetch_issue_comments(
     Ok(response.json::<Vec<GitHubIssueComment>>().await?)
 }
 
+/// Update a review comment on a pull request
+pub async fn update_review_comment(
+    token: &str,
+    owner: &str,
+    repo: &str,
+    comment_id: u64,
+    body: &str,
+) -> AppResult<()> {
+    let client = build_client(token)?;
+    
+    let payload = json!({
+        "body": body,
+    });
+
+    let response = client
+        .patch(format!(
+            "{API_BASE}/repos/{owner}/{repo}/pulls/comments/{comment_id}"
+        ))
+        .json(&payload)
+        .send()
+        .await?;
+
+    ensure_success(
+        response,
+        &format!("update review comment {comment_id} for {owner}/{repo}"),
+    )
+    .await?;
+
+    Ok(())
+}
+
+/// Delete a review comment on a pull request
+pub async fn delete_review_comment(
+    token: &str,
+    owner: &str,
+    repo: &str,
+    comment_id: u64,
+) -> AppResult<()> {
+    let client = build_client(token)?;
+
+    let response = client
+        .delete(format!(
+            "{API_BASE}/repos/{owner}/{repo}/pulls/comments/{comment_id}"
+        ))
+        .send()
+        .await?;
+
+    ensure_success(
+        response,
+        &format!("delete review comment {comment_id} for {owner}/{repo}"),
+    )
+    .await?;
+
+    Ok(())
+}
+
 async fn fetch_pull_request_reviews(
     client: &reqwest::Client,
     owner: &str,

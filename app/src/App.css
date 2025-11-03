@@ -936,6 +936,7 @@ select {
   gap: 8px;
 }
 
+.comment-panel__item-edit,
 .comment-panel__item-open {
   display: inline-flex;
   align-items: center;
@@ -948,8 +949,11 @@ select {
   color: #a7c0ff;
   text-decoration: none;
   transition: background 0.18s ease, border-color 0.18s ease;
+  cursor: pointer;
 }
 
+.comment-panel__item-edit:hover,
+.comment-panel__item-edit:focus-visible,
 .comment-panel__item-open:hover,
 .comment-panel__item-open:focus-visible {
   background: rgba(118, 152, 224, 0.18);
@@ -957,6 +961,7 @@ select {
   outline: none;
 }
 
+.comment-panel__item-edit svg,
 .comment-panel__item-open svg {
   width: 14px;
   height: 14px;
@@ -1147,6 +1152,21 @@ select {
 
 .comment-status--success {
   color: #67f7c3;
+}
+
+.comment-panel__edit-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+}
+
+.comment-panel__edit-actions button {
+  width: 100%;
+}
+
+.comment-panel__form .comment-panel__status {
+  margin-bottom: 12px;
 }
 
 .comment-submit {
@@ -1469,4 +1489,92 @@ select {
 
 .empty-state--tall {
   min-height: 180px;
+}
+
+/* Modal Dialog */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+  -webkit-backdrop-filter: blur(2px);
+  backdrop-filter: blur(2px);
+}
+
+.modal-dialog {
+  background: linear-gradient(135deg, #1a1e2e 0%, #14181f 100%);
+  border: 1px solid rgba(88, 114, 176, 0.25);
+  border-radius: 12px;
+  min-width: 400px;
+  max-width: 500px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+
+.modal-header {
+  padding: 20px 24px 16px;
+  border-bottom: 1px solid rgba(88, 114, 176, 0.15);
+}
+
+.modal-header h3 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: #e3e7ef;
+}
+
+.modal-body {
+  padding: 20px 24px;
+}
+
+.modal-body p {
+  margin: 0;
+  color: #b2c4eb;
+  line-height: 1.5;
+}
+
+.modal-footer {
+  padding: 16px 24px;
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+  border-top: 1px solid rgba(88, 114, 176, 0.15);
+}
+
+.modal-button {
+  padding: 8px 16px;
+  border-radius: 8px;
+  border: none;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.18s ease;
+}
+
+.modal-button--secondary {
+  background: rgba(88, 114, 176, 0.15);
+  color: #b2c4eb;
+  border: 1px solid rgba(88, 114, 176, 0.3);
+}
+
+.modal-button--secondary:hover {
+  background: rgba(88, 114, 176, 0.25);
+  border-color: rgba(88, 114, 176, 0.45);
+}
+
+.modal-button--danger {
+  background: linear-gradient(120deg, #e74c3c, #c0392b);
+  color: white;
+  border: 1px solid rgba(231, 76, 60, 0.3);
+}
+
+.modal-button--danger:hover {
+  background: linear-gradient(120deg, #f15747, #d63f31);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(231, 76, 60, 0.3);
 }

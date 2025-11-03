@@ -19,6 +19,7 @@ pub struct ReviewComment {
     pub commit_id: String,
     pub created_at: String,
     pub updated_at: String,
+    pub deleted: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -74,12 +75,19 @@ impl ReviewStorage {
                 commit_id TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
+                deleted INTEGER NOT NULL DEFAULT 0,
                 FOREIGN KEY (owner, repo, pr_number) 
                     REFERENCES review_metadata(owner, repo, pr_number)
                     ON DELETE CASCADE
             )",
             [],
         )?;
+        
+        // Migration: Add deleted column if it doesn't exist
+        let _ = conn.execute(
+            "ALTER TABLE review_comments ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
         
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_review_comments_pr 
@@ -173,8 +181,8 @@ impl ReviewStorage {
             
             conn.execute(
                 "INSERT INTO review_comments 
-                 (owner, repo, pr_number, file_path, line_number, side, body, commit_id, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                 (owner, repo, pr_number, file_path, line_number, side, body, commit_id, created_at, updated_at, deleted)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0)",
                 params![
                     owner, repo, pr_number, file_path, line_number, side, body, commit_id, &now, &now
                 ],
@@ -194,6 +202,7 @@ impl ReviewStorage {
                 commit_id: commit_id.to_string(),
                 created_at: now.clone(),
                 updated_at: now,
+                deleted: false,
             }
         };
         
@@ -220,7 +229,7 @@ impl ReviewStorage {
             )?;
             
             conn.query_row(
-                "SELECT id, owner, repo, pr_number, file_path, line_number, side, body, commit_id, created_at, updated_at
+                "SELECT id, owner, repo, pr_number, file_path, line_number, side, body, commit_id, created_at, updated_at, deleted
                  FROM review_comments WHERE id = ?1",
                 params![comment_id],
                 |row| {
@@ -236,6 +245,7 @@ impl ReviewStorage {
                         commit_id: row.get(8)?,
                         created_at: row.get(9)?,
                         updated_at: row.get(10)?,
+                        deleted: row.get::<_, i64>(11)? != 0,
                     })
                 },
             )?
@@ -258,8 +268,9 @@ impl ReviewStorage {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )?;
             
+            // Mark as deleted instead of removing
             conn.execute(
-                "DELETE FROM review_comments WHERE id = ?1",
+                "UPDATE review_comments SET deleted = 1 WHERE id = ?1",
                 params![comment_id],
             )?;
             
@@ -284,7 +295,7 @@ impl ReviewStorage {
         Ok(())
     }
     
-    /// Get all comments for a review
+    /// Get all comments for a review (excluding deleted ones)
     pub fn get_comments(
         &self,
         owner: &str,
@@ -294,9 +305,9 @@ impl ReviewStorage {
         let conn = self.conn.lock().map_err(|_| AppError::Internal("Lock poisoned".into()))?;
         
         let mut stmt = conn.prepare(
-            "SELECT id, owner, repo, pr_number, file_path, line_number, side, body, commit_id, created_at, updated_at
+            "SELECT id, owner, repo, pr_number, file_path, line_number, side, body, commit_id, created_at, updated_at, deleted
              FROM review_comments
-             WHERE owner = ?1 AND repo = ?2 AND pr_number = ?3
+             WHERE owner = ?1 AND repo = ?2 AND pr_number = ?3 AND deleted = 0
              ORDER BY file_path, line_number"
         )?;
         
@@ -314,6 +325,7 @@ impl ReviewStorage {
                     commit_id: row.get(8)?,
                     created_at: row.get(9)?,
                     updated_at: row.get(10)?,
+                    deleted: row.get::<_, i64>(11)? != 0,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -506,7 +518,7 @@ impl ReviewStorage {
             )?;
             
             let mut stmt = conn.prepare(
-                "SELECT id, owner, repo, pr_number, file_path, line_number, side, body, commit_id, created_at, updated_at
+                "SELECT id, owner, repo, pr_number, file_path, line_number, side, body, commit_id, created_at, updated_at, deleted
                  FROM review_comments
                  WHERE owner = ?1 AND repo = ?2 AND pr_number = ?3
                  ORDER BY file_path, line_number"
@@ -526,6 +538,7 @@ impl ReviewStorage {
                         commit_id: row.get(8)?,
                         created_at: row.get(9)?,
                         updated_at: row.get(10)?,
+                        deleted: row.get::<_, i64>(11)? != 0,
                     })
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
@@ -544,7 +557,8 @@ impl ReviewStorage {
         if let Some(body) = &metadata.body {
             content.push_str(&format!("# Review Body: {}\n", body));
         }
-        content.push_str(&format!("# Total Comments: {}\n\n", comments.len()));
+        let active_count = comments.iter().filter(|c| !c.deleted).count();
+        content.push_str(&format!("# Total Comments: {}\n\n", active_count));
         
         let mut current_file: Option<String> = None;
         for comment in comments {
@@ -559,9 +573,11 @@ impl ReviewStorage {
                 ""
             };
             
+            let deleted_prefix = if comment.deleted { "DELETED - " } else { "" };
+            
             content.push_str(&format!(
-                "    Line {}{}: {}\n",
-                comment.line_number, side_label, comment.body
+                "    {}Line {}{}: {}\n",
+                deleted_prefix, comment.line_number, side_label, comment.body
             ));
         }
         
