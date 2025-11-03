@@ -1347,6 +1347,15 @@ select {
   line-height: 1.6;
 }
 
+.markdown-preview::-webkit-scrollbar {
+  width: 6px;
+}
+
+.markdown-preview::-webkit-scrollbar-thumb {
+  background: rgba(87, 108, 160, 0.4);
+  border-radius: 3px;
+}
+
 .markdown-preview code {
   background: rgba(32, 40, 64, 0.75);
   border-radius: 6px;
