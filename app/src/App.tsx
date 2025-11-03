@@ -131,6 +131,9 @@ function App() {
   const appShellRef = useRef<HTMLDivElement | null>(null);
   const userMenuRef = useRef<HTMLDivElement | null>(null);
   const sourceMenuRef = useRef<HTMLDivElement | null>(null);
+  const previewViewerRef = useRef<HTMLElement | null>(null);
+  const editorRef = useRef<any>(null);
+  const isScrollingSyncRef = useRef(false);
   const previousBodyCursorRef = useRef<string | null>(null);
   const previousBodyUserSelectRef = useRef<string | null>(null);
   const queryClient = useQueryClient();
@@ -693,6 +696,16 @@ function App() {
       setReviewSummaryError(null);
     }
   }, [pendingReview]);
+
+  useEffect(() => {
+    // Reset scroll position when file changes
+    if (editorRef.current) {
+      editorRef.current.setScrollTop(0);
+    }
+    if (previewViewerRef.current) {
+      previewViewerRef.current.scrollTop = 0;
+    }
+  }, [selectedFilePath]);
 
   useEffect(() => {
     if (!isUserMenuOpen) {
@@ -2318,6 +2331,39 @@ function App() {
                           scrollBeyondLastLine: false,
                           wordWrap: "on",
                         }}
+                        onMount={(editor) => {
+                          editorRef.current = editor;
+                          editor.onDidScrollChange(() => {
+                            if (isScrollingSyncRef.current) return;
+                            if (!previewViewerRef.current) return;
+                            
+                            const visibleRange = editor.getVisibleRanges()[0];
+                            if (!visibleRange) return;
+                            const model = editor.getModel();
+                            if (!model) return;
+                            
+                            const totalLines = model.getLineCount();
+                            const topLine = visibleRange.startLineNumber;
+                            const bottomLine = visibleRange.endLineNumber;
+                            
+                            // Calculate scroll percentage
+                            let scrollPercentage = topLine / totalLines;
+                            
+                            // If editor is at bottom, ensure preview scrolls to bottom too
+                            if (bottomLine >= totalLines) {
+                              scrollPercentage = 1;
+                            }
+                            
+                            const previewMaxScroll = previewViewerRef.current.scrollHeight - previewViewerRef.current.clientHeight;
+                            const targetScroll = Math.min(scrollPercentage * previewMaxScroll, previewMaxScroll);
+                            
+                            isScrollingSyncRef.current = true;
+                            previewViewerRef.current.scrollTop = targetScroll;
+                            setTimeout(() => {
+                              isScrollingSyncRef.current = false;
+                            }, 50);
+                          });
+                        }}
                       />
                     )
                   ) : (
@@ -2348,13 +2394,73 @@ function App() {
                 <div className="pane__viewer">
                   {selectedFile ? (
                     selectedFile.language === "markdown" ? (
-                      <div className="markdown-preview">
+                      <div 
+                        className="markdown-preview" 
+                        ref={previewViewerRef as React.RefObject<HTMLDivElement>}
+                        onScroll={(e) => {
+                          if (isScrollingSyncRef.current) return;
+                          if (!editorRef.current) return;
+                          
+                          const target = e.currentTarget;
+                          const maxScroll = target.scrollHeight - target.clientHeight;
+                          const scrollPercentage = maxScroll > 0 ? target.scrollTop / maxScroll : 0;
+                          
+                          const model = editorRef.current.getModel();
+                          if (!model) return;
+                          
+                          const totalLines = model.getLineCount();
+                          let targetLine = Math.floor(scrollPercentage * totalLines);
+                          
+                          // If preview is at bottom, scroll editor to bottom
+                          if (target.scrollTop >= maxScroll - 1) {
+                            targetLine = totalLines;
+                          }
+                          
+                          targetLine = Math.max(1, Math.min(targetLine, totalLines));
+                          
+                          isScrollingSyncRef.current = true;
+                          editorRef.current.revealLineInCenter(targetLine);
+                          setTimeout(() => {
+                            isScrollingSyncRef.current = false;
+                          }, 50);
+                        }}
+                      >
                         <ReactMarkdown remarkPlugins={[remarkGfm]}>
                           {selectedFile.head_content ?? ""}
                         </ReactMarkdown>
                       </div>
                     ) : (
-                      <pre className="markdown-preview">
+                      <pre 
+                        className="markdown-preview" 
+                        ref={previewViewerRef as React.RefObject<HTMLPreElement>}
+                        onScroll={(e) => {
+                          if (isScrollingSyncRef.current) return;
+                          if (!editorRef.current) return;
+                          
+                          const target = e.currentTarget;
+                          const maxScroll = target.scrollHeight - target.clientHeight;
+                          const scrollPercentage = maxScroll > 0 ? target.scrollTop / maxScroll : 0;
+                          
+                          const model = editorRef.current.getModel();
+                          if (!model) return;
+                          
+                          const totalLines = model.getLineCount();
+                          let targetLine = Math.floor(scrollPercentage * totalLines);
+                          
+                          // If preview is at bottom, scroll editor to bottom
+                          if (target.scrollTop >= maxScroll - 1) {
+                            targetLine = totalLines;
+                          }
+                          
+                          targetLine = Math.max(1, Math.min(targetLine, totalLines));
+                          
+                          isScrollingSyncRef.current = true;
+                          editorRef.current.revealLineInCenter(targetLine);
+                          setTimeout(() => {
+                            isScrollingSyncRef.current = false;
+                          }, 50);
+                        }}
+                      >
                         <code>{selectedFile.head_content ?? ""}</code>
                       </pre>
                     )
