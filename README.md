@@ -16,7 +16,10 @@ A desktop application built with Tauri and React that streamlines the GitHub pul
 - **Local Review Storage** - SQLite-backed comment drafting with automatic log file generation for crash recovery
 - **Comment Management** - Create, edit, and delete comments locally before submitting to GitHub
 - **Bidirectional Scroll Sync** - Synchronized scrolling between source code and markdown preview
-- **Markdown Preview** - Full GitHub Flavored Markdown support with HTML rendering and repository image fetching
+- **Markdown Preview** - Full GitHub Flavored Markdown support with HTML rendering, repository image fetching, and Mermaid diagram rendering
+- **Mermaid Diagram Support** - Client-side rendering of Mermaid diagrams in markdown files and comments
+- **Renamed File Handling** - Proper support for renamed files using GitHub's `previous_filename` field to fetch base content from original path
+- **Deleted File Filtering** - Automatically filters out deleted files from the file list for cleaner PR navigation
 - **Batch Submission** - Submit all review comments atomically as a single GitHub review
 - **Review State Management** - Support for APPROVE, REQUEST_CHANGES, COMMENT, and PENDING review states
 - **Abandoned Review Tracking** - Preserve log files when reviews are cancelled for audit/email purposes
@@ -79,6 +82,22 @@ When viewing a pull request file in the Monaco Editor:
 3. **Click the "+" button** to open the comment composer with the line number pre-filled
 4. Choose to **"Post comment"** (immediate) or **"Start review"** / **"Add to review"** (pending review workflow)
 
+### Mermaid Diagram Support
+
+The application automatically renders Mermaid diagrams in markdown files and comments. Simply use fenced code blocks with the `mermaid` language identifier:
+
+````markdown
+```mermaid
+graph TD
+    A[Start] --> B[Process]
+    B --> C{Decision}
+    C -->|Yes| D[End]
+    C -->|No| B
+```
+````
+
+Supported diagram types include flowcharts, sequence diagrams, class diagrams, state diagrams, entity relationship diagrams, user journey diagrams, Gantt charts, pie charts, and more. Diagrams are rendered client-side using the Mermaid library with SVG output.
+
 ### Performance & File Loading
 
 The application uses intelligent progressive loading for optimal performance:
@@ -120,7 +139,7 @@ The executable will be in `src-tauri/target/release/`.
 - **Storage**: SQLite via rusqlite
 - **Authentication**: OAuth 2.0 with system keyring integration
 - **Editor**: Monaco Editor
-- **Markdown**: react-markdown with rehype/remark plugins
+- **Markdown**: react-markdown with rehype/remark plugins + Mermaid for diagram rendering
 
 ## License
 

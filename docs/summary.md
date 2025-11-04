@@ -15,7 +15,7 @@ This document provides a comprehensive map of the GitHub Review Tool codebase, i
 github-review/
 ├── app/                          # Main application directory
 │   ├── src/                      # React frontend source
-│   │   ├── App.tsx              # Main application component (3202 LOC)
+│   │   ├── App.tsx              # Main application component (3266 LOC)
 │   │   ├── App.css              # Application styles
 │   │   ├── main.tsx             # React entry point
 │   │   └── assets/              # Static assets
@@ -43,7 +43,7 @@ github-review/
 ## Frontend Source Files
 
 ### [app/src/App.tsx](App.tsx.md)
-Primary React application component containing the full UI and business logic for the GitHub review tool. Implements PR listing, file viewing, comment management, markdown preview, and Monaco editor integration. Features include MRU repository dropdown with localStorage persistence, comment count badges on files, file viewed tracking with per-PR state, auto-navigation to pending reviews, and quick access to log folder.
+Primary React application component containing the full UI and business logic for the GitHub review tool. Implements PR listing, file viewing, comment management, markdown preview with Mermaid diagram rendering, and Monaco editor integration. Features include MRU repository dropdown with localStorage persistence, comment count badges on files, file viewed tracking with per-PR state, auto-navigation to pending reviews, renamed file handling with previous_filename support, deleted file filtering, and quick access to log folder.
 
 ### [app/src/main.tsx](main.tsx.md)
 React application entry point that sets up TanStack Query provider and renders the root App component.
@@ -80,7 +80,7 @@ SQLite-backed local review storage implementation. Manages review metadata, comm
 ## Configuration Files
 
 ### [app/package.json](package.json.md)
-Frontend package manifest defining dependencies (React, TanStack Query, Monaco Editor, react-markdown), devDependencies (Vite, TypeScript, Tauri CLI), and npm scripts.
+Frontend package manifest defining dependencies (React, TanStack Query, Monaco Editor, react-markdown, Mermaid), devDependencies (Vite, TypeScript, Tauri CLI), and npm scripts.
 
 ### app/tsconfig.json
 TypeScript compiler configuration with strict type checking, ES2020 target, and React JSX settings.

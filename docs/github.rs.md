@@ -2,9 +2,9 @@
 
 **Path:** `app/src-tauri/src/github.rs`
 
-**Last Updated:** January 2025
+**Last Updated:** November 2025
 
-**Lines of Code:** 1151
+**Lines of Code:** 1305
 
 ## Capabilities Provided
 
@@ -123,7 +123,8 @@ This module implements a comprehensive GitHub REST API client that serves as the
 **Side Effects:**
 - Makes HTTP requests for: PR details, file list (paginated 100 per page), review comments, issue comments, reviews
 - Logs warnings with current_login context
-- Filters files by supported extensions (.md, .markdown, .yaml, .yml)
+- Filters files by supported extensions (.md, .markdown, .yaml, .yml) and status (excludes "removed" files)
+- Captures previous_filename field for renamed files
 - Does NOT fetch file contents upfront for performance (contents fetched on-demand via get_file_contents)
 
 **Exceptions:** Propagates network and API errors from any of the API calls
@@ -134,21 +135,24 @@ This module implements a comprehensive GitHub REST API client that serves as the
 
 ### get_file_contents
 
-**Purpose:** Fetches file contents on-demand for a specific file at given commit SHAs (lazy loading for performance).
+**Purpose:** Fetches file contents on-demand for a specific file at given commit SHAs (lazy loading for performance). Handles renamed files by using previous_filename for base content.
 
 **Parameters:**
 - `token: &str` - GitHub OAuth access token
 - `owner: &str` - Repository owner
 - `repo: &str` - Repository name
-- `file_path: &str` - Path to the file
+- `file_path: &str` - Path to the file (current name for head content)
 - `base_sha: &str` - Base commit SHA
 - `head_sha: &str` - Head commit SHA
-- `status: &str` - File status ("added", "modified", "removed")
+- `status: &str` - File status ("added", "modified", "removed", "renamed")
+- `previous_filename: Option<&str>` - Original filename for renamed files (used for base content)
 
 **Returns:** `AppResult<(Option<String>, Option<String>)>` - Tuple of (head_content, base_content). Returns None for removed (no head) or added (no base) files.
 
 **Side Effects:**
 - Makes HTTP requests to fetch file contents only when called
+- For renamed files, uses previous_filename to fetch base content from original path
+- Uses current file_path for head content
 - Calls fetch_file_contents for head and/or base content based on status
 
 **Exceptions:** Propagates network and API errors from fetch_file_contents
@@ -724,11 +728,12 @@ This module implements a comprehensive GitHub REST API client that serves as the
 **Purpose:** File change metadata from pull request.
 
 **Fields:**
-- `filename: String` - File path
+- `filename: String` - File path (new path for renamed files)
 - `status: String` - Change type ("added", "modified", "removed", "renamed")
 - `additions: u32` - Lines added count
 - `deletions: u32` - Lines deleted count
 - `patch: Option<String>` - Unified diff patch
+- `previous_filename: Option<String>` - Original path for renamed files
 
 **Derives:** Debug, Deserialize
 

@@ -71,7 +71,7 @@ This module defines the core domain models and data transfer objects (DTOs) that
 **Purpose:** Represents a changed file in a pull request with metadata and optional content for both base and head versions.
 
 **Fields:**
-- `path: String` - File path within repository
+- `path: String` - File path within repository (new path for renamed files)
 - `status: String` - Change type ("added", "modified", "removed", "renamed")
 - `additions: u32` - Number of lines added
 - `deletions: u32` - Number of lines deleted
@@ -79,10 +79,11 @@ This module defines the core domain models and data transfer objects (DTOs) that
 - `head_content: Option<String>` - Full file content at head commit (None if file was removed or not yet loaded)
 - `base_content: Option<String>` - Full file content at base commit (None if file was added or not yet loaded)
 - `language: FileLanguage` - Detected language for syntax highlighting
+- `previous_filename: Option<String>` - Original file path for renamed files (used to fetch base content)
 
 **Derives:** Debug, Serialize, Clone
 
-**Usage:** Enables side-by-side diff viewing in Monaco Editor with full file context. Content fields are populated on-demand via `cmd_get_file_contents` for performance (lazy loading).
+**Usage:** Enables side-by-side diff viewing in Monaco Editor with full file context. Content fields are populated on-demand via `cmd_get_file_contents` for performance (lazy loading). For renamed files, `previous_filename` is used to fetch the base content from the original path at base_sha.
 
 ---
 

@@ -8,6 +8,7 @@ import rehypeRaw from "rehype-raw";
 import rehypeSanitize from "rehype-sanitize";
 import { Editor, DiffEditor } from "@monaco-editor/react";
 import { parse as parseYaml } from "yaml";
+import mermaid from "mermaid";
 
 type AuthStatus = {
   is_authenticated: boolean;
@@ -34,6 +35,7 @@ type PullRequestFile = {
   head_content?: string | null;
   base_content?: string | null;
   language: FileLanguage;
+  previous_filename?: string | null;
 };
 
 type PullRequestDetail = {
@@ -159,6 +161,41 @@ function AsyncImage({ owner, repo, reference, path, alt, ...props }: {
   
   return <img src={imageData} alt={alt} {...props} />;
 }
+
+// Initialize Mermaid
+mermaid.initialize({
+  startOnLoad: true,
+  theme: 'default',
+  securityLevel: 'loose',
+});
+
+// Custom component for rendering Mermaid diagrams
+const MermaidCode = ({ children }: { children: string }) => {
+  const ref = useRef<HTMLDivElement>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (ref.current && typeof children === 'string') {
+      const id = `mermaid-${Math.random().toString(36).substr(2, 9)}`;
+      mermaid.render(id, children)
+        .then(({ svg }) => {
+          if (ref.current) {
+            ref.current.innerHTML = svg;
+          }
+        })
+        .catch((err) => {
+          console.error('Mermaid render error:', err);
+          setError(err.message || 'Failed to render diagram');
+        });
+    }
+  }, [children]);
+
+  if (error) {
+    return <pre style={{ color: 'red' }}>Mermaid Error: {error}</pre>;
+  }
+
+  return <div ref={ref} className="mermaid-diagram" />;
+};
 
 function App() {
   const [repoRef, setRepoRef] = useState<RepoRef | null>(null);
@@ -900,6 +937,7 @@ function App() {
         baseSha: prDetail.base_sha,
         headSha: prDetail.head_sha,
         status: selectedFileMetadata.status,
+        previousFilename: selectedFileMetadata.previous_filename ?? null,
       });
       return { headContent, baseContent };
     },
@@ -2383,7 +2421,21 @@ function App() {
                                     </span>
                                   )}
                                   <div className="comment-panel__item-content">
-                                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                    <ReactMarkdown 
+                                      remarkPlugins={[remarkGfm]}
+                                      components={{
+                                        code: ({ className, children, ...props }) => {
+                                          const match = /language-(\w+)/.exec(className || '');
+                                          const language = match ? match[1] : null;
+                                          
+                                          if (language === 'mermaid') {
+                                            return <MermaidCode>{String(children).trim()}</MermaidCode>;
+                                          }
+                                          
+                                          return <code className={className} {...props}>{children}</code>;
+                                        }
+                                      }}
+                                    >
                                       {comment.body}
                                     </ReactMarkdown>
                                   </div>
@@ -3068,6 +3120,16 @@ function App() {
                           remarkPlugins={[remarkGfm, [remarkFrontmatter, { type: 'yaml', marker: '-' }]]}
                           rehypePlugins={[rehypeRaw, rehypeSanitize]}
                           components={{
+                            code: ({ className, children, ...props }) => {
+                              const match = /language-(\w+)/.exec(className || '');
+                              const language = match ? match[1] : null;
+                              
+                              if (language === 'mermaid') {
+                                return <MermaidCode>{String(children).trim()}</MermaidCode>;
+                              }
+                              
+                              return <code className={className} {...props}>{children}</code>;
+                            },
                             img: ({src, alt, ...props}) => {
                               // If src is already a full URL, use it directly
                               if (!src || src.startsWith('http://') || src.startsWith('https://')) {

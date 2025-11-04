@@ -164,9 +164,10 @@ pub async fn fetch_file_contents_on_demand(
     base_sha: &str,
     head_sha: &str,
     status: &str,
+    previous_filename: Option<&str>,
 ) -> AppResult<(Option<String>, Option<String>)> {
     let token = require_token()?;
-    get_file_contents(&token, owner, repo, file_path, base_sha, head_sha, status).await
+    get_file_contents(&token, owner, repo, file_path, base_sha, head_sha, status, previous_filename).await
 }
 
 pub async fn publish_review_comment(

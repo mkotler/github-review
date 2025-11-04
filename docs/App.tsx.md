@@ -4,7 +4,7 @@
 
 **Last Updated:** November 2025
 
-**Lines of Code:** 3202
+**Lines of Code:** 3266
 
 ## Capabilities Provided
 
@@ -16,7 +16,12 @@ This is the main React component that implements the complete GitHub pull reques
 - **Comment Count Badges**: Visual indicators on file list showing number of comments per file (includes both published and pending review comments) with tooltip and click-to-navigate
 - **File Viewed Tracking**: Checkbox on each file to mark as viewed with state persisted across sessions by PR in localStorage
 - **Auto-Navigate to Pending Review**: Automatically opens comment panel when pending review exists with no published comments to guide user to in-progress work
-- **Log Folder Access**: Quick access to review logs via "Open Log Folder" menu item for debugging and recovery The component integrates Monaco Editor for code viewing with side-by-side diff support, markdown preview with scroll synchronization, local SQLite storage for draft reviews with crash recovery, and full GitHub API integration for PR operations. Key features include OAuth authentication flow, repository and PR navigation, file-level and line-level commenting (both immediate and review-based), local draft comment management, pending review workflows, and AsyncImage component for rendering embedded images in markdown previews.
+- **Log Folder Access**: Quick access to review logs via "Open Log Folder" menu item for debugging and recovery
+- **Mermaid Diagram Support**: Client-side rendering of Mermaid diagrams in markdown files and comments using custom code component
+- **Renamed File Handling**: Proper support for renamed files using GitHub's previous_filename field to fetch base content from original path
+- **Deleted File Filtering**: Automatically filters out deleted files from the file list for cleaner PR navigation
+
+The component integrates Monaco Editor for code viewing with side-by-side diff support, markdown preview with scroll synchronization and Mermaid diagram rendering, local SQLite storage for draft reviews with crash recovery, and full GitHub API integration for PR operations. Key features include OAuth authentication flow, repository and PR navigation, file-level and line-level commenting (both immediate and review-based), local draft comment management, pending review workflows, and AsyncImage component for rendering embedded images in markdown previews.
 
 ## Type Definitions
 
@@ -30,7 +35,7 @@ Lightweight PR listing data (number, title, author, updated timestamp, branch).
 Complete PR data including files with base/head content, comments, reviews, and user-specific filtering.
 
 ### PullRequestFile
-File change with path, status, additions/deletions, patch, content for both versions, and language.
+File change with path, status, additions/deletions, patch, content for both versions, language, and previous_filename for renamed files.
 
 ### PullRequestComment
 Unified comment type for both review comments (file-specific) and issue comments (general), with draft state tracking.
@@ -326,6 +331,21 @@ File type for syntax highlighting: "markdown" | "yaml".
 ### Custom Components
 - `img` replaced with `AsyncImage` for authenticated image loading
 - Handles relative image paths (resolves based on markdown file location)
+- `code` replaced with custom component that detects `language-mermaid` and renders diagrams
+
+### Mermaid Diagram Support
+
+**MermaidCode Component:**
+- Custom React component using `useRef` and `useEffect` for client-side rendering
+- Detects code blocks with `language-mermaid` class
+- Renders diagrams using `mermaid.render()` with unique IDs
+- Handles errors gracefully with red error messages
+- Supports all Mermaid diagram types (flowcharts, sequence diagrams, class diagrams, etc.)
+
+**Integration:**
+- Added to both main file preview and comment preview ReactMarkdown instances
+- Initialized with theme: 'default', securityLevel: 'loose'
+- Renders SVG output directly in the DOM
 
 ---
 
@@ -389,9 +409,10 @@ File type for syntax highlighting: "markdown" | "yaml".
 - `rehype-raw` - Raw HTML support
 - `rehype-sanitize` - HTML sanitization
 - `@monaco-editor/react` - Monaco Editor wrapper
+- `mermaid` - Diagram rendering library
 - `yaml` - YAML parsing for frontmatter
 
-### Tauri Commands Used
+**Tauri Commands Used**
 
 **Authentication:**
 - `cmd_check_auth_status` - Get current auth state
@@ -401,6 +422,7 @@ File type for syntax highlighting: "markdown" | "yaml".
 **Pull Requests:**
 - `cmd_list_pull_requests` - Fetch PR list
 - `cmd_get_pull_request` - Fetch PR details with files and comments
+- `cmd_get_file_contents` - Fetch file contents with previous_filename support for renamed files
 
 **Comments:**
 - `cmd_submit_general_comment` - Post general comment

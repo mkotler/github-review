@@ -267,7 +267,7 @@ pub async fn get_pull_request(
 
     let supported: Vec<_> = files
         .into_iter()
-        .filter(|file| is_supported(&file.filename))
+        .filter(|file| is_supported(&file.filename) && file.status != "removed")
         .collect();
 
     let base_sha = pr.base.sha.clone();
@@ -279,13 +279,14 @@ pub async fn get_pull_request(
         let filename = file.filename;
         collected.push(PullRequestFile {
             path: filename.clone(),
-            status: file.status,
+            status: file.status.clone(),
             additions: file.additions,
             deletions: file.deletions,
             patch: file.patch.clone(),
             head_content: None,  // Will be loaded on demand
             base_content: None,  // Will be loaded on demand
             language: detect_language(&filename),
+            previous_filename: file.previous_filename,
         });
     }
 
@@ -324,6 +325,7 @@ pub async fn get_file_contents(
     base_sha: &str,
     head_sha: &str,
     status: &str,
+    previous_filename: Option<&str>,
 ) -> AppResult<(Option<String>, Option<String>)> {
     let client = build_client(token)?;
     
@@ -334,7 +336,13 @@ pub async fn get_file_contents(
     };
 
     let base_content = if status != "added" {
-        Some(fetch_file_contents(&client, owner, repo, file_path, base_sha).await?)
+        // For renamed files, use the previous filename to fetch base content
+        let base_path = if status == "renamed" && previous_filename.is_some() {
+            previous_filename.unwrap()
+        } else {
+            file_path
+        };
+        Some(fetch_file_contents(&client, owner, repo, base_path, base_sha).await?)
     } else {
         None
     };
@@ -1106,6 +1114,7 @@ struct GitHubPullRequestFile {
     pub additions: u32,
     pub deletions: u32,
     pub patch: Option<String>,
+    pub previous_filename: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

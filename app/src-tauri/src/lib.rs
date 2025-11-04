@@ -92,8 +92,9 @@ async fn cmd_get_file_contents(
     base_sha: String,
     head_sha: String,
     status: String,
+    previous_filename: Option<String>,
 ) -> Result<(Option<String>, Option<String>), String> {
-    fetch_file_contents_on_demand(&owner, &repo, &file_path, &base_sha, &head_sha, &status)
+    fetch_file_contents_on_demand(&owner, &repo, &file_path, &base_sha, &head_sha, &status, previous_filename.as_deref())
         .await
         .map_err(|err| err.to_string())
 }

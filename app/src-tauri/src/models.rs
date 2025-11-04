@@ -40,6 +40,7 @@ pub struct PullRequestFile {
     pub head_content: Option<String>,
     pub base_content: Option<String>,
     pub language: FileLanguage,
+    pub previous_filename: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone, Copy)]
