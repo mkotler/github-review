@@ -109,7 +109,7 @@ This module implements a comprehensive GitHub REST API client that serves as the
 
 ### get_pull_request
 
-**Purpose:** Retrieves comprehensive pull request details including files, comments, and reviews.
+**Purpose:** Retrieves comprehensive pull request details with file metadata only (no content for performance).
 
 **Parameters:**
 - `token: &str` - GitHub OAuth access token
@@ -118,17 +118,42 @@ This module implements a comprehensive GitHub REST API client that serves as the
 - `number: u64` - Pull request number
 - `current_login: Option<&str>` - Currently authenticated user's login for filtering "my comments"
 
-**Returns:** `AppResult<PullRequestDetail>` - Complete PR data including files with base/head content, all comments, reviews, and user-specific filtering
+**Returns:** `AppResult<PullRequestDetail>` - Complete PR data including file metadata (paths, status, additions/deletions), all comments, reviews, and user-specific filtering. File head_content and base_content are set to None.
 
 **Side Effects:**
-- Makes multiple HTTP requests: PR details, file list, file contents (for each supported file), review comments, issue comments, reviews
+- Makes HTTP requests for: PR details, file list (paginated 100 per page), review comments, issue comments, reviews
 - Logs warnings with current_login context
 - Filters files by supported extensions (.md, .markdown, .yaml, .yml)
-- Fetches both base and head content for modified files
+- Does NOT fetch file contents upfront for performance (contents fetched on-demand via get_file_contents)
 
-**Exceptions:** Propagates network and API errors from any of the multiple API calls
+**Exceptions:** Propagates network and API errors from any of the API calls
 
-**Dependencies:** build_client, ensure_success, fetch_file_contents, fetch_review_comments, fetch_issue_comments, fetch_pull_request_reviews, is_supported, detect_language, build_comments, build_reviews
+**Dependencies:** build_client, ensure_success, fetch_review_comments, fetch_issue_comments, fetch_pull_request_reviews, is_supported, detect_language, build_comments, build_reviews
+
+---
+
+### get_file_contents
+
+**Purpose:** Fetches file contents on-demand for a specific file at given commit SHAs (lazy loading for performance).
+
+**Parameters:**
+- `token: &str` - GitHub OAuth access token
+- `owner: &str` - Repository owner
+- `repo: &str` - Repository name
+- `file_path: &str` - Path to the file
+- `base_sha: &str` - Base commit SHA
+- `head_sha: &str` - Head commit SHA
+- `status: &str` - File status ("added", "modified", "removed")
+
+**Returns:** `AppResult<(Option<String>, Option<String>)>` - Tuple of (head_content, base_content). Returns None for removed (no head) or added (no base) files.
+
+**Side Effects:**
+- Makes HTTP requests to fetch file contents only when called
+- Calls fetch_file_contents for head and/or base content based on status
+
+**Exceptions:** Propagates network and API errors from fetch_file_contents
+
+**Dependencies:** build_client, fetch_file_contents
 
 ---
 

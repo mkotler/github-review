@@ -131,6 +131,28 @@ This module manages GitHub OAuth 2.0 authentication and provides authenticated w
 
 ---
 
+#### `fetch_file_contents_on_demand(owner: &str, repo: &str, file_path: &str, base_sha: &str, head_sha: &str, status: &str) -> AppResult<(Option<String>, Option<String>)>`
+
+**Purpose:** Fetches file contents on-demand for lazy loading (performance optimization)  
+**Parameters:**  
+- `owner`, `repo` - Repository identification
+- `file_path` - Path to the file within the repository
+- `base_sha` - SHA of the base branch commit
+- `head_sha` - SHA of the head branch commit
+- `status` - File status ("added", "modified", "removed", "renamed")
+
+**Returns:** Tuple of `(Option<String>, Option<String>)` representing `(head_content, base_content)`  
+- `head_content` is `None` if status is "removed"
+- `base_content` is `None` if status is "added"
+
+**Side Effects:** Makes 1-2 authenticated GitHub API calls to fetch file contents at specific SHAs
+
+**Dependencies:** `require_token`, `get_file_contents` from github module
+
+**Performance Note:** This function enables progressive file loading. Instead of fetching all file contents upfront in `fetch_pull_request_details` (which caused 20+ second delays for large PRs), files are now fetched individually on-demand, reducing initial PR load time to <1 second.
+
+---
+
 #### `publish_review_comment(owner: &str, repo: &str, number: u64, body: String) -> AppResult<()>`
 
 **Purpose:** Posts a general PR-level comment (not attached to file/line)  

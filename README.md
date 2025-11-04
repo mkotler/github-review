@@ -5,7 +5,8 @@ A desktop application built with Tauri and React that streamlines the GitHub pul
 ## Key Capabilities
 
 - **OAuth Authentication** - Secure GitHub login via OAuth 2.0 flow with credential storage in system keyring
-- **PR Browsing & Viewing** - List and filter pull requests by state (open/closed) with detailed file diffs
+- **PR Browsing & Viewing** - List and filter pull requests with pagination (100 PRs per page) and real-time search by PR number, title, or author
+- **Smart File Loading** - Progressive file loading prioritized by toc.yml order with background content preloading for instant file viewing
 - **Enhanced Code Review** - Monaco editor integration with diff view and side-by-side source/preview panes
 - **Inline Comment Creation** - Hover over line numbers to reveal "+" buttons for quick line-level commenting
 - **Local Review Storage** - SQLite-backed comment drafting with automatic log file generation for crash recovery
@@ -67,10 +68,28 @@ This starts the Vite dev server and launches the Tauri application window.
 ### Using Inline Comments
 
 When viewing a pull request file in the Monaco Editor:
+
 1. **Hover** your mouse over the line numbers or glyph margin (left of line numbers)
 2. A **"+" button** will appear next to the line
 3. **Click the "+" button** to open the comment composer with the line number pre-filled
 4. Choose to **"Post comment"** (immediate) or **"Start review"** / **"Add to review"** (pending review workflow)
+
+### Performance & File Loading
+
+The application uses intelligent progressive loading for optimal performance:
+
+- **PR List**: Fetches all pull requests with pagination (100 per page) for complete history access
+- **PR Search**: Real-time filtering by PR number, title, or author without re-fetching
+- **File Metadata**: Loads first 50 files instantly (paths, status, additions/deletions only)
+- **File Contents**: Preloads file contents progressively in the background, prioritized by `toc.yml` order
+- **Smart Caching**: All file contents cached permanently per commit SHA for instant subsequent access
+
+This approach ensures:
+
+- File list appears in <1 second even for PRs with 100+ files
+- First file click is instant (auto-selected on PR load)
+- Background preloading makes subsequent clicks instant
+- User can browse file list immediately while contents load silently
 
 ### Build for Production
 

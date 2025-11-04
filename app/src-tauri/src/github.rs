@@ -276,18 +276,6 @@ pub async fn get_pull_request(
     let mut collected = Vec::with_capacity(supported.len());
 
     for file in supported {
-        let head_content = if file.status != "removed" {
-            Some(fetch_file_contents(&client, owner, repo, &file.filename, &head_sha).await?)
-        } else {
-            None
-        };
-
-        let base_content = if file.status != "added" {
-            Some(fetch_file_contents(&client, owner, repo, &file.filename, &base_sha).await?)
-        } else {
-            None
-        };
-
         let filename = file.filename;
         collected.push(PullRequestFile {
             path: filename.clone(),
@@ -295,8 +283,8 @@ pub async fn get_pull_request(
             additions: file.additions,
             deletions: file.deletions,
             patch: file.patch.clone(),
-            head_content,
-            base_content,
+            head_content: None,  // Will be loaded on demand
+            base_content: None,  // Will be loaded on demand
             language: detect_language(&filename),
         });
     }
@@ -326,6 +314,32 @@ pub async fn get_pull_request(
         my_comments,
         reviews: mapped_reviews,
     })
+}
+
+pub async fn get_file_contents(
+    token: &str,
+    owner: &str,
+    repo: &str,
+    file_path: &str,
+    base_sha: &str,
+    head_sha: &str,
+    status: &str,
+) -> AppResult<(Option<String>, Option<String>)> {
+    let client = build_client(token)?;
+    
+    let head_content = if status != "removed" {
+        Some(fetch_file_contents(&client, owner, repo, file_path, head_sha).await?)
+    } else {
+        None
+    };
+
+    let base_content = if status != "added" {
+        Some(fetch_file_contents(&client, owner, repo, file_path, base_sha).await?)
+    } else {
+        None
+    };
+
+    Ok((head_content, base_content))
 }
 
 pub async fn submit_general_comment(

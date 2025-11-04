@@ -7,7 +7,7 @@ mod review_storage;
 
 use crate::github::CommentMode;
 use auth::{
-    check_auth_status, fetch_pull_request_details, list_repo_pull_requests, logout,
+    check_auth_status, fetch_pull_request_details, fetch_file_contents_on_demand, list_repo_pull_requests, logout,
     publish_file_comment, publish_review_comment, start_oauth_flow, start_pending_review,
     finalize_pending_review,
 };
@@ -80,6 +80,20 @@ async fn cmd_get_pull_request(
 ) -> Result<PullRequestDetail, String> {
     tracing::warn!("cmd_get_pull_request received current_login: {:?}", current_login);
     fetch_pull_request_details(&owner, &repo, number, current_login.as_deref())
+        .await
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+async fn cmd_get_file_contents(
+    owner: String,
+    repo: String,
+    file_path: String,
+    base_sha: String,
+    head_sha: String,
+    status: String,
+) -> Result<(Option<String>, Option<String>), String> {
+    fetch_file_contents_on_demand(&owner, &repo, &file_path, &base_sha, &head_sha, &status)
         .await
         .map_err(|err| err.to_string())
 }
@@ -498,6 +512,7 @@ pub fn run() {
             cmd_logout,
             cmd_list_pull_requests,
             cmd_get_pull_request,
+            cmd_get_file_contents,
             cmd_submit_review_comment,
             cmd_submit_file_comment,
             cmd_start_pending_review,

@@ -114,11 +114,41 @@ This file serves as the central integration point for the Tauri backend, providi
 
 **Returns:** `PullRequestDetail` with nested files, comments, reviews  
 **Side Effects:**  
-- Makes multiple GitHub API calls (PR detail, files, comments, reviews)
-- Fetches file contents for markdown/yaml files
+- Makes multiple GitHub API calls (PR detail, file metadata paginated 100 per page, comments, reviews)
+- Does NOT fetch file contents upfront (use `cmd_get_file_contents` for on-demand loading)
 - Logs current_login for debugging
 
 **Dependencies:** `auth::fetch_pull_request_details`
+
+---
+
+#### `cmd_get_file_contents(owner: String, repo: String, file_path: String, base_sha: String, head_sha: String, status: String) -> Result<(Option<String>, Option<String>), String>`
+**Purpose:** Fetches file contents on-demand for a specific file in a PR (lazy loading)  
+**Parameters:**  
+- `owner` - Repository owner
+- `repo` - Repository name
+- `file_path` - Path to the file within the repository
+- `base_sha` - SHA of the base branch commit
+- `head_sha` - SHA of the head branch commit
+- `status` - File status ("added", "modified", "removed", "renamed")
+
+**Returns:** Tuple of `(Option<String>, Option<String>)` representing `(head_content, base_content)`  
+- `head_content` is `None` if status is "removed"
+- `base_content` is `None` if status is "added"
+- Both are `Some(String)` for "modified" or "renamed" files
+
+**Side Effects:**  
+- Makes 1-2 GitHub API calls to fetch file contents at specific SHAs
+- Decodes base64 content from GitHub API
+- No local caching (handled by frontend React Query)
+
+**Dependencies:** `auth::fetch_file_contents_on_demand`, `github::get_file_contents`
+
+**Performance Note:** This command enables progressive file loading. Instead of fetching all file contents upfront in `cmd_get_pull_request` (which caused 20+ second delays for large PRs), the frontend now:
+1. Gets file metadata instantly from `cmd_get_pull_request`
+2. Calls this command on-demand per file
+3. Caches results with React Query (staleTime: Infinity)
+4. Background-preloads remaining files progressively
 
 ---
 

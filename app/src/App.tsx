@@ -185,6 +185,7 @@ function App() {
   const [isGeneralCommentOpen, setIsGeneralCommentOpen] = useState(false);
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
   const [isPrFilterMenuOpen, setIsPrFilterMenuOpen] = useState(false);
+  const [visibleFileCount, setVisibleFileCount] = useState(50);
   const [splitRatio, setSplitRatio] = useState(0.5);
   const [isResizing, setIsResizing] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState<number>(MIN_SIDEBAR_WIDTH);
@@ -617,6 +618,73 @@ function App() {
     return ordered;
   }, [files]);
 
+  const visibleFiles = useMemo(() => {
+    return sortedFiles.slice(0, visibleFileCount);
+  }, [sortedFiles, visibleFileCount]);
+
+  // Reset visible file count when PR changes
+  useEffect(() => {
+    setVisibleFileCount(50);
+  }, [selectedPr]);
+
+  // Auto-select first file when sorted files load
+  useEffect(() => {
+    if (sortedFiles.length > 0 && !selectedFilePath) {
+      setSelectedFilePath(sortedFiles[0].path);
+    }
+  }, [sortedFiles, selectedFilePath]);
+
+  // Progressively load more file metadata in the background
+  useEffect(() => {
+    if (visibleFileCount >= sortedFiles.length) {
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      setVisibleFileCount(prev => Math.min(prev + 50, sortedFiles.length));
+    }, 100);
+
+    return () => clearTimeout(timer);
+  }, [visibleFileCount, sortedFiles.length]);
+
+  // Preload file contents in the background (one at a time, in order)
+  useEffect(() => {
+    if (!prDetail || visibleFiles.length === 0 || !repoRef) {
+      return;
+    }
+
+    const preloadNextFile = async () => {
+      for (const file of visibleFiles) {
+        // Check if this file's contents are already in the cache
+        const cacheKey = ["file-contents", repoRef.owner, repoRef.repo, file.path, prDetail.base_sha, prDetail.head_sha];
+        const cached = queryClient.getQueryData(cacheKey);
+        
+        if (!cached) {
+          // Prefetch this file's contents
+          await queryClient.prefetchQuery({
+            queryKey: cacheKey,
+            queryFn: async () => {
+              const [headContent, baseContent] = await invoke<[string | null, string | null]>("cmd_get_file_contents", {
+                owner: repoRef.owner,
+                repo: repoRef.repo,
+                filePath: file.path,
+                baseSha: prDetail.base_sha,
+                headSha: prDetail.head_sha,
+                status: file.status,
+              });
+              return { headContent, baseContent };
+            },
+            staleTime: Infinity,
+          });
+          // Small delay between fetches to avoid overwhelming the backend
+          await new Promise(resolve => setTimeout(resolve, 50));
+        }
+      }
+    };
+
+    preloadNextFile();
+  }, [visibleFiles, prDetail, repoRef, queryClient]);
+
   const openInlineComment = useCallback(async () => {
     if (!selectedFilePath) {
       return;
@@ -730,10 +798,39 @@ function App() {
     closeUserMenu();
   }, [closeUserMenu]);
 
-  const selectedFile = useMemo(() => {
+  const selectedFileMetadata = useMemo(() => {
     if (!prDetail || !selectedFilePath) return null;
     return prDetail.files.find((file) => file.path === selectedFilePath) ?? null;
   }, [prDetail, selectedFilePath]);
+
+  // Fetch file contents on demand when a file is selected
+  const fileContentsQuery = useQuery({
+    queryKey: ["file-contents", repoRef?.owner, repoRef?.repo, selectedFilePath, prDetail?.base_sha, prDetail?.head_sha],
+    queryFn: async () => {
+      if (!selectedFileMetadata || !prDetail) return null;
+      const [headContent, baseContent] = await invoke<[string | null, string | null]>("cmd_get_file_contents", {
+        owner: repoRef?.owner,
+        repo: repoRef?.repo,
+        filePath: selectedFilePath,
+        baseSha: prDetail.base_sha,
+        headSha: prDetail.head_sha,
+        status: selectedFileMetadata.status,
+      });
+      return { headContent, baseContent };
+    },
+    enabled: Boolean(selectedFileMetadata && prDetail && repoRef),
+    staleTime: Infinity, // File contents don't change for a given SHA
+  });
+
+  const selectedFile = useMemo(() => {
+    if (!selectedFileMetadata) return null;
+    if (!fileContentsQuery.data) return selectedFileMetadata;
+    return {
+      ...selectedFileMetadata,
+      head_content: fileContentsQuery.data.headContent,
+      base_content: fileContentsQuery.data.baseContent,
+    };
+  }, [selectedFileMetadata, fileContentsQuery.data]);
 
   const fileComments = useMemo(() => {
     if (!selectedFilePath) {
@@ -2391,26 +2488,28 @@ function App() {
                         No Markdown or YAML files in this pull request.
                       </div>
                     ) : (
-                      <ul className="file-list file-list--compact">
-                        {sortedFiles.map((file) => {
-                          const displayName = formatFileLabel(file.path);
-                          const tooltip = formatFileTooltip(file);
-                          return (
-                            <li key={file.path}>
-                              <button
-                                type="button"
-                                className={`file-list__button${
-                                  selectedFilePath === file.path ? " file-list__button--active" : ""
-                                }`}
-                                onClick={() => setSelectedFilePath(file.path)}
-                                title={tooltip}
-                              >
-                                <span className="file-list__name">{displayName}</span>
-                              </button>
-                            </li>
-                          );
-                        })}
-                      </ul>
+                      <>
+                        <ul className="file-list file-list--compact">
+                          {visibleFiles.map((file) => {
+                            const displayName = formatFileLabel(file.path);
+                            const tooltip = formatFileTooltip(file);
+                            return (
+                              <li key={file.path}>
+                                <button
+                                  type="button"
+                                  className={`file-list__button${
+                                    selectedFilePath === file.path ? " file-list__button--active" : ""
+                                  }`}
+                                  onClick={() => setSelectedFilePath(file.path)}
+                                  title={tooltip}
+                                >
+                                  <span className="file-list__name">{displayName}</span>
+                                </button>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      </>
                     )}
                   </div>
                 </div>

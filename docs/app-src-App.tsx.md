@@ -139,15 +139,18 @@ File type for syntax highlighting: "markdown" | "yaml".
 
 ### Repository Management
 - Repository input validates format (owner/repo)
-- Fetches PR list on repository selection
+- Fetches PR list on repository selection with pagination (100 PRs per page)
 - Displays PR count and refresh button
-- Supports filtering open vs all PRs
+- Supports filtering open vs all PRs via "..." menu
+- Real-time PR search by number, title, or author (no re-fetching)
 
 ### Pull Request Viewing
 - List view with number, title, author, branch, last updated
 - Detail view fetches files, comments, reviews
 - Filters "my comments" based on current user login
-- Displays file changes grouped by path
+- Progressive file loading: Shows 50 files immediately (metadata only)
+- Background preloading of file contents in toc.yml order
+- Auto-selects first file on PR load
 
 ### File Viewing
 - Monaco Editor with markdown/yaml syntax highlighting
@@ -320,10 +323,18 @@ File type for syntax highlighting: "markdown" | "yaml".
 
 ---
 
-## Performance Optimizations
+### Performance Optimizations
+
+### Progressive Loading Strategy
+- **PR List**: Fetches all PRs via pagination (100 per page) in backend
+- **File Metadata**: Loads first 50 files instantly (paths, status, additions/deletions only)
+- **File Contents**: Fetched on-demand per file (not upfront), cached permanently by commit SHA
+- **Background Preloading**: Automatically prefetches file contents one at a time in toc.yml order
+- **Smart Caching**: React Query caches all file contents with `staleTime: Infinity` for instant subsequent access
+- **Result**: File list appears in <1 second even for PRs with 100+ files; first file is instant (auto-selected)
 
 ### Memoization
-- `useMemo` for computed values (sorted files, filtered comments)
+- `useMemo` for computed values (sorted files, filtered comments, visible files)
 - `useCallback` for event handlers to prevent re-renders
 - Query caching via TanStack Query (automatic deduplication)
 

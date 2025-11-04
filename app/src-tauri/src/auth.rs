@@ -10,7 +10,7 @@ use url::Url;
 
 use crate::error::{AppError, AppResult};
 use crate::github::{
-    create_pending_review, fetch_authenticated_user, get_pull_request, list_pull_requests,
+    create_pending_review, fetch_authenticated_user, get_file_contents, get_pull_request, list_pull_requests,
     submit_file_comment, submit_general_comment, submit_pending_review, CommentMode,
 };
 use crate::models::{AuthStatus, PullRequestDetail, PullRequestReview, PullRequestSummary};
@@ -155,6 +155,18 @@ pub async fn fetch_pull_request_details(
 ) -> AppResult<PullRequestDetail> {
     let token = require_token()?;
     get_pull_request(&token, owner, repo, number, current_login).await
+}
+
+pub async fn fetch_file_contents_on_demand(
+    owner: &str,
+    repo: &str,
+    file_path: &str,
+    base_sha: &str,
+    head_sha: &str,
+    status: &str,
+) -> AppResult<(Option<String>, Option<String>)> {
+    let token = require_token()?;
+    get_file_contents(&token, owner, repo, file_path, base_sha, head_sha, status).await
 }
 
 pub async fn publish_review_comment(

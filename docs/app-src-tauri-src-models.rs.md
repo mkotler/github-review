@@ -55,7 +55,7 @@ This module defines the core domain models and data transfer objects (DTOs) that
 - `author: String` - GitHub username of PR author
 - `head_sha: String` - Commit SHA of the head branch
 - `base_sha: String` - Commit SHA of the base branch
-- `files: Vec<PullRequestFile>` - Array of changed files with content
+- `files: Vec<PullRequestFile>` - Array of changed files with metadata (content loaded on-demand)
 - `comments: Vec<PullRequestComment>` - All comments (review and general) sorted chronologically
 - `my_comments: Vec<PullRequestComment>` - Filtered subset of comments authored by current user
 - `reviews: Vec<PullRequestReview>` - All submitted reviews
@@ -68,7 +68,7 @@ This module defines the core domain models and data transfer objects (DTOs) that
 
 ### PullRequestFile
 
-**Purpose:** Represents a changed file in a pull request with content for both base and head versions.
+**Purpose:** Represents a changed file in a pull request with metadata and optional content for both base and head versions.
 
 **Fields:**
 - `path: String` - File path within repository
@@ -76,13 +76,13 @@ This module defines the core domain models and data transfer objects (DTOs) that
 - `additions: u32` - Number of lines added
 - `deletions: u32` - Number of lines deleted
 - `patch: Option<String>` - Unified diff patch
-- `head_content: Option<String>` - Full file content at head commit (None if file was removed)
-- `base_content: Option<String>` - Full file content at base commit (None if file was added)
+- `head_content: Option<String>` - Full file content at head commit (None if file was removed or not yet loaded)
+- `base_content: Option<String>` - Full file content at base commit (None if file was added or not yet loaded)
 - `language: FileLanguage` - Detected language for syntax highlighting
 
 **Derives:** Debug, Serialize, Clone
 
-**Usage:** Enables side-by-side diff viewing in Monaco Editor with full file context
+**Usage:** Enables side-by-side diff viewing in Monaco Editor with full file context. Content fields are populated on-demand via `cmd_get_file_contents` for performance (lazy loading).
 
 ---
 
