@@ -15,10 +15,9 @@ This document provides a comprehensive map of the GitHub Review Tool codebase, i
 github-review/
 ├── app/                          # Main application directory
 │   ├── src/                      # React frontend source
-│   │   ├── App.tsx              # Main application component (2636 LOC)
+│   │   ├── App.tsx              # Main application component (3202 LOC)
 │   │   ├── App.css              # Application styles
 │   │   ├── main.tsx             # React entry point
-│   │   ├── TestStorage.tsx      # Storage testing component
 │   │   └── assets/              # Static assets
 │   ├── src-tauri/               # Rust backend source
 │   │   ├── src/
@@ -38,8 +37,6 @@ github-review/
 │   ├── vite.config.ts           # Vite bundler configuration
 │   └── index.html               # HTML entry point
 ├── docs/                         # Documentation directory
-├── LOCAL_REVIEW_API.md          # API documentation for local review storage
-├── DEBUGGING_STORAGE.md         # Storage troubleshooting guide
 └── README.md                     # Project overview and quick start
 ```
 
@@ -53,9 +50,6 @@ React application entry point that sets up TanStack Query provider and renders t
 
 ### app/src/App.css
 Comprehensive stylesheet with custom variables, component styles, modal dialogs, and responsive layouts. Defines theming for dark UI with blue/gray color scheme.
-
-### app/src/TestStorage.tsx
-Development component for testing local storage functionality. Provides UI for exercising review storage API commands.
 
 ## Backend Source Files
 
