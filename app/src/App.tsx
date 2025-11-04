@@ -527,17 +527,41 @@ function App() {
 
   const files = prDetail?.files ?? [];
 
+  // Find toc.yml file if it exists
+  const tocFileMetadata = useMemo(() => {
+    return files.find((file) => file.path.toLowerCase().endsWith("toc.yml"));
+  }, [files]);
+
+  // Load toc.yml content if it exists
+  const tocContentQuery = useQuery({
+    queryKey: ["toc-content", repoRef?.owner, repoRef?.repo, tocFileMetadata?.path, prDetail?.base_sha, prDetail?.head_sha],
+    queryFn: async () => {
+      if (!tocFileMetadata || !prDetail || !repoRef) return null;
+      const [headContent, baseContent] = await invoke<[string | null, string | null]>("cmd_get_file_contents", {
+        owner: repoRef.owner,
+        repo: repoRef.repo,
+        filePath: tocFileMetadata.path,
+        baseSha: prDetail.base_sha,
+        headSha: prDetail.head_sha,
+        status: tocFileMetadata.status,
+      });
+      return headContent ?? baseContent ?? "";
+    },
+    enabled: Boolean(tocFileMetadata && prDetail && repoRef),
+    staleTime: Infinity,
+  });
+
   const sortedFiles = useMemo(() => {
     if (files.length === 0) {
       return [] as PullRequestFile[];
     }
 
     const originalOrder = [...files];
-    const tocFile = originalOrder.find((file) => file.path.toLowerCase().endsWith("toc.yml"));
+    const tocFile = tocFileMetadata;
     const orderedPaths: string[] = [];
 
     if (tocFile) {
-      const content = tocFile.head_content ?? tocFile.base_content ?? "";
+      const content = tocContentQuery.data ?? "";
       if (content.trim()) {
         const baseSegments = tocFile.path.split("/").slice(0, -1);
         const resolveHref = (href: string) => {
@@ -601,7 +625,25 @@ function App() {
     }
 
     for (const path of orderedPaths) {
-      const matchingFile = originalOrder.find((file) => file.path === path);
+      let matchingFile = originalOrder.find((file) => file.path === path);
+      
+      // If not found with resolved path, try without the toc directory prefix
+      if (!matchingFile && tocFile) {
+        const baseSegments = tocFile.path.split("/").slice(0, -1);
+        const relativePrefix = baseSegments.join("/") + "/";
+        if (path.startsWith(relativePrefix)) {
+          const withoutPrefix = path.substring(relativePrefix.length);
+          matchingFile = originalOrder.find((file) => file.path === withoutPrefix);
+        }
+      }
+      
+      // If still not found, try matching by suffix (handles different directory structures)
+      if (!matchingFile) {
+        matchingFile = originalOrder.find((file) => 
+          file.path.endsWith(path) || path.endsWith(file.path)
+        );
+      }
+      
       if (matchingFile && !seen.has(matchingFile.path)) {
         ordered.push(matchingFile);
         seen.add(matchingFile.path);
@@ -616,7 +658,7 @@ function App() {
     }
 
     return ordered;
-  }, [files]);
+  }, [files, tocFileMetadata, tocContentQuery.data]);
 
   const visibleFiles = useMemo(() => {
     return sortedFiles.slice(0, visibleFileCount);
