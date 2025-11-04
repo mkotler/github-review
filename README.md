@@ -110,8 +110,6 @@ The executable will be in `src-tauri/target/release/`.
 
 ## Additional Documentation
 
-- [Local Review API](LOCAL_REVIEW_API.md) - Detailed API for local review storage system
-- [Debugging Storage](DEBUGGING_STORAGE.md) - Troubleshooting guide for SQLite storage issues
 - [Repository Summary](docs/summary.md) - Complete codebase map and file documentation
 
 ## Architecture
@@ -126,4 +124,4 @@ The executable will be in `src-tauri/target/release/`.
 
 ## License
 
-> ⚠️ Unknown: No LICENSE file found in repository root.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
