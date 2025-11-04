@@ -464,6 +464,32 @@ async fn cmd_get_pending_review_comments(
 }
 
 #[tauri::command]
+fn cmd_get_prs_under_review() -> Result<Vec<models::PrUnderReview>, String> {
+    tracing::info!("cmd_get_prs_under_review called");
+    let storage = review_storage::get_storage().map_err(|e| e.to_string())?;
+    
+    // Get all review metadata from storage
+    let all_reviews = storage.get_all_review_metadata().map_err(|e| e.to_string())?;
+    tracing::info!("Found {} reviews in storage", all_reviews.len());
+    
+    let prs_under_review: Vec<models::PrUnderReview> = all_reviews
+        .into_iter()
+        .map(|metadata| models::PrUnderReview {
+            owner: metadata.owner.clone(),
+            repo: metadata.repo.clone(),
+            number: metadata.pr_number,
+            title: String::new(), // Will be filled in by frontend
+            has_local_review: true,
+            has_pending_review: false,
+            viewed_count: 0,
+            total_count: 0,
+        })
+        .collect();
+    
+    Ok(prs_under_review)
+}
+
+#[tauri::command]
 fn cmd_get_storage_info(app: tauri::AppHandle) -> Result<String, String> {
     let data_dir = app.path().app_data_dir()
         .map_err(|e| format!("Failed to get app data dir: {:?}", e))?;
@@ -542,6 +568,7 @@ pub fn run() {
             cmd_get_pending_review_comments,
             cmd_open_devtools,
             cmd_open_log_folder,
+            cmd_get_prs_under_review,
             cmd_local_start_review,
             cmd_local_add_comment,
             cmd_local_update_comment,

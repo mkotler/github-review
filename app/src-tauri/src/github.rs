@@ -913,10 +913,14 @@ fn map_review(
     normalized_login: Option<&str>,
 ) -> PullRequestReview {
     let review_author_normalized = review.user.login.to_ascii_lowercase();
+    warn!("Review author (original): '{}', normalized: '{}'", review.user.login, review_author_normalized);
+    warn!("Current login provided: {:?}", normalized_login);
     let is_mine = normalized_login
         .map(|login| {
             let matches = review_author_normalized == login;
-            warn!("Comparing review author '{}' with current login '{}': {}", review_author_normalized, login, matches);
+            warn!("Comparing review author '{}' with current login '{}': {} (lengths: {} vs {})", 
+                review_author_normalized, login, matches, 
+                review_author_normalized.len(), login.len());
             matches
         })
         .unwrap_or_else(|| {

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -81,6 +81,17 @@ type PullRequestReview = {
   html_url?: string | null;
   commit_id?: string | null;
   is_mine: boolean;
+};
+
+type PrUnderReview = {
+  owner: string;
+  repo: string;
+  number: number;
+  title: string;
+  has_local_review: boolean;
+  has_pending_review: boolean;
+  viewed_count: number;
+  total_count: number;
 };
 
 const AUTH_QUERY_KEY = ["auth-status"] as const;
@@ -213,6 +224,7 @@ function App() {
   const [selectedPr, setSelectedPr] = useState<number | null>(null);
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
   const [showClosedPRs, setShowClosedPRs] = useState(false);
+  const [prMode, setPrMode] = useState<"under-review" | "repo">("under-review");
   const [prSearchFilter, setPrSearchFilter] = useState("");
   const [commentDraft, setCommentDraft] = useState("");
   const [commentError, setCommentError] = useState<string | null>(null);
@@ -245,6 +257,7 @@ function App() {
   const [editingCommentId, setEditingCommentId] = useState<number | null>(null);
   const [editingComment, setEditingComment] = useState<PullRequestComment | null>(null);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [showDeleteReviewConfirm, setShowDeleteReviewConfirm] = useState(false);
   const [showDiff, setShowDiff] = useState(false);
   const [showSourceMenu, setShowSourceMenu] = useState(false);
   const workspaceBodyRef = useRef<HTMLDivElement | null>(null);
@@ -302,6 +315,87 @@ function App() {
     },
   });
 
+  const prsUnderReviewQuery = useQuery({
+    queryKey: ["prs-under-review", authQuery.data?.login],
+    queryFn: async () => {
+      console.log("Fetching PRs under review...");
+      const prs = await invoke<PrUnderReview[]>("cmd_get_prs_under_review");
+      console.log("PRs under review from backend:", prs);
+      return prs;
+    },
+    enabled: authQuery.data?.is_authenticated === true,
+    retry: false,
+  });
+
+  // Query all MRU repos for PRs with pending reviews
+  const mruPrsQueries = useQueries({
+    queries: repoMRU.slice(0, 10).map(repoString => {
+      const match = repoString.match(/^([^/]+)\/(.+)$/);
+      if (!match) return { queryKey: ["mru-prs-skip"], enabled: false };
+      
+      const [, owner, repo] = match;
+      const currentLogin = authQuery.data?.login;
+      
+      return {
+        queryKey: ["mru-prs", owner, repo, currentLogin],
+        queryFn: async () => {
+          if (!currentLogin) {
+            return [];
+          }
+          
+          // Fetch open PRs for this repo
+          const prs = await invoke<PullRequestSummary[]>("cmd_list_pull_requests", {
+            owner,
+            repo,
+            state: "open",
+          });
+          
+          // For each PR, check if there's a pending review
+          const prsWithPendingReviews: PrUnderReview[] = [];
+          
+          for (const pr of prs) {
+            try {
+              const prDetail = await invoke<PullRequestDetail>("cmd_get_pull_request", {
+                owner,
+                repo,
+                number: pr.number,
+                currentLogin,
+              });
+              
+              // Check for pending review from current user
+              const hasPendingReview = prDetail.reviews.some(
+                r => r.is_mine && r.state === "PENDING"
+              );
+              
+              console.log(`  Has pending review: ${hasPendingReview}`);
+              
+              if (hasPendingReview) {
+                console.log(`✓ Found pending review in ${owner}/${repo}#${pr.number}`);
+                prsWithPendingReviews.push({
+                  owner,
+                  repo,
+                  number: pr.number,
+                  title: pr.title,
+                  has_local_review: false,
+                  has_pending_review: true,
+                  viewed_count: 0,
+                  total_count: prDetail.files.length,
+                });
+              }
+            } catch (err) {
+              console.error(`Error fetching PR ${owner}/${repo}#${pr.number}:`, err);
+            }
+          }
+          
+          return prsWithPendingReviews;
+        },
+        enabled: authQuery.data?.is_authenticated === true && !!currentLogin,
+        retry: false,
+        staleTime: 5 * 60 * 1000, // 5 minutes
+      };
+    }),
+  });
+
   const pullsQuery = useQuery({
     queryKey: ["pull-requests", repoRef?.owner, repoRef?.repo, showClosedPRs],
     queryFn: async () =>
@@ -331,18 +425,16 @@ function App() {
       authQuery.data?.login,
     ],
     queryFn: () => {
-      console.log("Fetching PR details with current_login:", authQuery.data?.login, "full authQuery.data:", authQuery.data);
-      const payload = {
+      const currentLogin = authQuery.data?.login ?? null;
+      return invoke<PullRequestDetail>("cmd_get_pull_request", {
         owner: repoRef?.owner,
         repo: repoRef?.repo,
         number: selectedPr,
-        currentLogin: authQuery.data?.login ?? null,
-      };
-      console.log("Full payload:", payload);
-      return invoke<PullRequestDetail>("cmd_get_pull_request", payload);
+        currentLogin,
+      });
     },
     enabled:
-      Boolean(repoRef && selectedPr && authQuery.data?.is_authenticated),
+      Boolean(repoRef && selectedPr && authQuery.data?.is_authenticated && authQuery.data?.login),
   });
 
   const { refetch: refetchPullDetail } = pullDetailQuery;
@@ -1302,6 +1394,101 @@ function App() {
     [repoInput, repoRef, queryClient, refetchPulls],
   );
 
+  // Enhance PRs under review with viewed file counts and check for pending reviews
+  const enhancedPrsUnderReview = useMemo(() => {
+    const basePrs = prsUnderReviewQuery.data || [];
+    
+    // Collect all PRs from multiple sources
+    const prMap = new Map<string, PrUnderReview>();
+    
+    // First, add PRs from backend (with local reviews)
+    basePrs.forEach(pr => {
+      const key = `${pr.owner}/${pr.repo}#${pr.number}`;
+      prMap.set(key, pr);
+    });
+    
+    // Add PRs with pending reviews from MRU queries
+    mruPrsQueries.forEach(query => {
+      if (query.data) {
+        query.data.forEach(pr => {
+          const key = `${pr.owner}/${pr.repo}#${pr.number}`;
+          if (!prMap.has(key)) {
+            prMap.set(key, pr);
+          }
+        });
+      }
+    });
+    
+    // Finally, add PRs from viewedFiles that have partial progress
+    Object.keys(viewedFiles).forEach(prKey => {
+      if (!prMap.has(prKey)) {
+        // Parse the key: owner/repo#number
+        const match = prKey.match(/^([^/]+)\/([^#]+)#(\d+)$/);
+        if (match) {
+          const [, owner, repo, numberStr] = match;
+          const number = parseInt(numberStr, 10);
+          prMap.set(prKey, {
+            owner,
+            repo,
+            number,
+            title: "",
+            has_local_review: false,
+            has_pending_review: false,
+            viewed_count: 0,
+            total_count: 0,
+          });
+        }
+      }
+    });
+    
+    // Now process all PRs
+    return Array.from(prMap.values()).map(pr => {
+      const prKey = `${pr.owner}/${pr.repo}#${pr.number}`;
+      const viewed = viewedFiles[prKey] || [];
+      
+      // Get PR details if available to get total file count and title
+      // Start with values from pr (which may already have data from mruPrsQueries)
+      let totalCount = pr.total_count;
+      let title = pr.title;
+      let hasPendingReview = pr.has_pending_review;
+      
+      // Check if this PR is loaded in cache
+      const cachedPrDetail = queryClient.getQueryData<PullRequestDetail>([
+        "pull-request",
+        pr.owner,
+        pr.repo,
+        pr.number,
+        authQuery.data?.login,
+      ]);
+      
+      if (cachedPrDetail) {
+        totalCount = cachedPrDetail.files.length;
+        title = cachedPrDetail.title;
+        // Check for pending reviews
+        const myPendingReview = cachedPrDetail.reviews.find(
+          r => r.is_mine && r.state === "PENDING"
+        );
+        hasPendingReview = !!myPendingReview;
+      }
+      
+      const viewedCount = viewed.length;
+      
+      // Only show if it meets the criteria
+      const showPr = 
+        pr.has_local_review || 
+        hasPendingReview || 
+        (viewedCount > 0 && totalCount > 0 && viewedCount < totalCount);
+      
+      return showPr ? {
+        ...pr,
+        title,
+        viewed_count: viewedCount,
+        total_count: totalCount,
+        has_pending_review: hasPendingReview,
+      } : null;
+    }).filter((pr): pr is PrUnderReview => pr !== null);
+  }, [prsUnderReviewQuery.data, viewedFiles, queryClient, authQuery.data?.login, repoMRU, mruPrsQueries]);
+
   // Add to MRU when pulls load successfully
   useEffect(() => {
     if (pullsQuery.isSuccess && repoRef && !pullsQuery.isError) {
@@ -1332,6 +1519,32 @@ function App() {
   useEffect(() => {
     localStorage.setItem('viewed-files', JSON.stringify(viewedFiles));
   }, [viewedFiles]);
+
+  // Auto-switch PR mode based on whether there are PRs under review
+  // Only switch after queries have finished loading to avoid premature switching
+  useEffect(() => {
+    const allQueriesFinished = mruPrsQueries.every(q => !q.isLoading);
+    const prsQueryFinished = !prsUnderReviewQuery.isLoading;
+    
+    if (prMode === "under-review" && enhancedPrsUnderReview.length === 0 && allQueriesFinished && prsQueryFinished) {
+      setPrMode("repo");
+    }
+  }, [prMode, enhancedPrsUnderReview.length, mruPrsQueries, prsUnderReviewQuery.isLoading]);
+
+  // Handler for selecting a PR from the under-review list
+  const handleSelectPrUnderReview = useCallback((pr: PrUnderReview) => {
+    // Set the repo
+    const repoString = `${pr.owner}/${pr.repo}`;
+    setRepoInput(repoString);
+    setRepoRef({ owner: pr.owner, repo: pr.repo });
+    
+    // Select the PR
+    setSelectedPr(pr.number);
+    setSelectedFilePath(null);
+    
+    // Switch to repo mode to show file list
+    setPrMode("repo");
+  }, []);
 
   const toggleFileViewed = useCallback((filePath: string) => {
     if (!repoRef || !selectedPr) return;
@@ -1529,13 +1742,30 @@ function App() {
         throw new Error("Select a pull request before submitting.");
       }
 
-      await invoke("cmd_submit_local_review", {
-        owner: repoRef.owner,
-        repo: repoRef.repo,
-        prNumber: prDetail.number,
-        body: null,
-        event: "COMMENT",
-      });
+      // Check if there's a pending review from GitHub (not a local draft)
+      // Local reviews have negative IDs, GitHub reviews have positive IDs
+      const githubPendingReview = pendingReview && pendingReview.id > 0;
+      
+      if (githubPendingReview) {
+        // Submit the GitHub pending review
+        await invoke("cmd_submit_pending_review", {
+          owner: repoRef.owner,
+          repo: repoRef.repo,
+          number: prDetail.number,
+          reviewId: pendingReview.id,
+          event: "COMMENT",
+          body: null,
+        });
+      } else {
+        // Submit local review
+        await invoke("cmd_submit_local_review", {
+          owner: repoRef.owner,
+          repo: repoRef.repo,
+          prNumber: prDetail.number,
+          body: null,
+          event: "COMMENT",
+        });
+      }
     },
     onSuccess: () => {
       setPendingReviewOverride(null);
@@ -1773,10 +2003,14 @@ function App() {
     }
   }, [pendingReviewFromServer, repoRef, prDetail, authQuery.data?.login]);
 
-  const handleDeleteReviewClick = useCallback(async () => {
+  const handleDeleteReviewClick = useCallback(() => {
+    setShowDeleteReviewConfirm(true);
+  }, []);
+
+  const confirmDeleteReview = useCallback(async () => {
     if (!pendingReview || !repoRef || !prDetail) return;
     
-    if (!window.confirm("Are you sure you want to delete this pending review?")) return;
+    setShowDeleteReviewConfirm(false);
     
     // Check if this is a GitHub review (has html_url) or local review (no html_url)
     if (pendingReview.html_url) {
@@ -2627,13 +2861,13 @@ function App() {
                       type="button"
                       className="panel__title-button panel__title-button--inline"
                       onClick={handleTogglePrPanel}
-                      disabled={!pullRequests.length}
+                      disabled={prMode === "under-review" ? !enhancedPrsUnderReview.length : !pullRequests.length}
                       {...prPanelAriaProps}
                     >
                       <span className="panel__expando-icon" aria-hidden="true">
                         {isPrPanelCollapsed && selectedPr ? ">" : "v"}
                       </span>
-                      <span className="panel__title-text">{isPrPanelCollapsed && selectedPr ? "PR" : "PRs"}</span>
+                      <span className="panel__title-text">{isPrPanelCollapsed && selectedPr ? "PR" : (prMode === "under-review" ? "PRs Under Review" : "PRs")}</span>
                       {selectedPrSummary ? (
                         <span
                           className="panel__summary panel__summary--inline"
@@ -2649,6 +2883,45 @@ function App() {
                         )
                       )}
                     </button>
+                    <div ref={prFilterMenuRef} className="panel__menu-container">
+                      <button
+                        type="button"
+                        className={`panel__menu-button${isPrFilterMenuOpen ? " panel__menu-button--open" : ""}`}
+                        onClick={togglePrFilterMenu}
+                        title="Filter options"
+                        aria-label="Filter options"
+                      >
+                        ⋯
+                      </button>
+                      {isPrFilterMenuOpen && (
+                        <div className="pr-filter-menu__popover" role="menu">
+                          <button
+                            type="button"
+                            className="pr-filter-menu__item"
+                            onClick={() => {
+                              setPrMode(prMode === "under-review" ? "repo" : "under-review");
+                              closePrFilterMenu();
+                            }}
+                            role="menuitem"
+                          >
+                            {prMode === "under-review" ? "Show Repo PRs" : "Show PRs Under Review"}
+                          </button>
+                          {prMode === "repo" && (
+                            <button
+                              type="button"
+                              className="pr-filter-menu__item"
+                              onClick={() => {
+                                setShowClosedPRs(!showClosedPRs);
+                                closePrFilterMenu();
+                              }}
+                              role="menuitem"
+                            >
+                              {showClosedPRs ? "Hide Closed PRs" : "Show Closed PRs"}
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
                     {isPrPanelCollapsed && selectedPr && prDetail && repoRef && (
                       <a
                         href={`https://github.com/${repoRef.owner}/${repoRef.repo}/pull/${prDetail.number}`}
@@ -2674,77 +2947,89 @@ function App() {
                   </div>
                   {!isPrPanelCollapsed && (
                     <div className="panel__body panel__body--with-search">
-                      <div className="panel__search-header">
-                        <input
-                          type="text"
-                          className="panel__search-input"
-                          placeholder="Search PR # or title..."
-                          value={prSearchFilter}
-                          onChange={(e) => setPrSearchFilter(e.target.value)}
-                        />
-                        <div ref={prFilterMenuRef} className="panel__menu-container">
-                          <button
-                            type="button"
-                            className={`panel__menu-button${isPrFilterMenuOpen ? " panel__menu-button--open" : ""}`}
-                            onClick={togglePrFilterMenu}
-                            title="Filter options"
-                            aria-label="Filter options"
-                          >
-                            ⋯
-                          </button>
-                          {isPrFilterMenuOpen && (
-                            <div className="pr-filter-menu__popover" role="menu">
-                              <button
-                                type="button"
-                                className="pr-filter-menu__item"
-                                onClick={() => {
-                                  setShowClosedPRs(!showClosedPRs);
-                                  closePrFilterMenu();
-                                }}
-                                role="menuitem"
-                              >
-                                {showClosedPRs ? "Hide Closed PRs" : "Show Closed PRs"}
-                              </button>
-                            </div>
-                          )}
+                      {prMode === "repo" && (
+                        <div className="panel__search-header">
+                          <input
+                            type="text"
+                            className="panel__search-input"
+                            placeholder="Search PR # or title..."
+                            value={prSearchFilter}
+                            onChange={(e) => setPrSearchFilter(e.target.value)}
+                          />
                         </div>
-                      </div>
+                      )}
                       <div className="panel__scroll-content">
-                        {pullsQuery.isError ? (
-                          <div className="empty-state empty-state--subtle">
-                            Unable to load pull requests.
-                            <br />
-                            {pullsErrorMessage}
-                          </div>
-                        ) : pullsQuery.isLoading || pullsQuery.isFetching ? (
-                          <div className="empty-state empty-state--subtle">Loading pull requests…</div>
-                        ) : filteredPullRequests.length === 0 ? (
-                          <div className="empty-state empty-state--subtle">
-                            {prSearchFilter.trim() 
-                              ? "No pull requests match your search."
-                              : repoRef
-                              ? "No Markdown or YAML pull requests found."
-                              : "Enter a repository to begin."}
-                          </div>
+                        {prMode === "under-review" ? (
+                          prsUnderReviewQuery.isLoading ? (
+                            <div className="empty-state empty-state--subtle">Loading PRs under review…</div>
+                          ) : enhancedPrsUnderReview.length === 0 ? (
+                            <div className="empty-state empty-state--subtle">
+                              No PRs under review.
+                            </div>
+                          ) : (
+                            enhancedPrsUnderReview.map((pr) => (
+                              <button
+                                key={`${pr.owner}/${pr.repo}/${pr.number}`}
+                                type="button"
+                                className={`pr-item pr-item--compact${
+                                  selectedPr === pr.number && repoRef?.owner === pr.owner && repoRef?.repo === pr.repo
+                                    ? " pr-item--active"
+                                    : ""
+                                }`}
+                                onClick={() => handleSelectPrUnderReview(pr)}
+                              >
+                                <div className="pr-item__header">
+                                  <span className="pr-item__title">#{pr.number} · {pr.title || "Loading..."}</span>
+                                  <span 
+                                    className="pr-item__file-count" 
+                                    title={`${pr.viewed_count} files have been reviewed`}
+                                  >
+                                    {pr.viewed_count} / {pr.total_count || "?"}
+                                  </span>
+                                </div>
+                                <span className="pr-item__repo">{pr.owner}/{pr.repo}</span>
+                              </button>
+                            ))
+                          )
                         ) : (
-                          filteredPullRequests.map((pr) => (
-                            <button
-                              key={pr.number}
-                              type="button"
-                              className={`pr-item pr-item--compact${selectedPr === pr.number ? " pr-item--active" : ""}`}
-                              onClick={() => {
-                                setSelectedPr(pr.number);
-                                setSelectedFilePath(null);
-                              }}
-                            >
-                              <span className="pr-item__title">#{pr.number} · {pr.title}</span>
-                              <span className="pr-item__meta">
-                                <span>{pr.author}</span>
-                                <span>{new Date(pr.updated_at).toLocaleString()}</span>
-                                <span>{pr.head_ref}</span>
-                              </span>
-                            </button>
-                          ))
+                          <>
+                            {pullsQuery.isError ? (
+                              <div className="empty-state empty-state--subtle">
+                                Unable to load pull requests.
+                                <br />
+                                {pullsErrorMessage}
+                              </div>
+                            ) : pullsQuery.isLoading || pullsQuery.isFetching ? (
+                              <div className="empty-state empty-state--subtle">Loading pull requests…</div>
+                            ) : filteredPullRequests.length === 0 ? (
+                              <div className="empty-state empty-state--subtle">
+                                {prSearchFilter.trim() 
+                                  ? "No pull requests match your search."
+                                  : repoRef
+                                  ? "No Markdown or YAML pull requests found."
+                                  : "Enter a repository to begin."}
+                              </div>
+                            ) : (
+                              filteredPullRequests.map((pr) => (
+                                <button
+                                  key={pr.number}
+                                  type="button"
+                                  className={`pr-item pr-item--compact${selectedPr === pr.number ? " pr-item--active" : ""}`}
+                                  onClick={() => {
+                                    setSelectedPr(pr.number);
+                                    setSelectedFilePath(null);
+                                  }}
+                                >
+                                  <span className="pr-item__title">#{pr.number} · {pr.title}</span>
+                                  <span className="pr-item__meta">
+                                    <span>{pr.author}</span>
+                                    <span>{new Date(pr.updated_at).toLocaleString()}</span>
+                                    <span>{pr.head_ref}</span>
+                                  </span>
+                                </button>
+                              ))
+                            )}
+                          </>
                         )}
                       </div>
                     </div>
@@ -3251,6 +3536,35 @@ function App() {
                   }
                   setShowDeleteConfirm(false);
                 }}
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showDeleteReviewConfirm && (
+        <div className="modal-overlay" onClick={() => setShowDeleteReviewConfirm(false)}>
+          <div className="modal-dialog" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>Delete Review</h3>
+            </div>
+            <div className="modal-body">
+              <p>Are you sure you want to delete this pending review?</p>
+            </div>
+            <div className="modal-footer">
+              <button
+                type="button"
+                className="modal-button modal-button--secondary"
+                onClick={() => setShowDeleteReviewConfirm(false)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="modal-button modal-button--danger"
+                onClick={confirmDeleteReview}
               >
                 Delete
               </button>

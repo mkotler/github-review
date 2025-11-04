@@ -365,6 +365,35 @@ impl ReviewStorage {
         Ok(metadata)
     }
     
+    /// Get all review metadata (for finding PRs under review)
+    pub fn get_all_review_metadata(&self) -> AppResult<Vec<ReviewMetadata>> {
+        let conn = self.conn.lock().map_err(|_| AppError::Internal("Lock poisoned".into()))?;
+        
+        let mut stmt = conn.prepare(
+            "SELECT owner, repo, pr_number, commit_id, body, created_at, log_file_index
+             FROM review_metadata"
+        )?;
+        
+        let metadata_iter = stmt.query_map([], |row| {
+            Ok(ReviewMetadata {
+                owner: row.get(0)?,
+                repo: row.get(1)?,
+                pr_number: row.get(2)?,
+                commit_id: row.get(3)?,
+                body: row.get(4)?,
+                created_at: row.get(5)?,
+                log_file_index: row.get(6)?,
+            })
+        })?;
+        
+        let mut results = Vec::new();
+        for metadata in metadata_iter {
+            results.push(metadata?);
+        }
+        
+        Ok(results)
+    }
+    
     /// Abandon a review (mark log file as abandoned, delete from DB)
     pub async fn abandon_review(
         &self,

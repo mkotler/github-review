@@ -1,5 +1,17 @@
 use serde::Serialize;
 
+#[derive(Debug, Serialize, Clone)]
+pub struct PrUnderReview {
+    pub owner: String,
+    pub repo: String,
+    pub number: u64,
+    pub title: String,
+    pub has_local_review: bool,
+    pub has_pending_review: bool,
+    pub viewed_count: usize,
+    pub total_count: usize,
+}
+
 #[derive(Debug, Serialize)]
 pub struct AuthStatus {
     pub is_authenticated: bool,
