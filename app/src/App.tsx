@@ -875,10 +875,17 @@ function App() {
   }, [selectedFileMetadata, fileContentsQuery.data]);
 
   const fileComments = useMemo(() => {
-    if (!selectedFilePath) {
-      return reviewAwareComments;
-    }
-    return reviewAwareComments.filter((comment) => comment.path === selectedFilePath);
+    let filtered = !selectedFilePath 
+      ? reviewAwareComments 
+      : reviewAwareComments.filter((comment) => comment.path === selectedFilePath);
+    
+    // Sort by line number (comments without line numbers go to the end)
+    return filtered.sort((a, b) => {
+      if (a.line === null && b.line === null) return 0;
+      if (a.line === null) return 1;
+      if (b.line === null) return -1;
+      return a.line - b.line;
+    });
   }, [reviewAwareComments, selectedFilePath]);
 
   const hasAnyFileComments = fileComments.length > 0;
@@ -2235,7 +2242,30 @@ function App() {
                                 </div>
                                 <div className="comment-panel__item-body">
                                   {comment.line && (
-                                    <span className="comment-panel__item-line">#{comment.line}.</span>
+                                    <span 
+                                      className="comment-panel__item-line comment-panel__item-line--clickable"
+                                      onClick={() => {
+                                        if (editorRef.current && comment.line) {
+                                          const editor = editorRef.current;
+                                          const lineNumber = comment.line;
+                                          const lineCount = editor.getModel()?.getLineCount() || 0;
+                                          
+                                          // Calculate target position (3 lines from top if possible)
+                                          const targetTop = Math.max(1, lineNumber - 3);
+                                          const targetBottom = Math.min(lineCount, lineNumber + 10);
+                                          
+                                          // Reveal the line with some context
+                                          editor.revealLineInCenter(lineNumber);
+                                          
+                                          // Set cursor position at the line
+                                          editor.setPosition({ lineNumber, column: 1 });
+                                          editor.focus();
+                                        }
+                                      }}
+                                      title="Click to jump to line in editor"
+                                    >
+                                      #{comment.line}.
+                                    </span>
                                   )}
                                   <div className="comment-panel__item-content">
                                     <ReactMarkdown remarkPlugins={[remarkGfm]}>

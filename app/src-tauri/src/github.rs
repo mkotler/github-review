@@ -680,6 +680,31 @@ pub async fn get_pending_review_comments(
     let client = build_client(token)?;
     let comments = fetch_pending_review_comments(&client, owner, repo, number, review_id).await?;
     
+    // Fetch PR files to get patches for position-to-line conversion
+    let files_response = client
+        .get(format!(
+            "{API_BASE}/repos/{owner}/{repo}/pulls/{number}/files"
+        ))
+        .query(&[("per_page", "100")])
+        .send()
+        .await?;
+
+    let files_response = ensure_success(
+        files_response,
+        &format!("list pull request files {owner}/{repo}#{number}"),
+    )
+    .await?;
+
+    let files = files_response.json::<Vec<GitHubPullRequestFile>>().await?;
+    
+    // Build a map of file path to patch
+    let mut patches: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for file in files {
+        if let Some(patch) = file.patch {
+            patches.insert(file.filename, patch);
+        }
+    }
+    
     let normalized_login = current_login
         .filter(|login| !login.is_empty())
         .map(|login| login.to_ascii_lowercase());
@@ -691,7 +716,11 @@ pub async fn get_pending_review_comments(
                 .as_ref()
                 .map(|login| comment.user.login.eq_ignore_ascii_case(login))
                 .unwrap_or(false);
-            map_review_comment(comment, is_mine)
+            
+            // Get the patch for this file
+            let patch = patches.get(&comment.path);
+            
+            map_review_comment(comment, is_mine, patch)
         })
         .collect();
     
@@ -720,14 +749,6 @@ async fn fetch_pending_review_comments(
     .await?;
 
     let comments = response.json::<Vec<GitHubReviewComment>>().await?;
-    eprintln!("Fetched {} pending review comments for review #{}", comments.len(), review_id);
-    for comment in &comments {
-        eprintln!("  Pending comment {}: review_id={:?}, state={:?}", 
-            comment.id, 
-            comment.pull_request_review_id,
-            comment.state
-        );
-    }
     Ok(comments)
 }
 
@@ -849,7 +870,8 @@ fn build_comments(
             .as_ref()
             .map(|login| comment.user.login.eq_ignore_ascii_case(login))
             .unwrap_or(false);
-        collected.push(map_review_comment(comment, is_mine));
+        // No patch needed for submitted comments - they already have line numbers
+        collected.push(map_review_comment(comment, is_mine, None));
     }
 
     for comment in issue_comments {
@@ -906,7 +928,20 @@ fn map_review(
     }
 }
 
-fn map_review_comment(comment: &GitHubReviewComment, is_mine: bool) -> PullRequestComment {
+fn map_review_comment(comment: &GitHubReviewComment, is_mine: bool, patch: Option<&String>) -> PullRequestComment {
+    // Try to get line number from multiple possible fields
+    let mut line = comment.line
+        .or(comment.original_line)
+        .or(comment.start_line)
+        .or(comment.original_start_line);
+    
+    // If we don't have a line number but we have a position and patch, convert it
+    if line.is_none() {
+        if let (Some(position), Some(patch_text)) = (comment.position.or(comment.original_position), patch) {
+            line = convert_diff_position_to_line(patch_text, position, comment.side.as_deref().unwrap_or("RIGHT"));
+        }
+    }
+    
     PullRequestComment {
         id: comment.id,
         body: comment.body.clone(),
@@ -914,8 +949,8 @@ fn map_review_comment(comment: &GitHubReviewComment, is_mine: bool) -> PullReque
         created_at: comment.created_at.clone(),
         url: comment.html_url.clone(),
         path: Some(comment.path.clone()),
-        line: comment.line.or(comment.original_line),
-        side: comment.side.clone(),
+        line,
+        side: comment.side.clone().or(comment.start_side.clone()),
         is_review_comment: true,
         is_draft: comment
             .state
@@ -926,6 +961,87 @@ fn map_review_comment(comment: &GitHubReviewComment, is_mine: bool) -> PullReque
         is_mine,
         review_id: comment.pull_request_review_id,
     }
+}
+
+/// Converts a diff position to an absolute line number
+/// Position is 1-indexed and counts lines in the diff output
+/// Side is "LEFT" (base) or "RIGHT" (head)
+fn convert_diff_position_to_line(patch: &str, position: u64, side: &str) -> Option<u64> {
+    let mut current_position = 0u64;
+    let mut left_line = 0u64; // Current line in base file
+    let mut right_line = 0u64; // Current line in head file
+    
+    for line in patch.lines() {
+        // Parse hunk headers like: @@ -10,7 +10,8 @@
+        if line.starts_with("@@") {
+            if let Some(header) = parse_hunk_header(line) {
+                left_line = header.0;
+                right_line = header.1;
+            }
+            continue;
+        }
+        
+        // Each line in the diff (except headers) increments position
+        current_position += 1;
+        
+        if line.starts_with('-') {
+            // Deletion: only exists on LEFT side
+            if current_position == position && side == "LEFT" {
+                return Some(left_line);
+            }
+            left_line += 1;
+        } else if line.starts_with('+') {
+            // Addition: only exists on RIGHT side
+            if current_position == position && side == "RIGHT" {
+                return Some(right_line);
+            }
+            right_line += 1;
+        } else {
+            // Context line: exists on both sides
+            if current_position == position {
+                return Some(if side == "LEFT" { left_line } else { right_line });
+            }
+            left_line += 1;
+            right_line += 1;
+        }
+    }
+    
+    None
+}
+
+/// Parses a unified diff hunk header to extract starting line numbers
+/// Format: @@ -start_left,count_left +start_right,count_right @@
+/// Returns (left_start, right_start)
+fn parse_hunk_header(line: &str) -> Option<(u64, u64)> {
+    // Extract the part between @@ and @@
+    let parts: Vec<&str> = line.split("@@").collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    
+    let header = parts[1].trim();
+    let sides: Vec<&str> = header.split_whitespace().collect();
+    if sides.len() < 2 {
+        return None;
+    }
+    
+    // Parse left side: -start,count
+    let left_start = sides[0]
+        .trim_start_matches('-')
+        .split(',')
+        .next()?
+        .parse::<u64>()
+        .ok()?;
+    
+    // Parse right side: +start,count
+    let right_start = sides[1]
+        .trim_start_matches('+')
+        .split(',')
+        .next()?
+        .parse::<u64>()
+        .ok()?;
+    
+    Some((left_start, right_start))
 }
 
 fn map_issue_comment(comment: &GitHubIssueComment, is_mine: bool) -> PullRequestComment {
@@ -1005,13 +1121,20 @@ struct GitHubReviewComment {
     pub path: String,
     pub line: Option<u64>,
     pub original_line: Option<u64>,
+    pub original_position: Option<u64>,
+    pub position: Option<u64>,
+    pub start_line: Option<u64>,
+    pub original_start_line: Option<u64>,
     pub side: Option<String>,
+    pub start_side: Option<String>,
     pub user: GitHubUser,
     pub html_url: String,
     pub state: Option<String>,
     pub created_at: String,
     #[serde(default)]
     pub pull_request_review_id: Option<u64>,
+    #[allow(dead_code)]
+    pub subject_type: Option<String>, // "line" or "file" - reserved for future use
 }
 
 #[derive(Debug, Deserialize)]

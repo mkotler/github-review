@@ -1033,6 +1033,15 @@ select {
   gap: 10px;
 }
 
+.comment-panel__list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.comment-panel__list::-webkit-scrollbar-thumb {
+  background: rgba(87, 108, 160, 0.4);
+  border-radius: 3px;
+}
+
 .comment-panel__item {
   border: 1px solid rgba(76, 100, 141, 0.28);
   background: rgba(16, 20, 32, 0.78);
@@ -1123,6 +1132,16 @@ select {
   font-weight: 600;
   color: #9fb8ff;
   flex-shrink: 0;
+}
+
+.comment-panel__item-line--clickable {
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+
+.comment-panel__item-line--clickable:hover {
+  color: #c5d4ff;
+  text-decoration: underline;
 }
 
 .comment-panel__item-content {

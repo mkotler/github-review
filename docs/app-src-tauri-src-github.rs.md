@@ -227,7 +227,7 @@ This module implements a comprehensive GitHub REST API client that serves as the
 
 ### get_pending_review_comments
 
-**Purpose:** Public wrapper for fetching pending review comments with ownership mapping.
+**Purpose:** Public wrapper for fetching pending review comments with ownership mapping and intelligent line number resolution.
 
 **Parameters:**
 - `token: &str` - GitHub OAuth access token
@@ -237,13 +237,18 @@ This module implements a comprehensive GitHub REST API client that serves as the
 - `review_id: u64` - Review ID
 - `current_login: Option<&str>` - Currently authenticated user's login
 
-**Returns:** `AppResult<Vec<PullRequestComment>>` - Mapped comments with is_mine flag set appropriately
+**Returns:** `AppResult<Vec<PullRequestComment>>` - Mapped comments with is_mine flag and absolute line numbers
 
-**Side Effects:** Makes HTTP requests through fetch_pending_review_comments
+**Side Effects:** 
+- Makes HTTP requests to fetch pending review comments
+- Fetches PR files with patches to convert diff positions to line numbers
+- Builds a HashMap of file paths to patches for position conversion
 
 **Exceptions:** Propagates network and API errors
 
-**Dependencies:** build_client, fetch_pending_review_comments, map_review_comment
+**Performance Note:** This function performs diff position-to-line number conversion for pending review comments. Pending comments from GitHub API often only contain `position` (diff position) rather than absolute line numbers. The function fetches file patches and parses unified diff hunks to convert positions to actual line numbers in the file.
+
+**Dependencies:** build_client, fetch_pending_review_comments, map_review_comment, convert_diff_position_to_line, parse_hunk_header
 
 ---
 
@@ -575,19 +580,27 @@ This module implements a comprehensive GitHub REST API client that serves as the
 
 ### map_review_comment
 
-**Purpose:** Converts a GitHub review comment to application domain model, detecting pending draft state.
+**Purpose:** Converts a GitHub review comment to application domain model with intelligent line number resolution from diff positions.
 
 **Parameters:**
 - `comment: &GitHubReviewComment` - Raw GitHub review comment object
 - `is_mine: bool` - Whether the comment belongs to the current user
+- `patch: Option<&String>` - Optional unified diff patch for position-to-line conversion
 
 **Returns:** `PullRequestComment` - Domain model with path, line, side, draft state, and review association
 
 **Side Effects:** None (pure function)
 
+**Line Number Resolution:** Attempts to get line numbers in this priority order:
+1. `line` field (absolute line number for submitted comments)
+2. `original_line` field (line number in base commit)
+3. `start_line` field (multi-line comment start)
+4. `original_start_line` field (multi-line comment start in base)
+5. Convert `position` or `original_position` using patch (for pending comments)
+
 **Exceptions:** None
 
-**Dependencies:** None
+**Dependencies:** convert_diff_position_to_line (for position conversion)
 
 ---
 
@@ -807,3 +820,60 @@ This module implements a comprehensive GitHub REST API client that serves as the
 ### SUPPORTED_EXTENSIONS
 **Value:** `[".md", ".markdown", ".yaml", ".yml"]`
 **Purpose:** File extensions that will be fetched and displayed in the application
+
+---
+
+## Diff Position Conversion Functions
+
+### convert_diff_position_to_line
+
+**Purpose:** Converts a diff position (line number within a unified diff) to an absolute line number in the file.
+
+**Parameters:**
+- `patch: &str` - Unified diff patch text
+- `position: u64` - 1-indexed position in the diff output
+- `side: &str` - "LEFT" (base file) or "RIGHT" (head file)
+
+**Returns:** `Option<u64>` - Absolute line number in the file, or None if position is invalid
+
+**Algorithm:**
+1. Parses hunk headers (e.g., `@@ -10,7 +10,8 @@`) to get starting line numbers for both sides
+2. Iterates through diff lines, tracking current line numbers for LEFT and RIGHT
+3. For each diff line:
+   - `-` prefix: only exists on LEFT, increments left_line counter
+   - `+` prefix: only exists on RIGHT, increments right_line counter
+   - ` ` prefix: context line, exists on both sides, increments both counters
+4. When position matches current position counter, returns the appropriate line number based on side
+
+**Side Effects:** None (pure function)
+
+**Exceptions:** Returns None if position is out of bounds or patch is invalid
+
+**Usage:** Used by `map_review_comment` to convert GitHub's diff positions from pending review comments into actual line numbers for display in the UI.
+
+**Dependencies:** parse_hunk_header
+
+---
+
+### parse_hunk_header
+
+**Purpose:** Extracts starting line numbers from a unified diff hunk header.
+
+**Parameters:**
+- `line: &str` - Hunk header line (format: `@@ -start_left,count_left +start_right,count_right @@`)
+
+**Returns:** `Option<(u64, u64)>` - Tuple of (left_start_line, right_start_line), or None if parsing fails
+
+**Side Effects:** None (pure function)
+
+**Exceptions:** Returns None if header format is invalid
+
+**Example:** 
+- Input: `"@@ -10,7 +12,8 @@ function_name"`
+- Output: `Some((10, 12))`
+
+**Dependencies:** None
+
+---
+
+*Last generated: 2025-11-04*
