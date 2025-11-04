@@ -164,6 +164,15 @@ function App() {
   const [repoRef, setRepoRef] = useState<RepoRef | null>(null);
   const [repoInput, setRepoInput] = useState("");
   const [repoError, setRepoError] = useState<string | null>(null);
+  const [repoMRU, setRepoMRU] = useState<string[]>(() => {
+    const stored = localStorage.getItem('repo-mru');
+    return stored ? JSON.parse(stored) : [];
+  });
+  const [showRepoMRU, setShowRepoMRU] = useState(false);
+  const [viewedFiles, setViewedFiles] = useState<Record<string, string[]>>(() => {
+    const stored = localStorage.getItem('viewed-files');
+    return stored ? JSON.parse(stored) : {};
+  });
   const [selectedPr, setSelectedPr] = useState<number | null>(null);
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
   const [showClosedPRs, setShowClosedPRs] = useState(false);
@@ -340,12 +349,12 @@ function App() {
   );
 
   const comments = useMemo(() => prDetail?.comments ?? [], [prDetail]);
-  const myComments = useMemo(() => {
-    if (comments.length > 0) {
-      return comments.filter((comment) => comment.is_mine);
-    }
-    return prDetail?.my_comments ?? [];
-  }, [comments, prDetail]);
+  // const myComments = useMemo(() => {
+  //   if (comments.length > 0) {
+  //     return comments.filter((comment) => comment.is_mine);
+  //   }
+  //   return prDetail?.my_comments ?? [];
+  // }, [comments, prDetail]);
 
   const reviews = prDetail?.reviews ?? [];
   const pendingReviewFromServer = useMemo(() => {
@@ -486,6 +495,30 @@ function App() {
       setLocalComments([]);
     }
   }, [pendingReviewOverride?.id, pendingReviewFromServer]); // Only depend on the ID, not the whole callback
+
+  // Automatically load pending review comments from GitHub when PR loads
+  useEffect(() => {
+    if (pendingReviewFromServer && repoRef && prDetail && !pendingReviewOverride) {
+      // Only auto-load if we haven't manually opened the review yet
+      const fetchPendingComments = async () => {
+        try {
+          const pendingComments = await invoke<PullRequestComment[]>("cmd_get_pending_review_comments", {
+            owner: repoRef.owner,
+            repo: repoRef.repo,
+            prNumber: prDetail.number,
+            reviewId: pendingReviewFromServer.id,
+            currentLogin: authQuery.data?.login ?? null,
+          });
+          setLocalComments(pendingComments);
+          // Set the pending review override so reviewAwareComments includes these comments
+          setPendingReviewOverride(pendingReviewFromServer);
+        } catch (error) {
+          console.error("Failed to auto-fetch pending review comments:", error);
+        }
+      };
+      void fetchPendingComments();
+    }
+  }, [pendingReviewFromServer?.id, repoRef, prDetail?.number, authQuery.data?.login, pendingReviewOverride]);
 
   const reviewAwareComments = useMemo(() => {
     console.log("reviewAwareComments COMPUTING with:", {
@@ -731,6 +764,7 @@ function App() {
     if (!selectedFilePath) {
       return;
     }
+    setIsSidebarCollapsed(false);
     setIsInlineCommentOpen(true);
     setFileCommentError(null);
     setFileCommentSuccess(false);
@@ -824,6 +858,15 @@ function App() {
     openDevtoolsWindow();
   }, [closeUserMenu]);
 
+  const handleOpenLogFolder = useCallback(async () => {
+    closeUserMenu();
+    try {
+      await invoke('cmd_open_log_folder');
+    } catch (error) {
+      console.error('Failed to open log folder:', error);
+    }
+  }, [closeUserMenu]);
+
   const handleLogout = useCallback(() => {
     closeUserMenu();
     logoutMutation.mutate();
@@ -884,7 +927,7 @@ function App() {
       if (a.line === null && b.line === null) return 0;
       if (a.line === null) return 1;
       if (b.line === null) return -1;
-      return a.line - b.line;
+      return (a.line ?? 0) - (b.line ?? 0);
     });
   }, [reviewAwareComments, selectedFilePath]);
 
@@ -1057,7 +1100,8 @@ function App() {
     setFileCommentIsFileLevel(false);
     setFileCommentMode("single");
     setFileCommentSide("RIGHT");
-    setIsInlineCommentOpen(false);
+    // Don't close the inline comment panel if it's already open
+    // This allows clicking comment badges to navigate and keep panel open
     setIsGeneralCommentOpen(false);
     setIsFileCommentComposerVisible(false);
   }, [selectedFilePath]);
@@ -1214,10 +1258,65 @@ function App() {
       setRepoRef({ owner, repo: repository });
       setSelectedPr(null);
       setSelectedFilePath(null);
+      setPrSearchFilter("");
       queryClient.removeQueries({ queryKey: ["pull-request"] });
     },
     [repoInput, repoRef, queryClient, refetchPulls],
   );
+
+  // Add to MRU when pulls load successfully
+  useEffect(() => {
+    if (pullsQuery.isSuccess && repoRef && !pullsQuery.isError) {
+      const repoString = `${repoRef.owner}/${repoRef.repo}`;
+      setRepoMRU(prev => {
+        const filtered = prev.filter(r => r !== repoString);
+        const updated = [repoString, ...filtered].slice(0, 10);
+        localStorage.setItem('repo-mru', JSON.stringify(updated));
+        return updated;
+      });
+    }
+  }, [pullsQuery.isSuccess, pullsQuery.isError, repoRef]);
+
+  // Auto-navigate to pending review if no published comments
+  useEffect(() => {
+    if (pendingReview && !isInlineCommentOpen) {
+      // Check if there are any comments in the pending review (including local and GitHub pending)
+      const pendingComments = reviewAwareComments.filter(c => c.review_id === pendingReview.id);
+      const publishedComments = comments.filter(c => !c.is_draft && c.review_id !== pendingReview.id);
+      
+      if (pendingComments.length > 0 && publishedComments.length === 0) {
+        setIsInlineCommentOpen(true);
+      }
+    }
+  }, [pendingReview, reviewAwareComments, comments, isInlineCommentOpen]);
+
+  // Persist viewed files state
+  useEffect(() => {
+    localStorage.setItem('viewed-files', JSON.stringify(viewedFiles));
+  }, [viewedFiles]);
+
+  const toggleFileViewed = useCallback((filePath: string) => {
+    if (!repoRef || !selectedPr) return;
+    const prKey = `${repoRef.owner}/${repoRef.repo}#${selectedPr}`;
+    setViewedFiles(prev => {
+      const prViewed = prev[prKey] || [];
+      const updated = prViewed.includes(filePath)
+        ? prViewed.filter(f => f !== filePath)
+        : [...prViewed, filePath];
+      return { ...prev, [prKey]: updated };
+    });
+  }, [repoRef, selectedPr]);
+
+  const isFileViewed = useCallback((filePath: string): boolean => {
+    if (!repoRef || !selectedPr) return false;
+    const prKey = `${repoRef.owner}/${repoRef.repo}#${selectedPr}`;
+    return (viewedFiles[prKey] || []).includes(filePath);
+  }, [repoRef, selectedPr, viewedFiles]);
+
+  // Get comment count for a file
+  const getFileCommentCount = useCallback((filePath: string): number => {
+    return reviewAwareComments.filter(c => c.path === filePath).length;
+  }, [reviewAwareComments]);
 
   const handleLogin = useCallback(async () => {
     await loginMutation.mutateAsync();
@@ -1540,6 +1639,7 @@ function App() {
   const handleAddCommentClick = useCallback(() => {
     setEditingCommentId(null);
     setEditingComment(null);
+    setIsSidebarCollapsed(false);
     openFileCommentComposer(pendingReview ? "review" : "single");
   }, [openFileCommentComposer, pendingReview]);
 
@@ -1664,12 +1764,12 @@ function App() {
     }
   }, [pendingReview, repoRef, prDetail, deleteReviewMutation]);
 
-  const handleCloseReviewClick = useCallback(() => {
-    // Clear the review override to go back to viewing published comments, but keep panel open
-    setPendingReviewOverride(null);
-    setLocalComments([]);
-    // Keep isInlineCommentOpen=true so the panel stays open showing published comments
-  }, []);
+  // const handleCloseReviewClick = useCallback(() => {
+  //   // Clear the review override to go back to viewing published comments, but keep panel open
+  //   setPendingReviewOverride(null);
+  //   setLocalComments([]);
+  //   // Keep isInlineCommentOpen=true so the panel stays open showing published comments
+  // }, []);
 
   const handleCommentSubmit = useCallback(
     (event: React.FormEvent) => {
@@ -1875,6 +1975,14 @@ function App() {
               </button>
               {isUserMenuOpen && (
                 <div className="user-menu__popover" role="menu">
+                  <button
+                    type="button"
+                    className="user-menu__item"
+                    onClick={handleOpenLogFolder}
+                    role="menuitem"
+                  >
+                    Open Log Folder
+                  </button>
                   {import.meta.env.DEV && (
                     <button
                       type="button"
@@ -1882,7 +1990,7 @@ function App() {
                       onClick={handleOpenDevtools}
                       role="menuitem"
                     >
-                      Devtools
+                      Debugging
                     </button>
                   )}
                   <button
@@ -2149,6 +2257,18 @@ function App() {
                       </form>
                     ) : (
                       <div className="comment-panel__existing">
+                        {pendingReview && pendingReview.html_url && (
+                          <button
+                            type="button"
+                            className="comment-panel__action-button comment-panel__action-button--subtle"
+                            onClick={() => {
+                              setIsInlineCommentOpen(false);
+                            }}
+                            style={{ marginBottom: '12px' }}
+                          >
+                            ← Back to comments
+                          </button>
+                        )}
                         {pendingReview && (
                           <div className="comment-panel__review-type">
                             {pendingReview.html_url 
@@ -2248,11 +2368,6 @@ function App() {
                                         if (editorRef.current && comment.line) {
                                           const editor = editorRef.current;
                                           const lineNumber = comment.line;
-                                          const lineCount = editor.getModel()?.getLineCount() || 0;
-                                          
-                                          // Calculate target position (3 lines from top if possible)
-                                          const targetTop = Math.max(1, lineNumber - 3);
-                                          const targetBottom = Math.min(lineCount, lineNumber + 10);
                                           
                                           // Reveal the line with some context
                                           editor.revealLineInCenter(lineNumber);
@@ -2307,13 +2422,6 @@ function App() {
                               >
                                 {deleteReviewMutation.isPending ? "Deleting…" : "Delete review"}
                               </button>
-                              <button
-                                type="button"
-                                className="comment-panel__action-button"
-                                onClick={handleCloseReviewClick}
-                              >
-                                Close Review
-                              </button>
                             </>
                           ) : (pendingReviewFromServer || localComments.length > 0) ? (
                             <button
@@ -2327,6 +2435,8 @@ function App() {
                         </div>
                       </div>
                     )
+                  ) : pullDetailQuery.isLoading || (tocFileMetadata && tocContentQuery.isLoading) ? (
+                    <div className="comment-panel__empty">Loading files…</div>
                   ) : (
                     <div className="comment-panel__empty">Select a file to leave feedback.</div>
                   )}
@@ -2387,11 +2497,54 @@ function App() {
                   {!isRepoPanelCollapsed && (
                     <div className="panel__body">
                       <form className="repo-form" onSubmit={handleRepoSubmit}>
-                        <input
-                          value={repoInput}
-                          placeholder="docs/handbook"
-                          onChange={(event) => setRepoInput(event.target.value)}
-                        />
+                        <div className="repo-form__input-group">
+                          <input
+                            value={repoInput}
+                            placeholder="docs/handbook"
+                            onChange={(event) => setRepoInput(event.target.value)}
+                          />
+                          {repoMRU.filter(r => r !== formattedRepo).length > 0 && (
+                            <div className="repo-form__dropdown-wrapper">
+                              <button
+                                type="button"
+                                className={`repo-form__dropdown${showRepoMRU ? " repo-form__dropdown--open" : ""}`}
+                                onClick={() => setShowRepoMRU(!showRepoMRU)}
+                                aria-label="Recent repositories"
+                              >
+                                v
+                              </button>
+                              {showRepoMRU && (
+                                <div className="repo-form__mru">
+                                  {repoMRU.filter(r => r !== formattedRepo).map(repo => (
+                                    <button
+                                      key={repo}
+                                      type="button"
+                                      className="repo-form__mru-item"
+                                      onClick={() => {
+                                        setRepoInput(repo);
+                                        setShowRepoMRU(false);
+                                        // Auto-load the selected repository
+                                        const match = /^([\w.-]+)\/([\w.-]+)$/.exec(repo);
+                                        if (match) {
+                                          const owner = match[1];
+                                          const repository = match[2];
+                                          setRepoError(null);
+                                          setRepoRef({ owner, repo: repository });
+                                          setSelectedPr(null);
+                                          setSelectedFilePath(null);
+                                          setPrSearchFilter("");
+                                          queryClient.removeQueries({ queryKey: ["pull-request"] });
+                                        }
+                                      }}
+                                    >
+                                      {repo}
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
                         <button
                           type="submit"
                           className="repo-form__submit"
@@ -2546,27 +2699,39 @@ function App() {
                   )}
                 </div>
 
-                <div className="panel panel--files" style={{ marginTop: isInlineCommentOpen && prDetail ? '8px' : undefined }}>
-                  <div className="panel__header panel__header--static">
-                    <span>Files</span>
-                  </div>
-                  <div className="panel__body panel__body--flush">
-                    {pullDetailQuery.isLoading ? (
-                      <div className="empty-state empty-state--subtle">Loading files…</div>
-                    ) : !prDetail ? (
-                      <div className="empty-state empty-state--subtle">Select a pull request.</div>
-                    ) : sortedFiles.length === 0 ? (
-                      <div className="empty-state empty-state--subtle">
-                        No Markdown or YAML files in this pull request.
-                      </div>
-                    ) : (
+                {selectedPr && !isInlineCommentOpen && (
+                  <div className="panel panel--files">
+                    <div className="panel__header panel__header--static">
+                      <span>Files</span>
+                    </div>
+                    <div className="panel__body panel__body--flush">
+                      {pullDetailQuery.isLoading || (tocFileMetadata && tocContentQuery.isLoading) ? (
+                        <div className="empty-state empty-state--subtle">Loading files…</div>
+                      ) : !prDetail ? (
+                        <div className="empty-state empty-state--subtle">Select a pull request.</div>
+                      ) : sortedFiles.length === 0 ? (
+                        <div className="empty-state empty-state--subtle">
+                          No Markdown or YAML files in this pull request.
+                        </div>
+                      ) : (
                       <>
                         <ul className="file-list file-list--compact">
                           {visibleFiles.map((file) => {
                             const displayName = formatFileLabel(file.path);
                             const tooltip = formatFileTooltip(file);
+                            const commentCount = getFileCommentCount(file.path);
+                            const viewed = isFileViewed(file.path);
                             return (
-                              <li key={file.path}>
+                              <li key={file.path} className="file-list__item">
+                                <input
+                                  type="checkbox"
+                                  className="file-list__checkbox"
+                                  checked={viewed}
+                                  onChange={() => toggleFileViewed(file.path)}
+                                  onClick={(e) => e.stopPropagation()}
+                                  title="Viewed"
+                                  aria-label="Mark as viewed"
+                                />
                                 <button
                                   type="button"
                                   className={`file-list__button${
@@ -2576,15 +2741,31 @@ function App() {
                                   title={tooltip}
                                 >
                                   <span className="file-list__name">{displayName}</span>
+                                  {commentCount > 0 && (
+                                    <span 
+                                      className="file-list__badge"
+                                      title={`${commentCount} comment${commentCount !== 1 ? 's' : ''}`}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        if (selectedFilePath !== file.path) {
+                                          setSelectedFilePath(file.path);
+                                        }
+                                        setIsInlineCommentOpen(true);
+                                      }}
+                                    >
+                                      {commentCount}
+                                    </span>
+                                  )}
                                 </button>
                               </li>
                             );
                           })}
                         </ul>
                       </>
-                    )}
+                      )}
+                    </div>
                   </div>
-                </div>
+                )}
               </>
             )}
           </div>
@@ -2810,6 +2991,7 @@ function App() {
                             
                             if (lineNumber && isGlyphMargin) {
                               // Set the line and open directly to composer
+                              setIsSidebarCollapsed(false);
                               setFileCommentLine(lineNumber.toString());
                               setFileCommentSide("RIGHT");
                               setFileCommentIsFileLevel(false);

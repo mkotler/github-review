@@ -46,7 +46,7 @@ github-review/
 ## Frontend Source Files
 
 ### [app/src/App.tsx](app-src-App.tsx.md)
-Primary React application component containing the full UI and business logic for the GitHub review tool. Implements PR listing, file viewing, comment management, markdown preview, and Monaco editor integration.
+Primary React application component containing the full UI and business logic for the GitHub review tool. Implements PR listing, file viewing, comment management, markdown preview, and Monaco editor integration. Features include MRU repository dropdown with localStorage persistence, comment count badges on files, file viewed tracking with per-PR state, auto-navigation to pending reviews, and quick access to log folder.
 
 ### [app/src/main.tsx](app-src-main.tsx.md)
 React application entry point that sets up TanStack Query provider and renders the root App component.

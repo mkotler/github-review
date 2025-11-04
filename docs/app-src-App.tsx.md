@@ -4,11 +4,19 @@
 
 **Last Updated:** November 2025
 
-**Lines of Code:** 2636
+**Lines of Code:** 3202
 
 ## Capabilities Provided
 
-This is the main React component that implements the complete GitHub pull request review UI. It provides a comprehensive desktop interface for browsing repositories, viewing pull requests, reading file changes with syntax highlighting, composing and managing comments, and submitting reviews. The component integrates Monaco Editor for code viewing with side-by-side diff support, markdown preview with scroll synchronization, local SQLite storage for draft reviews with crash recovery, and full GitHub API integration for PR operations. Key features include OAuth authentication flow, repository and PR navigation, file-level and line-level commenting (both immediate and review-based), local draft comment management, pending review workflows, and AsyncImage component for rendering embedded images in markdown previews.
+This is the main React component that implements the complete GitHub pull request review UI. It provides a comprehensive desktop interface for browsing repositories, viewing pull requests, reading file changes with syntax highlighting, composing and managing comments, and submitting reviews.
+
+### Recent Enhancements (November 2025)
+
+- **Most Recently Used (MRU) Repositories**: Dropdown menu next to repository input stores up to 10 recently accessed repositories with auto-load functionality and localStorage persistence
+- **Comment Count Badges**: Visual indicators on file list showing number of comments per file (includes both published and pending review comments) with tooltip and click-to-navigate
+- **File Viewed Tracking**: Checkbox on each file to mark as viewed with state persisted across sessions by PR in localStorage
+- **Auto-Navigate to Pending Review**: Automatically opens comment panel when pending review exists with no published comments to guide user to in-progress work
+- **Log Folder Access**: Quick access to review logs via "Open Log Folder" menu item for debugging and recovery The component integrates Monaco Editor for code viewing with side-by-side diff support, markdown preview with scroll synchronization, local SQLite storage for draft reviews with crash recovery, and full GitHub API integration for PR operations. Key features include OAuth authentication flow, repository and PR navigation, file-level and line-level commenting (both immediate and review-based), local draft comment management, pending review workflows, and AsyncImage component for rendering embedded images in markdown previews.
 
 ## Type Definitions
 
@@ -77,9 +85,13 @@ File type for syntax highlighting: "markdown" | "yaml".
 ### Repository & PR State
 - `repoRef` - Currently selected repository (owner/repo)
 - `repoInput` - Repository input field value
+- `repoMRU` - Most recently used repositories (up to 10, stored in localStorage)
+- `showRepoMRU` - Dropdown visibility toggle for MRU list
 - `selectedPr` - Currently selected PR number
 - `selectedFilePath` - Currently selected file path
 - `showClosedPRs` - Toggle for showing closed/all PRs vs open only
+- `prSearchFilter` - Search filter text for PR list (searches number, title, author)
+- `viewedFiles` - Map of viewed files by PR (stored in localStorage as `viewed-files`)
 
 ### Data Queries
 - `pullsQuery` - List of pull requests for selected repository
@@ -139,10 +151,15 @@ File type for syntax highlighting: "markdown" | "yaml".
 
 ### Repository Management
 - Repository input validates format (owner/repo)
+- MRU dropdown stores last 10 repositories with auto-load on click
+- Current repository excluded from MRU list to avoid duplication
+- MRU persisted in localStorage as `repo-mru` array
 - Fetches PR list on repository selection with pagination (100 PRs per page)
 - Displays PR count and refresh button
 - Supports filtering open vs all PRs via "..." menu
 - Real-time PR search by number, title, or author (no re-fetching)
+- Search filter cleared automatically when switching repositories
+- "Open Log Folder" menu item opens system file explorer to review logs directory
 
 ### Pull Request Viewing
 - List view with number, title, author, branch, last updated
@@ -151,6 +168,15 @@ File type for syntax highlighting: "markdown" | "yaml".
 - Progressive file loading: Shows 50 files immediately (metadata only)
 - Background preloading of file contents in toc.yml order
 - Auto-selects first file on PR load
+- **Comment Count Badges**: Displays number of comments per file in file list with tooltip showing count
+  - Includes both published and pending review comments
+  - Clickable badges navigate to file and open comment panel
+  - Auto-fetches pending review comments from GitHub on PR load for immediate display
+- **File Viewed Tracking**: Checkbox on each file marks as viewed
+  - State persisted per PR in localStorage as `viewed-files` map
+  - Survives browser/app restarts
+  - Cleared when PR is closed/completed
+- **Auto-Navigate to Pending Review**: When PR loads with pending review and no published comments, automatically opens comment panel to show draft comments
 
 ### File Viewing
 - Monaco Editor with markdown/yaml syntax highlighting
@@ -221,10 +247,12 @@ File type for syntax highlighting: "markdown" | "yaml".
 ### UI Layout
 
 **Sidebar (Resizable):**
-- Repository selector
-- PR list with search/filter
+- Repository selector with MRU dropdown (down caret icon)
+- PR list with search/filter (clears on repo change)
+- File list with comment count badges and viewed checkboxes
 - Collapsible sections
 - Minimum width: 320px
+- Auto-expands when user opens comment composer or clicks inline comment button
 
 **Main Content Area:**
 - Top toolbar: User menu, devtools, file selector, view mode toggle
@@ -396,6 +424,8 @@ File type for syntax highlighting: "markdown" | "yaml".
 **Utilities:**
 - `cmd_fetch_file_content` - Fetch file content (for AsyncImage)
 - `cmd_open_devtools` - Open devtools window
+- `cmd_open_log_folder` - Open system file explorer to review logs directory
+- `cmd_get_pending_review_comments` - Fetch pending review comments from GitHub (for auto-loading on PR load)
 
 ---
 

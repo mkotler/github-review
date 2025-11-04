@@ -452,6 +452,23 @@ This file serves as the central integration point for the Tauri backend, providi
 
 ---
 
+#### `cmd_open_log_folder(app: tauri::AppHandle) -> Result<(), String>`
+**Purpose:** Opens the review logs directory in the system's default file explorer  
+**Parameters:**  
+- `app` - Tauri application handle for accessing app data directory
+
+**Returns:** `()` on success, error string on failure  
+**Side Effects:**  
+- Creates `review_logs` directory if it doesn't exist
+- Opens directory in system file explorer (Finder on macOS, Explorer on Windows, default file manager on Linux)
+- Uses `open` crate to handle platform-specific file manager launching
+
+**Dependencies:** Tauri app path resolver, `open` crate, `std::fs`
+
+**Usage:** Called from frontend user menu "Open Log Folder" option to provide quick access to review log files for debugging and manual recovery
+
+---
+
 ## Data Structures
 
 ### `SubmitFileCommentArgs`

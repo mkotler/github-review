@@ -482,6 +482,26 @@ fn cmd_get_storage_info(app: tauri::AppHandle) -> Result<String, String> {
     Ok(info)
 }
 
+#[tauri::command]
+fn cmd_open_log_folder(app: tauri::AppHandle) -> Result<(), String> {
+    let data_dir = app.path().app_data_dir()
+        .map_err(|e| format!("Failed to get app data dir: {:?}", e))?;
+    
+    let log_dir = data_dir.join("review_logs");
+    
+    // Create the directory if it doesn't exist
+    if !log_dir.exists() {
+        std::fs::create_dir_all(&log_dir)
+            .map_err(|e| format!("Failed to create log directory: {:?}", e))?;
+    }
+    
+    // Open the log directory in the system's file explorer
+    open::that(&log_dir)
+        .map_err(|e| format!("Failed to open log folder: {:?}", e))?;
+    
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     dotenvy::dotenv().ok();
@@ -520,6 +540,7 @@ pub fn run() {
             cmd_delete_review,
             cmd_get_pending_review_comments,
             cmd_open_devtools,
+            cmd_open_log_folder,
             cmd_local_start_review,
             cmd_local_add_comment,
             cmd_local_update_comment,

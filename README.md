@@ -6,9 +6,13 @@ A desktop application built with Tauri and React that streamlines the GitHub pul
 
 - **OAuth Authentication** - Secure GitHub login via OAuth 2.0 flow with credential storage in system keyring
 - **PR Browsing & Viewing** - List and filter pull requests with pagination (100 PRs per page) and real-time search by PR number, title, or author
+- **Most Recently Used (MRU) Repositories** - Dropdown menu stores up to 10 recently accessed repositories with auto-load functionality and localStorage persistence
 - **Smart File Loading** - Progressive file loading prioritized by toc.yml order with background content preloading for instant file viewing
 - **Enhanced Code Review** - Monaco editor integration with diff view and side-by-side source/preview panes
 - **Inline Comment Creation** - Hover over line numbers to reveal "+" buttons for quick line-level commenting
+- **Comment Count Badges** - Visual indicators on file list showing number of comments per file (includes both published and pending review comments)
+- **File Viewed Tracking** - Checkbox on each file to mark as viewed with state persisted across sessions by PR
+- **Auto-Navigate to Pending Review** - Automatically opens comment panel when pending review exists with no published comments
 - **Local Review Storage** - SQLite-backed comment drafting with automatic log file generation for crash recovery
 - **Comment Management** - Create, edit, and delete comments locally before submitting to GitHub
 - **Bidirectional Scroll Sync** - Synchronized scrolling between source code and markdown preview
@@ -16,6 +20,7 @@ A desktop application built with Tauri and React that streamlines the GitHub pul
 - **Batch Submission** - Submit all review comments atomically as a single GitHub review
 - **Review State Management** - Support for APPROVE, REQUEST_CHANGES, COMMENT, and PENDING review states
 - **Abandoned Review Tracking** - Preserve log files when reviews are cancelled for audit/email purposes
+- **Log Folder Access** - Quick access to review logs via "Open Log Folder" menu item
 
 ## Project Structure
 
