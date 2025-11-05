@@ -2060,8 +2060,11 @@ function App() {
     
     setShowDeleteReviewConfirm(false);
     
-    // Check if this is a GitHub review (has html_url) or local review (no html_url)
-    if (pendingReview.html_url) {
+    // Check if this is a GitHub review (exists in server reviews array) or local review
+    // Use same logic as submitReviewMutation for consistency
+    const isGithubReview = reviews.some(r => r.id === pendingReview.id && r.state === "PENDING" && r.is_mine);
+    
+    if (isGithubReview) {
       // GitHub review - use the delete review mutation
       void deleteReviewMutation.mutate(pendingReview.id);
     } else {
@@ -2082,7 +2085,7 @@ function App() {
         setFileCommentError(message);
       }
     }
-  }, [pendingReview, repoRef, prDetail, deleteReviewMutation]);
+  }, [pendingReview, repoRef, prDetail, deleteReviewMutation, reviews]);
 
   // const handleCloseReviewClick = useCallback(() => {
   //   // Clear the review override to go back to viewing published comments, but keep panel open
