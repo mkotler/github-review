@@ -1767,10 +1767,12 @@ function App() {
       }
 
       // Check if there's a pending review from GitHub (not a local draft)
-      // Local reviews have negative IDs, GitHub reviews have positive IDs
-      const githubPendingReview = pendingReview && pendingReview.id > 0;
+      // GitHub reviews will be in the reviews array from the server with PENDING state
+      // Local reviews use PR number as ID and won't be in the server reviews array
+      const isGithubPendingReview = pendingReview && 
+        reviews.some(r => r.id === pendingReview.id && r.state === "PENDING" && r.is_mine);
       
-      if (githubPendingReview) {
+      if (isGithubPendingReview) {
         // Submit the GitHub pending review
         await invoke("cmd_submit_pending_review", {
           owner: repoRef.owner,
