@@ -102,7 +102,7 @@ const openDevtoolsWindow = () => {
   });
 };
 
-const MIN_SIDEBAR_WIDTH = 320;
+const MIN_SIDEBAR_WIDTH = 340;
 const MIN_CONTENT_WIDTH = 480;
 
 // Component to handle async image loading
@@ -544,6 +544,76 @@ function App() {
     setHasManuallyClosedCommentPanel(false);
   }, [selectedPr]);
 
+  // Check for existing local review when PR loads
+  useEffect(() => {
+    const checkForLocalReview = async () => {
+      if (!repoRef || !prDetail || pendingReviewOverride || pendingReviewFromServer) {
+        return;
+      }
+
+      try {
+        console.log("Checking for existing local review...");
+        type LocalComment = {
+          id: number;
+          owner: string;
+          repo: string;
+          pr_number: number;
+          file_path: string;
+          line_number: number | null;
+          side: "RIGHT" | "LEFT";
+          body: string;
+          commit_id: string;
+          created_at: string;
+          updated_at: string;
+        };
+
+        const localCommentData = await invoke<LocalComment[]>("cmd_local_get_comments", {
+          owner: repoRef.owner,
+          repo: repoRef.repo,
+          prNumber: prDetail.number,
+        });
+
+        if (localCommentData.length > 0) {
+          console.log("Found existing local review with", localCommentData.length, "comments");
+          // Create a pending review object for the local review
+          const localReview: PullRequestReview = {
+            id: prDetail.number,
+            state: "PENDING",
+            author: authQuery.data?.login ?? "You",
+            submitted_at: null,
+            body: null,
+            html_url: null,
+            commit_id: prDetail.head_sha,
+            is_mine: true,
+          };
+          setPendingReviewOverride(localReview);
+
+          // Convert and set local comments
+          const converted: PullRequestComment[] = localCommentData.map((lc) => ({
+            id: lc.id,
+            body: lc.body,
+            author: authQuery.data?.login ?? "You",
+            created_at: lc.created_at,
+            url: "#",
+            path: lc.file_path,
+            line: lc.line_number,
+            side: lc.side,
+            is_review_comment: true,
+            is_draft: true,
+            state: null,
+            is_mine: true,
+            review_id: prDetail.number,
+          }));
+          setLocalComments(converted);
+        }
+      } catch (error) {
+        console.error("Failed to check for local review:", error);
+      }
+    };
+
+    void checkForLocalReview();
+  }, [repoRef, prDetail, pendingReviewOverride, pendingReviewFromServer, authQuery.data?.login]);
+
   // Clear local review override if a GitHub pending review is detected
   // BUT only if the override is a LOCAL review (not the same as the server review)
   useEffect(() => {
@@ -670,9 +740,11 @@ function App() {
       localCommentsData: localComments
     });
     if (pendingReview) {
-      // Merge GitHub comments with local comments
-      const githubComments = comments.filter((comment) => comment.review_id === pendingReview.id);
-      const merged = [...githubComments, ...localComments];
+      // Include ALL published comments + pending review comments (GitHub or local)
+      // Published comments don't have review_id matching pending review
+      const publishedComments = comments.filter((comment) => !comment.is_draft);
+      const pendingGitHubComments = comments.filter((comment) => comment.review_id === pendingReview.id && comment.is_draft);
+      const merged = [...publishedComments, ...pendingGitHubComments, ...localComments];
       console.log("reviewAwareComments RESULT:", merged);
       return merged;
     }
@@ -681,9 +753,7 @@ function App() {
 
   const effectiveFileCommentMode: "single" | "review" = fileCommentIsFileLevel
     ? "single"
-    : pendingReview
-      ? "review"
-      : fileCommentMode;
+    : fileCommentMode;
 
   const formatFileLabel = useCallback((path: string) => {
     const segments = path.split("/").filter(Boolean);
@@ -1228,6 +1298,36 @@ function App() {
   }, [showSourceMenu]);
 
   useEffect(() => {
+    if (!showFilesMenu) {
+      return;
+    }
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!filesMenuRef.current) {
+        return;
+      }
+      if (filesMenuRef.current.contains(event.target as Node)) {
+        return;
+      }
+      setShowFilesMenu(false);
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setShowFilesMenu(false);
+      }
+    };
+
+    window.addEventListener("pointerdown", handlePointerDown);
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      window.removeEventListener("pointerdown", handlePointerDown);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [showFilesMenu]);
+
+  useEffect(() => {
     setCommentDraft("");
     setCommentError(null);
     setCommentSuccess(false);
@@ -1446,16 +1546,50 @@ function App() {
         if (match) {
           const [, owner, repo, numberStr] = match;
           const number = parseInt(numberStr, 10);
-          prMap.set(prKey, {
+          
+          // Try to get PR details from cache first
+          const cachedPrDetail = queryClient.getQueryData<PullRequestDetail>([
+            "pull-request",
             owner,
             repo,
             number,
-            title: "",
-            has_local_review: false,
-            has_pending_review: false,
-            viewed_count: 0,
-            total_count: 0,
-          });
+            authQuery.data?.login,
+          ]);
+          
+          // Try to get from pulls list cache as fallback
+          let title = "";
+          let totalCount = 0;
+          
+          if (cachedPrDetail) {
+            title = cachedPrDetail.title;
+            totalCount = cachedPrDetail.files.length;
+          } else {
+            // Check pulls query cache for this repo
+            const cachedPulls = queryClient.getQueryData<PullRequestSummary[]>([
+              "pull-requests",
+              owner,
+              repo,
+              false, // showClosedPRs
+            ]);
+            const prSummary = cachedPulls?.find(p => p.number === number);
+            if (prSummary) {
+              title = prSummary.title;
+            }
+          }
+          
+          // Only add if we have a title (otherwise we can't show it properly)
+          if (title) {
+            prMap.set(prKey, {
+              owner,
+              repo,
+              number,
+              title,
+              has_local_review: false,
+              has_pending_review: false,
+              viewed_count: 0,
+              total_count: totalCount,
+            });
+          }
         }
       }
     });
@@ -1507,6 +1641,28 @@ function App() {
       } : null;
     }).filter((pr): pr is PrUnderReview => pr !== null);
   }, [prsUnderReviewQuery.data, viewedFiles, queryClient, authQuery.data?.login, repoMRU, mruPrsQueries]);
+
+  // Prefetch PR details for PRs under review that don't have titles
+  useEffect(() => {
+    if (!authQuery.data?.login) return;
+    
+    enhancedPrsUnderReview.forEach(pr => {
+      if (!pr.title || pr.title === "") {
+        // Prefetch the PR detail to get the title
+        void queryClient.prefetchQuery({
+          queryKey: ["pull-request", pr.owner, pr.repo, pr.number, authQuery.data?.login],
+          queryFn: async () => {
+            return await invoke<PullRequestDetail>("cmd_get_pull_request", {
+              owner: pr.owner,
+              repo: pr.repo,
+              number: pr.number,
+              currentLogin: authQuery.data?.login,
+            });
+          },
+        });
+      }
+    });
+  }, [enhancedPrsUnderReview, queryClient, authQuery.data?.login]);
 
   // Add to MRU when pulls load successfully
   useEffect(() => {
@@ -1824,6 +1980,10 @@ function App() {
       setLocalComments([]);
       setFileCommentError(null);
       void refetchPullDetail();
+      // Only close the comment panel if there are no remaining comments
+      if (reviewAwareComments.length === 0) {
+        setIsInlineCommentOpen(false);
+      }
     },
     onError: (error: unknown) => {
       const message = error instanceof Error ? error.message : "Failed to delete review.";
@@ -1908,7 +2068,7 @@ function App() {
         console.log("GitHub comment deleted successfully");
       }
     },
-    onSuccess: () => {
+    onSuccess: async () => {
       console.log("Delete comment success");
       setFileCommentDraft("");
       setFileCommentError(null);
@@ -1918,7 +2078,39 @@ function App() {
       
       // Reload appropriate data based on comment type
       if (editingComment?.url === "#" || !editingComment?.url) {
-        void loadLocalComments();
+        // This was a local comment - reload local comments
+        await loadLocalComments();
+        
+        // Check if there are any local comments left after deletion
+        if (repoRef && prDetail) {
+          console.log("Checking if local comments exist after deletion, current count:", localComments.length);
+          // localComments hasn't been updated yet, so we need to check directly
+          try {
+            const remainingComments = await invoke<PullRequestComment[]>("cmd_local_get_comments", {
+              owner: repoRef.owner,
+              repo: repoRef.repo,
+              prNumber: prDetail.number,
+            });
+            console.log("Remaining local comments after deletion:", remainingComments.length);
+            
+            if (remainingComments.length === 0) {
+              // No comments left - delete the review
+              console.log("No local comments left, deleting the review");
+              await invoke("cmd_local_clear_review", {
+                owner: repoRef.owner,
+                repo: repoRef.repo,
+                prNumber: prDetail.number,
+              });
+              console.log("Local review deleted successfully");
+              
+              // Clear the pending review override and close the panel
+              setPendingReviewOverride(null);
+              setIsInlineCommentOpen(false);
+            }
+          } catch (error) {
+            console.error("Failed to check remaining comments or delete review:", error);
+          }
+        }
       } else {
         void refetchPullDetail();
       }
@@ -1993,6 +2185,129 @@ function App() {
       startReviewMutation.mutate();
     }
   }, [localComments.length, repoRef, prDetail, authQuery.data?.login, startReviewMutation]);
+
+  const handleStartReviewWithComment = useCallback(async () => {
+    // This is called when user has typed a comment and clicks "Start review"
+    // We need to save the comment first, then start the review
+    
+    if (!selectedFilePath) {
+      setFileCommentError("Select a file before commenting.");
+      return;
+    }
+
+    const trimmed = fileCommentDraft.trim();
+    if (!trimmed) {
+      // No comment typed, just start the review
+      handleStartReviewClick();
+      return;
+    }
+
+    // Validate line number if not file-level
+    let parsedLine: number | null = null;
+    if (!fileCommentIsFileLevel) {
+      if (!fileCommentLine) {
+        setFileCommentError("Provide a line number or mark the comment as file-level.");
+        return;
+      }
+      const numericLine = Number(fileCommentLine);
+      if (!Number.isInteger(numericLine) || numericLine <= 0) {
+        setFileCommentError("Line numbers must be positive integers.");
+        return;
+      }
+      
+      if (selectedFile) {
+        const content = fileCommentSide === "RIGHT" ? selectedFile.head_content : selectedFile.base_content;
+        if (content) {
+          const lines = content.split("\n");
+          // If content ends with newline, split creates trailing empty string - remove it
+          const lineCount = content.endsWith("\n") ? lines.length - 1 : lines.length;
+          if (numericLine > lineCount) {
+            setFileCommentError(`Line number ${numericLine} exceeds file length (${lineCount} lines).`);
+            return;
+          }
+        }
+      }
+      
+      parsedLine = numericLine;
+    }
+
+    if (!repoRef || !prDetail) {
+      setFileCommentError("Select a pull request before commenting.");
+      return;
+    }
+
+    setFileCommentError(null);
+
+    try {
+      console.log("Starting review first before adding comment...");
+      // First, start the review to create the review metadata
+      await invoke("cmd_local_start_review", {
+        owner: repoRef.owner,
+        repo: repoRef.repo,
+        prNumber: prDetail.number,
+        commitId: prDetail.head_sha,
+        body: null,
+      });
+
+      console.log("Review started, now adding comment...");
+      // Now save the comment to local storage
+      await invoke("cmd_local_add_comment", {
+        owner: repoRef.owner,
+        repo: repoRef.repo,
+        prNumber: prDetail.number,
+        filePath: selectedFilePath,
+        lineNumber: parsedLine,
+        side: fileCommentSide,
+        body: trimmed,
+        commitId: prDetail.head_sha,
+      });
+
+      console.log("Comment added successfully");
+
+      // Clear the form
+      setFileCommentDraft("");
+      setFileCommentLine("");
+      setFileCommentIsFileLevel(false);
+      setFileCommentSide("RIGHT");
+
+      // Reload local comments and show the review panel
+      await loadLocalComments();
+      
+      // Show the review panel with the newly added comment
+      setIsInlineCommentOpen(true);
+      setIsFileCommentComposerVisible(false);
+      
+      // Create a local review object if needed
+      if (prDetail) {
+        const localReview: PullRequestReview = {
+          id: prDetail.number,
+          state: "PENDING",
+          author: authQuery.data?.login ?? "You",
+          submitted_at: null,
+          body: null,
+          html_url: null,
+          commit_id: prDetail.head_sha,
+          is_mine: true,
+        };
+        setPendingReviewOverride(localReview);
+      }
+    } catch (error) {
+      console.error("Failed to save comment in handleStartReviewWithComment:", error);
+      const message = error instanceof Error ? error.message : "Failed to save comment.";
+      setFileCommentError(message);
+    }
+  }, [
+    selectedFilePath,
+    fileCommentDraft,
+    fileCommentIsFileLevel,
+    fileCommentLine,
+    fileCommentSide,
+    selectedFile,
+    repoRef,
+    prDetail,
+    authQuery.data?.login,
+    loadLocalComments,
+  ]);
 
   const handleShowReviewClick = useCallback(async () => {
     console.log("Show review button clicked, pendingReviewFromServer:", pendingReviewFromServer, "localComments:", localComments.length);
@@ -2078,7 +2393,10 @@ function App() {
         });
         setPendingReviewOverride(null);
         setLocalComments([]);
-        setIsInlineCommentOpen(false);
+        // Only close the comment panel if there are no remaining comments
+        if (comments.length === 0) {
+          setIsInlineCommentOpen(false);
+        }
       } catch (error) {
         console.error("Failed to delete local review:", error);
         const message = error instanceof Error ? error.message : "Failed to delete local review.";
@@ -2158,7 +2476,9 @@ function App() {
         if (selectedFile) {
           const content = fileCommentSide === "RIGHT" ? selectedFile.head_content : selectedFile.base_content;
           if (content) {
-            const lineCount = content.split("\n").length;
+            const lines = content.split("\n");
+            // If content ends with newline, split creates trailing empty string - remove it
+            const lineCount = content.endsWith("\n") ? lines.length - 1 : lines.length;
             if (numericLine > lineCount) {
               setFileCommentError(`Line number ${numericLine} exceeds file length (${lineCount} lines).`);
               return;
@@ -2176,7 +2496,7 @@ function App() {
         side: fileCommentSide,
         mode: commentMode,
         subjectType: fileCommentIsFileLevel ? "file" : null,
-        pendingReviewId: pendingReview ? pendingReview.id : null,
+        pendingReviewId: commentMode === "review" && pendingReview ? pendingReview.id : null,
       });
     },
     [
@@ -2462,6 +2782,16 @@ function App() {
                             )}
                           </div>
                         )}
+                        {editingCommentId === null && (
+                          <div className="comment-panel__status">
+                            {fileCommentError && (
+                              <span className="comment-status comment-status--error">{fileCommentError}</span>
+                            )}
+                            {!fileCommentError && fileCommentSuccess && (
+                              <span className="comment-status comment-status--success">Comment saved</span>
+                            )}
+                          </div>
+                        )}
                         {editingCommentId !== null && (
                           <div className="comment-panel__status">
                             {fileCommentError && (
@@ -2473,16 +2803,6 @@ function App() {
                           </div>
                         )}
                         <div className="comment-panel__footer">
-                          {editingCommentId === null && (
-                            <div className="comment-panel__status">
-                              {fileCommentError && (
-                                <span className="comment-status comment-status--error">{fileCommentError}</span>
-                              )}
-                              {!fileCommentError && fileCommentSuccess && (
-                                <span className="comment-status comment-status--success">Comment saved</span>
-                              )}
-                            </div>
-                          )}
                           {editingCommentId !== null ? (
                             <div className="comment-panel__edit-actions">
                               <button
@@ -2503,6 +2823,11 @@ function App() {
                             </div>
                           ) : (
                             <div className="comment-panel__submit-actions">
+                              {pendingReview?.html_url && (
+                                <div className="comment-panel__info-note">
+                                  Submit or delete the pending GitHub review to be able to add a comment to a new review.
+                                </div>
+                              )}
                               <button
                                 type="submit"
                                 className="comment-submit"
@@ -2515,18 +2840,7 @@ function App() {
                               </button>
                               {effectiveFileCommentMode === "review" ? (
                                 pendingReview ? (
-                                  pendingReview.html_url ? (
-                                    <button
-                                      type="submit"
-                                      className="comment-submit comment-submit--secondary"
-                                      disabled={submitFileCommentMutation.isPending}
-                                      onClick={() => {
-                                        setFileCommentMode("review");
-                                      }}
-                                    >
-                                      Add comment
-                                    </button>
-                                  ) : (
+                                  pendingReview.html_url ? null : (
                                     <button
                                       type="submit"
                                       className="comment-submit comment-submit--secondary"
@@ -2549,7 +2863,7 @@ function App() {
                                       if (localComments.length > 0) {
                                         handleShowReviewClick();
                                       } else {
-                                        handleStartReviewClick();
+                                        handleStartReviewWithComment();
                                       }
                                     }}
                                   >
@@ -2567,7 +2881,7 @@ function App() {
                                     if (localComments.length > 0) {
                                       handleShowReviewClick();
                                     } else {
-                                      handleStartReviewClick();
+                                      handleStartReviewWithComment();
                                     }
                                   }}
                                 >
@@ -2591,13 +2905,6 @@ function App() {
                           >
                             ← Back to comments
                           </button>
-                        )}
-                        {pendingReview && (
-                          <div className="comment-panel__review-type">
-                            {pendingReview.html_url 
-                              ? "Pending review on GitHub: " 
-                              : "Comments saved locally: "}
-                          </div>
                         )}
                         {fileComments.length === 0 && !pendingReview && (
                           <div className="comment-panel__empty-state">
@@ -2650,7 +2957,7 @@ function App() {
                                 <div className="comment-panel__item-header" title={formattedTimestamp}>
                                   <div className="comment-panel__item-header-info">
                                     <span className="comment-panel__item-author">{comment.author}</span>
-                                    {comment.is_draft && (
+                                    {(comment.is_draft || isPendingGitHubReviewComment) && (
                                       <span className="comment-panel__item-badge">Pending</span>
                                     )}
                                   </div>
@@ -2730,45 +3037,31 @@ function App() {
                           })}
                         </ul>
                         <div className="comment-panel__actions">
-                          {/* Only show 'Add to review' for local reviews (no html_url) or 'Add comment' when no review */}
-                          {(!pendingReview || !pendingReview.html_url) && (
-                            <button
-                              type="button"
-                              className="comment-panel__action-button"
-                              onClick={handleAddCommentClick}
-                              disabled={startReviewMutation.isPending}
-                            >
-                              {pendingReview ? "Add to review" : "Add comment"}
-                            </button>
-                          )}
-                          {pendingReview ? (
+                          {pendingReview?.html_url ? (
+                            <div className="comment-panel__info-note">
+                              Submit or delete the pending GitHub review to be able to add a new comment.
+                            </div>
+                          ) : (
                             <>
                               <button
                                 type="button"
-                                className="comment-panel__action-button comment-panel__action-button--primary"
-                                onClick={handleSubmitReviewClick}
-                                disabled={submitReviewMutation.isPending || localComments.length === 0}
+                                className="comment-panel__action-button"
+                                onClick={handleAddCommentClick}
+                                disabled={startReviewMutation.isPending}
                               >
-                                {submitReviewMutation.isPending ? "Submitting…" : "Submit review"}
+                                Add comment
                               </button>
-                              <button
-                                type="button"
-                                className="comment-panel__action-button comment-panel__action-button--danger"
-                                onClick={handleDeleteReviewClick}
-                                disabled={deleteReviewMutation.isPending}
-                              >
-                                {deleteReviewMutation.isPending ? "Deleting…" : "Delete review"}
-                              </button>
+                              {!pendingReview && (pendingReviewFromServer || localComments.length > 0) && (
+                                <button
+                                  type="button"
+                                  className="comment-panel__action-button comment-panel__action-button--secondary"
+                                  onClick={handleShowReviewClick}
+                                >
+                                  Show Review
+                                </button>
+                              )}
                             </>
-                          ) : (pendingReviewFromServer || localComments.length > 0) ? (
-                            <button
-                              type="button"
-                              className="comment-panel__action-button comment-panel__action-button--secondary"
-                              onClick={handleShowReviewClick}
-                            >
-                              Show Review
-                            </button>
-                          ) : null}
+                          )}
                         </div>
                       </div>
                     )
@@ -2778,6 +3071,26 @@ function App() {
                     <div className="comment-panel__empty">Select a file to leave feedback.</div>
                   )}
                 </div>
+                {pendingReview && (
+                  <div className="pr-comments-view__footer">
+                    <button
+                      type="button"
+                      className="comment-panel__action-button comment-panel__action-button--primary"
+                      onClick={handleSubmitReviewClick}
+                      disabled={submitReviewMutation.isPending || localComments.length === 0}
+                    >
+                      {submitReviewMutation.isPending ? "Submitting…" : "Submit review"}
+                    </button>
+                    <button
+                      type="button"
+                      className="comment-panel__action-button comment-panel__action-button--danger"
+                      onClick={handleDeleteReviewClick}
+                      disabled={deleteReviewMutation.isPending}
+                    >
+                      {deleteReviewMutation.isPending ? "Deleting…" : "Delete review"}
+                    </button>
+                  </div>
+                )}
               </div>
               </>
             ) : (
@@ -2934,16 +3247,17 @@ function App() {
                         )
                       )}
                     </button>
-                    <div ref={prFilterMenuRef} className="panel__menu-container">
-                      <button
-                        type="button"
-                        className={`panel__menu-button${isPrFilterMenuOpen ? " panel__menu-button--open" : ""}`}
-                        onClick={togglePrFilterMenu}
-                        title="Filter options"
-                        aria-label="Filter options"
-                      >
-                        ⋯
-                      </button>
+                    {!isPrPanelCollapsed && (
+                      <div ref={prFilterMenuRef} className="panel__menu-container">
+                        <button
+                          type="button"
+                          className="panel__title-button"
+                          onClick={togglePrFilterMenu}
+                          title="Filter options"
+                          aria-label="Filter options"
+                        >
+                          …
+                        </button>
                       {isPrFilterMenuOpen && (
                         <div className="pr-filter-menu__popover" role="menu">
                           <button
@@ -2972,7 +3286,8 @@ function App() {
                           )}
                         </div>
                       )}
-                    </div>
+                      </div>
+                    )}
                     {isPrPanelCollapsed && selectedPr && prDetail && repoRef && (
                       <a
                         href={`https://github.com/${repoRef.owner}/${repoRef.repo}/pull/${prDetail.number}`}
@@ -3276,6 +3591,26 @@ function App() {
                             );
                           })}
                             </ul>
+                            {pendingReview && (
+                              <div className="pr-comments-view__footer">
+                                <button
+                                  type="button"
+                                  className="comment-panel__action-button comment-panel__action-button--primary"
+                                  onClick={handleSubmitReviewClick}
+                                  disabled={submitReviewMutation.isPending || localComments.length === 0}
+                                >
+                                  {submitReviewMutation.isPending ? "Submitting…" : "Submit review"}
+                                </button>
+                                <button
+                                  type="button"
+                                  className="comment-panel__action-button comment-panel__action-button--danger"
+                                  onClick={handleDeleteReviewClick}
+                                  disabled={deleteReviewMutation.isPending}
+                                >
+                                  {deleteReviewMutation.isPending ? "Deleting…" : "Delete review"}
+                                </button>
+                              </div>
+                            )}
                           </>
                           )}
                         </>
