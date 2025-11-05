@@ -522,13 +522,14 @@ pub async fn submit_file_comment(
 ) -> AppResult<()> {
     let client = build_client(token)?;
 
-    if subject_type.is_none() && line.is_none() {
-        return Err(AppError::Api(
-            "Provide a line number or mark the comment as file-level.".into(),
-        ));
-    }
+    // If no line number provided, treat as file-level comment
+    let effective_subject_type = if subject_type.is_none() && line.is_none() {
+        Some("file")
+    } else {
+        subject_type
+    };
 
-    if matches!(mode, CommentMode::Review) && matches!(subject_type, Some("file")) {
+    if matches!(mode, CommentMode::Review) && matches!(effective_subject_type, Some("file")) {
         return Err(AppError::Api(
             "GitHub does not allow starting a review with a file-level comment via the REST API. Choose a specific line or post this as a single comment.".into(),
         ));
@@ -539,7 +540,7 @@ pub async fn submit_file_comment(
     single_comment_fields.insert("path".into(), Value::String(path.to_string()));
     single_comment_fields.insert("commit_id".into(), Value::String(commit_id.to_string()));
 
-    if let Some(subject_type) = subject_type {
+    if let Some(subject_type) = effective_subject_type {
         single_comment_fields.insert(
             "subject_type".into(),
             Value::String(subject_type.to_string()),
@@ -941,14 +942,21 @@ fn map_review(
 }
 
 fn map_review_comment(comment: &GitHubReviewComment, is_mine: bool, patch: Option<&String>) -> PullRequestComment {
-    // Try to get line number from multiple possible fields
-    let mut line = comment.line
-        .or(comment.original_line)
-        .or(comment.start_line)
-        .or(comment.original_start_line);
+    // Check if this is a file-level comment
+    let is_file_level = comment.subject_type.as_deref() == Some("file");
+    
+    // Try to get line number from multiple possible fields, but only if not file-level
+    let mut line = if is_file_level {
+        None
+    } else {
+        comment.line
+            .or(comment.original_line)
+            .or(comment.start_line)
+            .or(comment.original_start_line)
+    };
     
     // If we don't have a line number but we have a position and patch, convert it
-    if line.is_none() {
+    if line.is_none() && !is_file_level {
         if let (Some(position), Some(patch_text)) = (comment.position.or(comment.original_position), patch) {
             line = convert_diff_position_to_line(patch_text, position, comment.side.as_deref().unwrap_or("RIGHT"));
         }
@@ -1195,10 +1203,16 @@ pub async fn create_review_with_comments(
         comment_obj.insert("body".into(), Value::String(comment.body.clone()));
         comment_obj.insert("commit_id".into(), Value::String(commit_id.to_string()));
         comment_obj.insert("path".into(), Value::String(comment.file_path.clone()));
-        comment_obj.insert("line".into(), Value::Number(comment.line_number.into()));
-        comment_obj.insert("side".into(), Value::String(comment.side.clone()));
         
-        warn!("Posting comment to {}:{}: {}", comment.file_path, comment.line_number, comment.body);
+        // For file-level comments (line_number = 0), use subject_type instead of line
+        if comment.line_number == 0 {
+            comment_obj.insert("subject_type".into(), Value::String("file".to_string()));
+            warn!("Posting file-level comment to {}: {}", comment.file_path, comment.body);
+        } else {
+            comment_obj.insert("line".into(), Value::Number(comment.line_number.into()));
+            comment_obj.insert("side".into(), Value::String(comment.side.clone()));
+            warn!("Posting comment to {}:{}: {}", comment.file_path, comment.line_number, comment.body);
+        }
         
         match client
             .post(format!("{API_BASE}/repos/{owner}/{repo}/pulls/{number}/comments"))

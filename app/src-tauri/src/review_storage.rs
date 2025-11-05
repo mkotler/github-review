@@ -709,9 +709,16 @@ impl ReviewStorage {
             
             let deleted_prefix = if comment.deleted { "DELETED - " } else { "" };
             
+            // File-level comments (line_number = 0) should show "Overall" instead of "Line 0"
+            let line_label = if comment.line_number == 0 {
+                "Overall".to_string()
+            } else {
+                format!("Line {}", comment.line_number)
+            };
+            
             content.push_str(&format!(
-                "    {}Line {}{}: {}\n",
-                deleted_prefix, comment.line_number, side_label, comment.body
+                "    {}{}{}: {}\n",
+                deleted_prefix, line_label, side_label, comment.body
             ));
         }
         

@@ -589,21 +589,25 @@ function App() {
           setPendingReviewOverride(localReview);
 
           // Convert and set local comments
-          const converted: PullRequestComment[] = localCommentData.map((lc) => ({
-            id: lc.id,
-            body: lc.body,
-            author: authQuery.data?.login ?? "You",
-            created_at: lc.created_at,
-            url: "#",
-            path: lc.file_path,
-            line: lc.line_number,
-            side: lc.side,
-            is_review_comment: true,
-            is_draft: true,
-            state: null,
-            is_mine: true,
-            review_id: prDetail.number,
-          }));
+          const converted: PullRequestComment[] = localCommentData.map((lc) => {
+            console.log('Converting local comment:', { id: lc.id, line_number: lc.line_number, type: typeof lc.line_number });
+            return {
+              id: lc.id,
+              body: lc.body,
+              author: authQuery.data?.login ?? "You",
+              created_at: lc.created_at,
+              url: "#",
+              path: lc.file_path,
+              line: lc.line_number === 0 ? null : lc.line_number,
+              side: lc.side,
+              is_review_comment: true,
+              is_draft: true,
+              state: null,
+              is_mine: true,
+              review_id: prDetail.number,
+            };
+          });
+          console.log('Converted local comments:', converted);
           setLocalComments(converted);
         }
       } catch (error) {
@@ -676,7 +680,7 @@ function App() {
         created_at: lc.created_at,
         url: "#", // Local comments don't have URLs yet
         path: lc.file_path,
-        line: lc.line_number,
+        line: lc.line_number === 0 ? null : lc.line_number,
         side: lc.side,
         is_review_comment: true,
         is_draft: true, // Local comments are drafts
@@ -768,6 +772,13 @@ function App() {
   const formatFileTooltip = useCallback((file: PullRequestFile) => {
     const status = file.status ? file.status.toUpperCase() : "";
     return status ? `${file.path} - ${status}` : file.path;
+  }, []);
+
+  const formatFilePathWithLeadingEllipsis = useCallback((path: string, maxLength: number = 200) => {
+    if (path.length <= maxLength) {
+      return path;
+    }
+    return `...${path.slice(-(maxLength - 3))}`;
   }, []);
 
   const files = prDetail?.files ?? [];
@@ -1030,7 +1041,7 @@ function App() {
             created_at: lc.created_at,
             url: "#",
             path: lc.file_path,
-            line: lc.line_number,
+            line: lc.line_number === 0 ? null : lc.line_number,
             side: lc.side,
             is_review_comment: true,
             is_draft: true,
@@ -2204,11 +2215,14 @@ function App() {
 
     // Validate line number if not file-level
     let parsedLine: number | null = null;
-    if (!fileCommentIsFileLevel) {
-      if (!fileCommentLine) {
-        setFileCommentError("Provide a line number or mark the comment as file-level.");
-        return;
-      }
+    let isFileLevelComment = fileCommentIsFileLevel;
+    
+    // If no line number provided, treat as file-level comment
+    if (!fileCommentLine || fileCommentLine.trim() === "") {
+      isFileLevelComment = true;
+      parsedLine = null;
+    } else if (!fileCommentIsFileLevel) {
+      // Line number provided - validate it
       const numericLine = Number(fileCommentLine);
       if (!Number.isInteger(numericLine) || numericLine <= 0) {
         setFileCommentError("Line numbers must be positive integers.");
@@ -2461,11 +2475,14 @@ function App() {
       const commentMode: "single" | "review" = effectiveFileCommentMode;
 
       let parsedLine: number | null = null;
-      if (!fileCommentIsFileLevel) {
-        if (!fileCommentLine) {
-          setFileCommentError("Provide a line number or mark the comment as file-level.");
-          return;
-        }
+      let isFileLevelComment = fileCommentIsFileLevel;
+      
+      // If no line number provided, treat as file-level comment
+      if (!fileCommentLine || fileCommentLine.trim() === "") {
+        isFileLevelComment = true;
+        parsedLine = null;
+      } else if (!fileCommentIsFileLevel) {
+        // Line number provided - validate it
         const numericLine = Number(fileCommentLine);
         if (!Number.isInteger(numericLine) || numericLine <= 0) {
           setFileCommentError("Line numbers must be positive integers.");
@@ -2495,7 +2512,7 @@ function App() {
         line: parsedLine,
         side: fileCommentSide,
         mode: commentMode,
-        subjectType: fileCommentIsFileLevel ? "file" : null,
+        subjectType: isFileLevelComment ? "file" : null,
         pendingReviewId: commentMode === "review" && pendingReview ? pendingReview.id : null,
       });
     },
@@ -2991,7 +3008,7 @@ function App() {
                                   </div>
                                 </div>
                                 <div className="comment-panel__item-body">
-                                  {comment.line && (
+                                  {comment.line && comment.line > 0 && (
                                     <span 
                                       className="comment-panel__item-line comment-panel__item-line--clickable"
                                       onClick={() => {
@@ -3642,7 +3659,11 @@ function App() {
               <div className="pane__header">
                 <div className="pane__title-group">
                   <span>Source</span>
-                  {selectedFilePath && <span className="pane__subtitle">{selectedFilePath}</span>}
+                  {selectedFilePath && (
+                    <span className="pane__subtitle" title={selectedFilePath}>
+                      {formatFilePathWithLeadingEllipsis(selectedFilePath)}
+                    </span>
+                  )}
                 </div>
                 <div className="pane__actions">
                   {commentSuccess && !isGeneralCommentOpen && (
@@ -3651,58 +3672,44 @@ function App() {
                     </span>
                   )}
                   {selectedFile && (
-                    <>
+                    <div className="source-menu-container" ref={sourceMenuRef}>
                       <button
                         type="button"
-                        className="pane__action-button"
-                        onClick={isInlineCommentOpen ? closeInlineComment : openInlineComment}
+                        className="panel__title-button"
+                        onClick={() => setShowSourceMenu(!showSourceMenu)}
+                        aria-label="More options"
                       >
-                        {isInlineCommentOpen ? "Hide File Comments" : "Show File Comments"}
+                        …
                       </button>
-                      <div className="source-menu-container" ref={sourceMenuRef}>
-                        <button
-                          type="button"
-                          className="pane__action-button"
-                          onClick={() => setShowSourceMenu(!showSourceMenu)}
-                          aria-label="More options"
-                        >
-                          …
-                        </button>
-                        {showSourceMenu && (
-                          <div className="source-menu">
-                            <button
-                              type="button"
-                              className="source-menu__item"
-                              onClick={() => {
-                                // Open file-level comment composer
-                                setFileCommentLine("");
-                                setFileCommentSide("RIGHT");
-                                setFileCommentIsFileLevel(true);
-                                setFileCommentDraft("");
-                                setFileCommentError(null);
-                                setFileCommentSuccess(false);
-                                setFileCommentMode("single");
-                                setIsFileCommentComposerVisible(true);
-                                setIsInlineCommentOpen(true);
-                                setShowSourceMenu(false);
-                              }}
-                            >
-                              Add File-level Comment
-                            </button>
-                            <button
-                              type="button"
-                              className="source-menu__item"
-                              onClick={() => {
-                                setShowDiff(!showDiff);
-                                setShowSourceMenu(false);
-                              }}
-                            >
-                              {showDiff ? "Show Modified" : "Show Diff"}
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    </>
+                      {showSourceMenu && (
+                        <div className="source-menu">
+                          <button
+                            type="button"
+                            className="source-menu__item"
+                            onClick={() => {
+                              if (isInlineCommentOpen) {
+                                closeInlineComment();
+                              } else {
+                                openInlineComment();
+                              }
+                              setShowSourceMenu(false);
+                            }}
+                          >
+                            {isInlineCommentOpen ? "Hide File Comments" : "Show File Comments"}
+                          </button>
+                          <button
+                            type="button"
+                            className="source-menu__item"
+                            onClick={() => {
+                              setShowDiff(!showDiff);
+                              setShowSourceMenu(false);
+                            }}
+                          >
+                            {showDiff ? "Show Modified" : "Show Diff"}
+                          </button>
+                        </div>
+                      )}
+                    </div>
                   )}
                 </div>
               </div>
@@ -3868,7 +3875,6 @@ function App() {
               <div className="pane__header">
                 <div className="pane__title-group">
                   <span>Preview</span>
-                  {selectedFilePath && <span className="pane__subtitle">{selectedFilePath}</span>}
                 </div>
               </div>
               <div className="pane__content">

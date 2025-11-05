@@ -228,7 +228,7 @@ async fn cmd_local_add_comment(
     repo: String,
     pr_number: u64,
     file_path: String,
-    line_number: u64,
+    line_number: Option<u64>,
     side: String,
     body: String,
     commit_id: String,
@@ -240,7 +240,7 @@ async fn cmd_local_add_comment(
             &repo,
             pr_number,
             &file_path,
-            line_number,
+            line_number.unwrap_or(0), // Use 0 for file-level comments
             &side,
             &body,
             &commit_id,
