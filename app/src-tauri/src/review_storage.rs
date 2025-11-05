@@ -1,4 +1,5 @@
 use crate::error::{AppError, AppResult};
+use crate::auth::require_token;
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -143,7 +144,9 @@ impl ReviewStorage {
         
         // Create new review
         let created_at = Utc::now().to_rfc3339();
-        let log_file_index = 0;
+        
+        // Find the next available log file index by checking existing files
+        let log_file_index = self.find_next_log_index(owner, repo, pr_number);
         
         conn.execute(
             "INSERT INTO review_metadata (owner, repo, pr_number, commit_id, body, created_at, log_file_index)
@@ -454,12 +457,71 @@ impl ReviewStorage {
     }
     
     /// Clear a completed review from database
+    pub async fn mark_review_submitted(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: u64,
+        _pr_title: Option<&str>,
+    ) -> AppResult<()> {
+        let metadata = {
+            let conn = self.conn.lock().map_err(|_| AppError::Internal("Lock poisoned".into()))?;
+            
+            let metadata: Option<ReviewMetadata> = conn
+                .query_row(
+                    "SELECT owner, repo, pr_number, commit_id, body, created_at, log_file_index
+                     FROM review_metadata
+                     WHERE owner = ?1 AND repo = ?2 AND pr_number = ?3",
+                    params![owner, repo, pr_number],
+                    |row| {
+                        Ok(ReviewMetadata {
+                            owner: row.get(0)?,
+                            repo: row.get(1)?,
+                            pr_number: row.get(2)?,
+                            commit_id: row.get(3)?,
+                            body: row.get(4)?,
+                            created_at: row.get(5)?,
+                            log_file_index: row.get(6)?,
+                        })
+                    },
+                )
+                .optional()?;
+            
+            metadata
+        };
+        
+        if let Some(meta) = metadata {
+            // Mark log file as submitted
+            let log_path = self.get_log_path(owner, repo, pr_number, meta.log_file_index);
+            if log_path.exists() {
+                let submitted_time = Utc::now().to_rfc3339();
+                let header = format!(
+                    "# REVIEW SUBMITTED TO GITHUB at {}\n# Original review started at {}\n\n",
+                    submitted_time, meta.created_at
+                );
+                
+                let existing_content = fs::read_to_string(&log_path).await.unwrap_or_default();
+                let new_content = format!("{}{}", header, existing_content);
+                fs::write(&log_path, new_content).await?;
+            }
+            
+            // Delete from database
+            let conn = self.conn.lock().map_err(|_| AppError::Internal("Lock poisoned".into()))?;
+            conn.execute(
+                "DELETE FROM review_metadata WHERE owner = ?1 AND repo = ?2 AND pr_number = ?3",
+                params![owner, repo, pr_number],
+            )?;
+        }
+        
+        Ok(())
+    }
+
     pub async fn clear_review(
         &self,
         owner: &str,
         repo: &str,
         pr_number: u64,
-        pr_title: Option<&str>,
+        _pr_title: Option<&str>,
     ) -> AppResult<()> {
         let metadata = {
             let conn = self.conn.lock().map_err(|_| AppError::Internal("Lock poisoned".into()))?;
@@ -492,10 +554,9 @@ impl ReviewStorage {
             let log_path = self.get_log_path(owner, repo, pr_number, meta.log_file_index);
             if log_path.exists() {
                 let deleted_time = Utc::now().to_rfc3339();
-                let pr_title_str = pr_title.unwrap_or("Untitled");
                 let header = format!(
-                    "# REVIEW DELETED (NOT SUBMITTED TO GITHUB) at {}\n# Original review started at {}\n# PR: {}\n# URL: https://github.com/{}/{}/pull/{}\n\n",
-                    deleted_time, meta.created_at, pr_title_str, owner, repo, pr_number
+                    "# REVIEW DELETED (NOT SUBMITTED TO GITHUB) at {}\n# Original review started at {}\n\n",
+                    deleted_time, meta.created_at
                 );
                 
                 let existing_content = fs::read_to_string(&log_path).await.unwrap_or_default();
@@ -521,6 +582,43 @@ impl ReviewStorage {
             format!("{}-{}-{}-{}.log", owner, repo, pr_number, index)
         };
         self.log_dir.join(filename)
+    }
+    
+    fn find_next_log_index(&self, owner: &str, repo: &str, pr_number: u64) -> i32 {
+        let mut index = 0;
+        loop {
+            let log_path = self.get_log_path(owner, repo, pr_number, index);
+            if !log_path.exists() {
+                return index;
+            }
+            index += 1;
+        }
+    }
+    
+    async fn fetch_pr_title(&self, owner: &str, repo: &str, pr_number: u64) -> AppResult<String> {
+        let token = require_token()?;
+        let client = reqwest::Client::builder()
+            .user_agent("github-review-app")
+            .build()?;
+        
+        let url = format!("https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}");
+        let response = client
+            .get(&url)
+            .header("Authorization", format!("Bearer {token}"))
+            .send()
+            .await?;
+        
+        if !response.status().is_success() {
+            return Err(AppError::Api(format!("Failed to fetch PR title: {}", response.status())));
+        }
+        
+        let pr_data: serde_json::Value = response.json().await?;
+        let title = pr_data["title"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+        
+        Ok(title)
     }
     
     async fn write_log(&self, owner: &str, repo: &str, pr_number: u64) -> AppResult<()> {
@@ -577,8 +675,15 @@ impl ReviewStorage {
         
         let log_path = self.get_log_path(owner, repo, pr_number, metadata.log_file_index);
         
+        // Fetch PR title from GitHub
+        let pr_title = self.fetch_pr_title(owner, repo, pr_number).await.unwrap_or_else(|_| String::new());
+        
         let mut content = String::new();
-        content.push_str(&format!("# Review for PR #{}\n", pr_number));
+        if pr_title.is_empty() {
+            content.push_str(&format!("# Review for PR #{}\n", pr_number));
+        } else {
+            content.push_str(&format!("# Review for PR #{}: {}\n", pr_number, pr_title));
+        }
         content.push_str(&format!("# URL: https://github.com/{}/{}/pull/{}\n", owner, repo, pr_number));
         content.push_str(&format!("# Repository: {}/{}\n", owner, repo));
         content.push_str(&format!("# Created: {}\n", metadata.created_at));
@@ -610,6 +715,7 @@ impl ReviewStorage {
             ));
         }
         
+        // Overwrite log file with current state
         fs::write(&log_path, content).await?;
         tracing::info!("Log file written successfully to {:?}", log_path);
         

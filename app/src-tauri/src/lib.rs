@@ -404,14 +404,14 @@ async fn cmd_submit_local_review(
             .map_err(|e| e.to_string())?;
     }
     
-    // If all comments were posted, clear the review metadata too
+    // If all comments were posted, mark the review as submitted
     let remaining_comments = storage
         .get_comments(&owner, &repo, pr_number)
         .map_err(|e| e.to_string())?;
     
     if remaining_comments.is_empty() {
         storage
-            .clear_review(&owner, &repo, pr_number, None)
+            .mark_review_submitted(&owner, &repo, pr_number, None)
             .await
             .map_err(|e| e.to_string())?;
     }
