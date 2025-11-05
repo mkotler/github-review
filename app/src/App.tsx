@@ -240,6 +240,7 @@ function App() {
   const [isRepoPanelCollapsed, setIsRepoPanelCollapsed] = useState(false);
   const [isPrPanelCollapsed, setIsPrPanelCollapsed] = useState(false);
   const [isInlineCommentOpen, setIsInlineCommentOpen] = useState(false);
+  const [hasManuallyClosedCommentPanel, setHasManuallyClosedCommentPanel] = useState(false);
   const [isGeneralCommentOpen, setIsGeneralCommentOpen] = useState(false);
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
   const [isPrFilterMenuOpen, setIsPrFilterMenuOpen] = useState(false);
@@ -530,6 +531,11 @@ function App() {
     console.log("PR number changed, clearing pendingReviewOverride");
     setPendingReviewOverride(null);
   }, [prDetail?.number]);
+
+  // Reset manual close flag when PR changes to allow auto-open for new PR
+  useEffect(() => {
+    setHasManuallyClosedCommentPanel(false);
+  }, [selectedPr]);
 
   // Clear local review override if a GitHub pending review is detected
   // BUT only if the override is a LOCAL review (not the same as the server review)
@@ -922,7 +928,23 @@ function App() {
           prNumber: prDetail.number,
         });
 
-        if (localCommentData.length > 0 && !pendingReview) {
+        if (localCommentData.length > 0) {
+          // Create or find a local review object
+          let localReview = reviews.find(r => r.id === prDetail.number);
+          if (!localReview) {
+            // Create a fake review object for local comments
+            localReview = {
+              id: prDetail.number,
+              state: "PENDING",
+              author: authQuery.data?.login ?? "You",
+              submitted_at: null,
+              body: null,
+              html_url: null,
+              commit_id: prDetail.head_sha,
+              is_mine: true,
+            };
+          }
+          
           // Convert to PullRequestComment format
           const converted: PullRequestComment[] = localCommentData.map((lc) => ({
             id: lc.id,
@@ -937,9 +959,10 @@ function App() {
             is_draft: true,
             state: null,
             is_mine: true,
-            review_id: null,
+            review_id: localReview.id,
           }));
           setLocalComments(converted);
+          setPendingReviewOverride(localReview);
         }
       } catch (error) {
         console.error("Failed to load local comments:", error);
@@ -949,6 +972,7 @@ function App() {
 
   const closeInlineComment = useCallback(() => {
     setIsInlineCommentOpen(false);
+    setHasManuallyClosedCommentPanel(true);
     setFileCommentError(null);
     setFileCommentSuccess(false);
     setIsFileCommentComposerVisible(false);
@@ -1504,7 +1528,7 @@ function App() {
 
   // Auto-navigate to pending review if no published comments
   useEffect(() => {
-    if (pendingReview && !isInlineCommentOpen) {
+    if (pendingReview && !isInlineCommentOpen && !hasManuallyClosedCommentPanel) {
       // Check if there are any comments in the pending review (including local and GitHub pending)
       const pendingComments = reviewAwareComments.filter(c => c.review_id === pendingReview.id);
       const publishedComments = comments.filter(c => !c.is_draft && c.review_id !== pendingReview.id);
@@ -1513,7 +1537,7 @@ function App() {
         setIsInlineCommentOpen(true);
       }
     }
-  }, [pendingReview, reviewAwareComments, comments, isInlineCommentOpen]);
+  }, [pendingReview, reviewAwareComments, comments, isInlineCommentOpen, hasManuallyClosedCommentPanel]);
 
   // Persist viewed files state
   useEffect(() => {
@@ -1969,8 +1993,12 @@ function App() {
   }, [localComments.length, repoRef, prDetail, authQuery.data?.login, startReviewMutation]);
 
   const handleShowReviewClick = useCallback(async () => {
-    console.log("Show review button clicked, pendingReviewFromServer:", pendingReviewFromServer);
-    if (pendingReviewFromServer && repoRef && prDetail) {
+    console.log("Show review button clicked, pendingReviewFromServer:", pendingReviewFromServer, "localComments:", localComments.length);
+    
+    if (!repoRef || !prDetail) return;
+    
+    // Handle GitHub pending review
+    if (pendingReviewFromServer) {
       console.log("Setting pendingReviewOverride to:", pendingReviewFromServer);
       setPendingReviewOverride(pendingReviewFromServer);
       setIsLoadingPendingComments(true);
@@ -1986,7 +2014,6 @@ function App() {
           currentLogin: authQuery.data?.login ?? null,
         });
         console.log("Fetched pending review comments:", pendingComments);
-        console.log("Comment details:", pendingComments.map(c => ({ id: c.id, path: c.path, line: c.line, body: c.body.substring(0, 50) })));
         setLocalComments(pendingComments);
       } catch (error) {
         console.error("Failed to fetch pending review comments:", error);
@@ -1994,14 +2021,33 @@ function App() {
       } finally {
         setIsLoadingPendingComments(false);
       }
-      
-      setIsInlineCommentOpen(true);
-      setIsFileCommentComposerVisible(false);
-      console.log("Panel state updated: isInlineCommentOpen=true");
-    } else {
-      console.log("No pendingReviewFromServer available");
+    } 
+    // Handle local review
+    else if (localComments.length > 0) {
+      console.log("Showing local review with", localComments.length, "comments");
+      // Local comments are already loaded, just need to show them
+      // Find or create a local pending review object
+      let localReview = reviews.find(r => r.id === prDetail.number);
+      if (!localReview) {
+        // Create a fake review object for local comments
+        localReview = {
+          id: prDetail.number,
+          state: "PENDING",
+          author: authQuery.data?.login ?? "You",
+          submitted_at: null,
+          body: null,
+          html_url: null,
+          commit_id: prDetail.head_sha,
+          is_mine: true,
+        };
+      }
+      setPendingReviewOverride(localReview);
     }
-  }, [pendingReviewFromServer, repoRef, prDetail, authQuery.data?.login]);
+    
+    setIsInlineCommentOpen(true);
+    setIsFileCommentComposerVisible(false);
+    console.log("Panel state updated: isInlineCommentOpen=true");
+  }, [pendingReviewFromServer, repoRef, prDetail, authQuery.data?.login, localComments, reviews]);
 
   const handleDeleteReviewClick = useCallback(() => {
     setShowDeleteReviewConfirm(true);
