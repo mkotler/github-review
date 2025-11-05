@@ -1835,6 +1835,16 @@ select {
   background: transparent;
 }
 
+.markdown-preview a {
+  cursor: pointer;
+  color: #0969da;
+  text-decoration: underline;
+}
+
+.markdown-preview a:hover {
+  color: #0550ae;
+}
+
 .empty-state {
   flex: 1;
   display: flex;

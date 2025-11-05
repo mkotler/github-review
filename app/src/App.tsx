@@ -3926,6 +3926,65 @@ function App() {
                               
                               return <code className={className} {...props}>{children}</code>;
                             },
+                            a: ({href, children, ...props}) => {
+                              // Handle link clicks
+                              const handleClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
+                                e.preventDefault();
+                                if (!href) return;
+                                
+                                // Check if it's an external URL
+                                if (href.startsWith('http://') || href.startsWith('https://')) {
+                                  // Open external links in browser
+                                  void invoke('cmd_open_url', { url: href });
+                                } else if (prDetail && selectedFile) {
+                                  // Handle relative file paths within the PR
+                                  let resolvedPath = href;
+                                  
+                                  // Remove anchor/hash from path
+                                  const hashIndex = resolvedPath.indexOf('#');
+                                  if (hashIndex !== -1) {
+                                    resolvedPath = resolvedPath.substring(0, hashIndex);
+                                  }
+                                  
+                                  if (resolvedPath.startsWith('./') || resolvedPath.startsWith('../') || !resolvedPath.startsWith('/')) {
+                                    // Relative path - resolve based on current file location
+                                    const filePath = selectedFile.path || '';
+                                    const fileDir = filePath.substring(0, filePath.lastIndexOf('/'));
+                                    const parts = fileDir.split('/').filter(Boolean);
+                                    
+                                    const pathParts = resolvedPath.split('/');
+                                    for (const part of pathParts) {
+                                      if (part === '..') {
+                                        parts.pop();
+                                      } else if (part !== '.' && part !== '') {
+                                        parts.push(part);
+                                      }
+                                    }
+                                    
+                                    resolvedPath = parts.join('/');
+                                  } else {
+                                    // Absolute path - remove leading slash
+                                    resolvedPath = resolvedPath.substring(1);
+                                  }
+                                  
+                                  // Check if this file exists in the PR
+                                  const targetFile = prDetail.files.find(f => f.path === resolvedPath);
+                                  if (targetFile) {
+                                    setSelectedFilePath(resolvedPath);
+                                  }
+                                }
+                              };
+                              
+                              return (
+                                <a 
+                                  href={href} 
+                                  onClick={handleClick}
+                                  {...props}
+                                >
+                                  {children}
+                                </a>
+                              );
+                            },
                             img: ({src, alt, ...props}) => {
                               // If src is already a full URL, use it directly
                               if (!src || src.startsWith('http://') || src.startsWith('https://')) {

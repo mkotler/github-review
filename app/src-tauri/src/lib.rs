@@ -529,6 +529,13 @@ fn cmd_open_log_folder(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+async fn cmd_open_url(url: String) -> Result<(), String> {
+    open::that(&url)
+        .map_err(|e| format!("Failed to open URL: {:?}", e))?;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     dotenvy::dotenv().ok();
@@ -581,7 +588,8 @@ pub fn run() {
             cmd_local_abandon_review,
             cmd_local_clear_review,
             cmd_submit_local_review,
-            cmd_get_storage_info
+            cmd_get_storage_info,
+            cmd_open_url
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
