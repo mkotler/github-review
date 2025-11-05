@@ -701,7 +701,7 @@ select {
   border-radius: 8px;
   padding: 8px 12px;
   color: #b6c6ef;
-  font-size: 16px;
+  font-size: 12px;
   font-weight: 600;
   cursor: pointer;
   transition: background 0.18s ease, border-color 0.18s ease;
@@ -1027,6 +1027,12 @@ select {
   color: #ff9da0;
 }
 
+.file-list__badge--draft {
+  background: rgba(200, 160, 255, 0.18);
+  border-color: rgba(200, 160, 255, 0.4);
+  color: #c8a0ff;
+}
+
 .file-list__badge:hover {
   background: rgba(111, 150, 241, 0.5);
   border-color: rgba(111, 150, 241, 0.7);
@@ -1036,6 +1042,11 @@ select {
 .file-list__badge--pending:hover {
   background: rgba(255, 157, 160, 0.28);
   border-color: rgba(255, 157, 160, 0.6);
+}
+
+.file-list__badge--draft:hover {
+  background: rgba(200, 160, 255, 0.28);
+  border-color: rgba(200, 160, 255, 0.6);
 }
 
 .workspace {
@@ -1211,6 +1222,10 @@ select {
   justify-content: center;
   border-radius: 50%;
   transition: background 0.18s ease, color 0.18s ease;
+}
+
+.comment-panel__close--restore {
+  font-size: 16px;
 }
 
 .comment-panel__close:hover {
@@ -1582,6 +1597,34 @@ select {
   color: #a7c0ff;
 }
 
+.comment-panel__reply-composer-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.comment-panel__reply-composer-maximize {
+  background: transparent;
+  border: none;
+  color: #8a9bb8;
+  cursor: pointer;
+  padding: 0;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  transition: background 0.18s ease, color 0.18s ease;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.comment-panel__reply-composer-maximize:hover {
+  background: rgba(118, 152, 224, 0.18);
+  color: #e8efff;
+}
+
 .comment-panel__reply-composer-close {
   background: transparent;
   border: none;
@@ -1622,6 +1665,31 @@ select {
 .comment-panel__reply-textarea:focus {
   outline: none;
   border-color: rgba(118, 152, 224, 0.55);
+}
+
+.comment-panel__line-input {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #b8c5e0;
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+
+.comment-panel__line-input input {
+  width: 100px;
+  padding: 4px 8px;
+  background: rgba(22, 28, 44, 0.6);
+  border: 1px solid rgba(118, 152, 224, 0.3);
+  border-radius: 6px;
+  color: #e8efff;
+  font-size: 13px;
+}
+
+.comment-panel__line-input input:focus {
+  outline: none;
+  border-color: rgba(118, 152, 224, 0.6);
+  background: rgba(22, 28, 44, 0.8);
 }
 
 .comment-panel__reply-actions {

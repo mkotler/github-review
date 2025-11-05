@@ -253,6 +253,12 @@ function App() {
   const [replyMode, setReplyMode] = useState<"single" | "review">("single");
   const [replyError, setReplyError] = useState<string | null>(null);
   const [replySuccess, setReplySuccess] = useState(false);
+  const [isAddingInlineComment, setIsAddingInlineComment] = useState(false);
+  const [inlineCommentDraft, setInlineCommentDraft] = useState("");
+  const [inlineCommentLine, setInlineCommentLine] = useState("");
+  const [inlineCommentError, setInlineCommentError] = useState<string | null>(null);
+  const [inlineCommentSuccess, setInlineCommentSuccess] = useState(false);
+  const [draftsByFile, setDraftsByFile] = useState<Record<string, { reply?: Record<number, string>, inline?: string }>>({})
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isRepoPanelCollapsed, setIsRepoPanelCollapsed] = useState(false);
   const [isPrPanelCollapsed, setIsPrPanelCollapsed] = useState(false);
@@ -272,6 +278,7 @@ function App() {
   const [, setReviewSummaryError] = useState<string | null>(null);
   const [pendingReviewOverride, setPendingReviewOverride] = useState<PullRequestReview | null>(null);
   const [localComments, setLocalComments] = useState<PullRequestComment[]>([]);
+  const commentPanelBodyRef = useRef<HTMLDivElement>(null);
   const [isLoadingPendingComments, setIsLoadingPendingComments] = useState(false);
   const [editingCommentId, setEditingCommentId] = useState<number | null>(null);
   const [editingComment, setEditingComment] = useState<PullRequestComment | null>(null);
@@ -291,6 +298,7 @@ function App() {
   const prFilterMenuRef = useRef<HTMLDivElement | null>(null);
   const sourceMenuRef = useRef<HTMLDivElement | null>(null);
   const filesMenuRef = useRef<HTMLDivElement | null>(null);
+  const handleGlyphClickRef = useRef<((lineNumber: number) => void) | null>(null);
   const previewViewerRef = useRef<HTMLElement | null>(null);
   const editorRef = useRef<any>(null);
   const isScrollingSyncRef = useRef(false);
@@ -513,12 +521,8 @@ function App() {
   }, [repoRef]);
 
   const handleTogglePrPanel = useCallback(() => {
-    if (!selectedPr) {
-      setIsPrPanelCollapsed(false);
-      return;
-    }
     setIsPrPanelCollapsed((prev) => !prev);
-  }, [selectedPr]);
+  }, []);
 
   const handleRefreshPulls = useCallback(() => {
     void refetchPulls();
@@ -1244,6 +1248,39 @@ function App() {
   const shouldShowFileCommentComposer = isFileCommentComposerVisible;
   const formattedRepo = repoRef ? `${repoRef.owner}/${repoRef.repo}` : "";
 
+  // Load drafts from localStorage on mount
+  useEffect(() => {
+    if (repoRef && selectedPr) {
+      const key = `drafts_${repoRef.owner}_${repoRef.repo}_${selectedPr}`;
+      const stored = localStorage.getItem(key);
+      if (stored) {
+        try {
+          setDraftsByFile(JSON.parse(stored));
+        } catch (e) {
+          console.error('Failed to parse stored drafts:', e);
+        }
+      }
+    }
+  }, [repoRef, selectedPr]);
+
+  // Save drafts to localStorage whenever they change
+  useEffect(() => {
+    if (repoRef && selectedPr) {
+      const key = `drafts_${repoRef.owner}_${repoRef.repo}_${selectedPr}`;
+      localStorage.setItem(key, JSON.stringify(draftsByFile));
+    }
+  }, [draftsByFile, repoRef, selectedPr]);
+
+  // Automatically restore inline draft when file with draft is selected
+  useEffect(() => {
+    if (selectedFilePath && draftsByFile[selectedFilePath]?.inline) {
+      const draft = draftsByFile[selectedFilePath].inline;
+      if (draft && !isAddingInlineComment) {
+        setInlineCommentDraft(draft);
+      }
+    }
+  }, [selectedFilePath, draftsByFile, isAddingInlineComment]);
+
   useEffect(() => {
     if (repoRef) {
       setIsRepoPanelCollapsed(true);
@@ -1866,6 +1903,15 @@ function App() {
     );
   }, [reviewAwareComments, pendingReview]);
 
+  // Check if a file has any drafts in progress (unsaved comments/replies)
+  const fileHasDraftsInProgress = useCallback((filePath: string): boolean => {
+    const fileDrafts = draftsByFile[filePath];
+    if (!fileDrafts) return false;
+    if (fileDrafts.inline && fileDrafts.inline.trim()) return true;
+    if (fileDrafts.reply && Object.values(fileDrafts.reply).some(draft => draft && draft.trim())) return true;
+    return false;
+  }, [draftsByFile]);
+
   const handleLogin = useCallback(async () => {
     await loginMutation.mutateAsync();
   }, [loginMutation]);
@@ -2245,9 +2291,19 @@ function App() {
   const handleAddCommentClick = useCallback(() => {
     setEditingCommentId(null);
     setEditingComment(null);
-    setIsSidebarCollapsed(false);
-    openFileCommentComposer(pendingReview ? "review" : "single");
-  }, [openFileCommentComposer, pendingReview]);
+    setIsAddingInlineComment(true);
+    // Restore draft if exists
+    const draft = selectedFilePath ? draftsByFile[selectedFilePath]?.inline || "" : "";
+    setInlineCommentDraft(draft);
+    setInlineCommentError(null);
+    setInlineCommentSuccess(false);
+    // Scroll to bottom after a brief delay to allow render
+    setTimeout(() => {
+      if (commentPanelBodyRef.current) {
+        commentPanelBodyRef.current.scrollTop = commentPanelBodyRef.current.scrollHeight;
+      }
+    }, 100);
+  }, [selectedFilePath, draftsByFile]);
 
   const handleSubmitReviewClick = useCallback(() => {
     if (localComments.length === 0) {
@@ -2641,6 +2697,47 @@ function App() {
     ],
   );
 
+  const handleGlyphClick = useCallback((lineNumber: number) => {
+    const lineNumberStr = String(lineNumber);
+    
+    // If inline editor is already open, just update the line number
+    if (isAddingInlineComment) {
+      setInlineCommentLine(lineNumberStr);
+      // Scroll to bottom to make sure the editor is visible
+      setTimeout(() => {
+        if (commentPanelBodyRef.current) {
+          commentPanelBodyRef.current.scrollTop = commentPanelBodyRef.current.scrollHeight;
+        }
+      }, 100);
+    }
+    // If file comment composer is open, update its line number
+    else if (isFileCommentComposerVisible) {
+      setFileCommentLine(lineNumberStr);
+      setFileCommentIsFileLevel(false);
+    }
+    // Otherwise, open inline editor with the line number
+    else {
+      setIsAddingInlineComment(true);
+      setInlineCommentLine(lineNumberStr);
+      setInlineCommentDraft("");
+      setInlineCommentError(null);
+      setInlineCommentSuccess(false);
+      setIsInlineCommentOpen(true);
+      // Scroll to bottom after a brief delay to allow render
+      setTimeout(() => {
+        if (commentPanelBodyRef.current) {
+          commentPanelBodyRef.current.scrollTop = commentPanelBodyRef.current.scrollHeight;
+        }
+      }, 100);
+    }
+  }, [
+    isAddingInlineComment,
+    isFileCommentComposerVisible,
+  ]);
+
+  // Update ref whenever the callback changes
+  handleGlyphClickRef.current = handleGlyphClick;
+
   const pullRequests = pullsQuery.data ?? [];
   
   // Filter PRs based on search input
@@ -2785,12 +2882,23 @@ function App() {
                 {prDetail && (
                   <div className="panel panel--collapsible panel--collapsed">
                     <div className="panel__header panel__header--condensed">
-                      <span className="panel__title-button panel__title-button--inline" style={{ cursor: 'default' }}>
+                      <button
+                        type="button"
+                        className="panel__title-button panel__title-button--inline"
+                        onClick={() => {
+                          setIsInlineCommentOpen(false);
+                          setIsPrPanelCollapsed(false);
+                        }}
+                        title="Switch PR"
+                      >
+                        <span className="panel__expando-icon" aria-hidden="true">
+                          &gt;
+                        </span>
                         <span className="panel__title-text">PR</span>
                         <span className="panel__summary panel__summary--inline" title={`#${prDetail.number} · ${prDetail.title}`}>
                           #{prDetail.number} · {prDetail.title}
                         </span>
-                      </span>
+                      </button>
                       <a
                         href={`https://github.com/${repoRef?.owner}/${repoRef?.repo}/pull/${prDetail.number}`}
                         target="_blank"
@@ -2818,41 +2926,66 @@ function App() {
               <div className="comment-panel">
                 <div className="comment-panel__header">
                   <div className="comment-panel__title-group">
-                    <span className="comment-panel__title">File comments</span>
+                    <span className="comment-panel__title">{shouldShowFileCommentComposer ? 'Add comment' : 'File comments'}</span>
                     {selectedFilePath && (
                       <span className="comment-panel__subtitle" title={selectedFilePath}>
                         {selectedFilePath}
                       </span>
                     )}
                   </div>
-                  <button
-                    type="button"
-                    className="comment-panel__close"
-                    onClick={closeInlineComment}
-                    aria-label="Hide file comments"
-                  >
-                    ×
-                  </button>
+                  {shouldShowFileCommentComposer ? (
+                    <button
+                      type="button"
+                      className="comment-panel__close comment-panel__close--restore"
+                      onClick={() => {
+                        // Transfer the draft from full editor to inline editor
+                        const currentDraft = fileCommentDraft;
+                        const currentLine = fileCommentLine;
+                        setIsFileCommentComposerVisible(false);
+                        setEditingCommentId(null);
+                        setEditingComment(null);
+                        setFileCommentDraft("");
+                        setFileCommentLine("");
+                        setFileCommentError(null);
+                        
+                        // If there's content in the full editor, restore it to inline editor
+                        if (currentDraft.trim() || (selectedFilePath && draftsByFile[selectedFilePath]?.inline)) {
+                          setIsAddingInlineComment(true);
+                          const draft = currentDraft || (selectedFilePath ? draftsByFile[selectedFilePath]?.inline || "" : "");
+                          setInlineCommentDraft(draft);
+                          setInlineCommentLine(currentLine);
+                          // Save to draftsByFile
+                          if (selectedFilePath && draft) {
+                            setDraftsByFile(prev => ({
+                              ...prev,
+                              [selectedFilePath]: {
+                                ...prev[selectedFilePath],
+                                inline: draft
+                              }
+                            }));
+                          }
+                        }
+                      }}
+                      aria-label="Back to comments"
+                      title="Back to comments"
+                    >
+                      ⊟
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="comment-panel__close"
+                      onClick={closeInlineComment}
+                      aria-label="Hide file comments"
+                    >
+                      ×
+                    </button>
+                  )}
                 </div>
-                <div className="comment-panel__body">
+                <div className="comment-panel__body" ref={commentPanelBodyRef}>
                   {selectedFile ? (
                     shouldShowFileCommentComposer ? (
                       <form className="comment-panel__form" onSubmit={handleFileCommentSubmit}>
-                        {(hasAnyFileComments || editingCommentId !== null) && (
-                          <button
-                            type="button"
-                            className="comment-panel__action-button comment-panel__action-button--subtle"
-                            onClick={() => {
-                              setIsFileCommentComposerVisible(false);
-                              setEditingCommentId(null);
-                              setEditingComment(null);
-                              setFileCommentDraft("");
-                              setFileCommentError(null);
-                            }}
-                          >
-                            ← Back to comments
-                          </button>
-                        )}
                         <textarea
                           ref={fileCommentTextareaRef}
                           value={fileCommentDraft}
@@ -3020,18 +3153,6 @@ function App() {
                       </form>
                     ) : (
                       <div className="comment-panel__existing">
-                        {pendingReview && pendingReview.html_url && (
-                          <button
-                            type="button"
-                            className="comment-panel__action-button comment-panel__action-button--subtle"
-                            onClick={() => {
-                              setIsInlineCommentOpen(false);
-                            }}
-                            style={{ marginBottom: '12px' }}
-                          >
-                            ← Back to comments
-                          </button>
-                        )}
                         {fileComments.length === 0 && !pendingReview && (
                           <div className="comment-panel__empty-state">
                             <p>There are no published comments.</p>
@@ -3233,24 +3354,58 @@ function App() {
                                   <div className="comment-panel__reply-composer">
                                     <div className="comment-panel__reply-composer-header">
                                       <span className="comment-panel__reply-composer-title">Reply to comment</span>
-                                      <button
-                                        type="button"
-                                        className="comment-panel__reply-composer-close"
-                                        onClick={() => {
-                                          setReplyingToCommentId(null);
-                                          setReplyDraft("");
-                                          setReplyError(null);
-                                          setReplySuccess(false);
-                                        }}
-                                        aria-label="Close reply composer"
-                                        title="Close"
-                                      >
-                                        ×
-                                      </button>
+                                      <div className="comment-panel__reply-composer-header-actions">
+                                        <button
+                                          type="button"
+                                          className="comment-panel__reply-composer-maximize"
+                                          onClick={() => {
+                                            setFileCommentDraft(replyDraft);
+                                            setFileCommentLine(parentComment.line?.toString() || "");
+                                            setFileCommentSide(parentComment.side || "RIGHT");
+                                            setFileCommentIsFileLevel(!parentComment.line);
+                                            setReplyingToCommentId(null);
+                                            setReplyDraft("");
+                                            openFileCommentComposer(pendingReview ? "review" : "single");
+                                          }}
+                                          aria-label="Maximize to full editor"
+                                          title="Maximize"
+                                        >
+                                          ⊡
+                                        </button>
+                                        <button
+                                          type="button"
+                                          className="comment-panel__reply-composer-close"
+                                          onClick={() => {
+                                            setReplyingToCommentId(null);
+                                            setReplyDraft("");
+                                            setReplyError(null);
+                                            setReplySuccess(false);
+                                          }}
+                                          aria-label="Close reply composer"
+                                          title="Close"
+                                        >
+                                          ×
+                                        </button>
+                                      </div>
                                     </div>
                                     <textarea
                                       value={replyDraft}
-                                      onChange={(e) => setReplyDraft(e.target.value)}
+                                      onChange={(e) => {
+                                        const newValue = e.target.value;
+                                        setReplyDraft(newValue);
+                                        if (selectedFilePath) {
+                                          setDraftsByFile(prev => ({
+                                            ...prev,
+                                            [selectedFilePath]: {
+                                              ...prev[selectedFilePath],
+                                              reply: {
+                                                ...(prev[selectedFilePath]?.reply || {}),
+                                                [parentComment.id]: newValue || undefined
+                                              }
+                                            }
+                                          }));
+                                        }
+                                      }}
                                       placeholder="Write a reply..."
                                       className="comment-panel__reply-textarea"
                                       rows={4}
@@ -3292,15 +3447,29 @@ function App() {
                                                 in_reply_to: parentComment.id,
                                               },
                                             });
-                                            setReplySuccess(true);
                                             setReplyDraft("");
-                                            setTimeout(() => {
-                                              setReplyingToCommentId(null);
-                                              setReplySuccess(false);
-                                            }, 1500);
+                                            setReplyingToCommentId(null);
+                                            if (selectedFilePath) {
+                                              setDraftsByFile(prev => {
+                                                const newDrafts = { ...prev };
+                                                if (newDrafts[selectedFilePath]?.reply) {
+                                                  delete newDrafts[selectedFilePath].reply![parentComment.id];
+                                                  if (Object.keys(newDrafts[selectedFilePath].reply!).length === 0) {
+                                                    delete newDrafts[selectedFilePath].reply;
+                                                    if (!newDrafts[selectedFilePath].inline) {
+                                                      delete newDrafts[selectedFilePath];
+                                                    }
+                                                  }
+                                                }
+                                                return newDrafts;
+                                              });
+                                            }
                                             // Refetch comments
-                                            queryClient.invalidateQueries({ 
+                                            await queryClient.refetchQueries({ 
                                               queryKey: ["pr-comments", repoRef.owner, repoRef.repo, selectedPr] 
+                                            });
+                                            await queryClient.refetchQueries({ 
+                                              queryKey: ["pull-request", repoRef.owner, repoRef.repo, selectedPr] 
                                             });
                                           } catch (err) {
                                             setReplyError(err instanceof Error ? err.message : String(err));
@@ -3324,32 +3493,42 @@ function App() {
                                             }
                                             try {
                                               setReplyError(null);
-                                              await invoke("cmd_submit_file_comment", {
-                                                args: {
-                                                  owner: repoRef.owner,
-                                                  repo: repoRef.repo,
-                                                  number: prDetail.number,
-                                                  path: selectedFilePath,
-                                                  body: replyDraft,
-                                                  commit_id: prDetail.head_sha,
-                                                  line: parentComment.line || null,
-                                                  side: parentComment.side || null,
-                                                  subject_type: parentComment.line ? null : "file",
-                                                  mode: "review",
-                                                  pending_review_id: pendingReview.id,
-                                                  in_reply_to: parentComment.id,
-                                                },
+                                              
+                                              // Add reply to local review
+                                              await invoke("cmd_local_add_comment", {
+                                                owner: repoRef.owner,
+                                                repo: repoRef.repo,
+                                                prNumber: prDetail.number,
+                                                filePath: selectedFilePath,
+                                                lineNumber: parentComment.line || null,
+                                                side: parentComment.side || "LEFT",
+                                                body: replyDraft,
+                                                commitId: prDetail.head_sha,
                                               });
-                                              setReplySuccess(true);
+                                              
+                                              // Clear form
                                               setReplyDraft("");
-                                              setTimeout(() => {
-                                                setReplyingToCommentId(null);
-                                                setReplySuccess(false);
-                                              }, 1500);
-                                              // Refetch comments
-                                              queryClient.invalidateQueries({ 
-                                                queryKey: ["pr-comments", repoRef.owner, repoRef.repo, selectedPr] 
-                                              });
+                                              setReplyingToCommentId(null);
+                                              
+                                              // Clear drafts
+                                              if (selectedFilePath) {
+                                                setDraftsByFile(prev => {
+                                                  const newDrafts = { ...prev };
+                                                  if (newDrafts[selectedFilePath]?.reply) {
+                                                    delete newDrafts[selectedFilePath].reply![parentComment.id];
+                                                    if (Object.keys(newDrafts[selectedFilePath].reply!).length === 0) {
+                                                      delete newDrafts[selectedFilePath].reply;
+                                                      if (!newDrafts[selectedFilePath].inline) {
+                                                        delete newDrafts[selectedFilePath];
+                                                      }
+                                                    }
+                                                  }
+                                                  return newDrafts;
+                                                });
+                                              }
+                                              
+                                              // Reload local comments
+                                              await loadLocalComments();
                                             } catch (err) {
                                               setReplyError(err instanceof Error ? err.message : String(err));
                                             }
@@ -3373,42 +3552,70 @@ function App() {
                                             try {
                                               setReplyError(null);
                                               // Start a review first
-                                              const review = await invoke<PendingReview>("cmd_start_review", {
+                                              await invoke("cmd_local_start_review", {
                                                 owner: repoRef.owner,
                                                 repo: repoRef.repo,
-                                                number: prDetail.number,
-                                                commit_id: prDetail.head_sha,
+                                                prNumber: prDetail.number,
+                                                commitId: prDetail.head_sha,
+                                                body: null,
                                               });
-                                              // Then add the reply to the review
-                                              await invoke("cmd_submit_file_comment", {
-                                                args: {
-                                                  owner: repoRef.owner,
-                                                  repo: repoRef.repo,
-                                                  number: prDetail.number,
-                                                  path: selectedFilePath,
-                                                  body: replyDraft,
-                                                  commit_id: prDetail.head_sha,
-                                                  line: parentComment.line || null,
-                                                  side: parentComment.side || null,
-                                                  subject_type: parentComment.line ? null : "file",
-                                                  mode: "review",
-                                                  pending_review_id: review.id,
-                                                  in_reply_to: parentComment.id,
-                                                },
+
+                                              // Add reply to local review
+                                              await invoke("cmd_local_add_comment", {
+                                                owner: repoRef.owner,
+                                                repo: repoRef.repo,
+                                                prNumber: prDetail.number,
+                                                filePath: selectedFilePath,
+                                                lineNumber: parentComment.line || null,
+                                                side: parentComment.side || "LEFT",
+                                                body: replyDraft,
+                                                commitId: prDetail.head_sha,
                                               });
+
+                                              // Clear form
                                               setReplySuccess(true);
                                               setReplyDraft("");
+
+                                              // Clear drafts
+                                              if (selectedFilePath) {
+                                                setDraftsByFile(prev => {
+                                                  const newDrafts = { ...prev };
+                                                  if (newDrafts[selectedFilePath]?.reply) {
+                                                    delete newDrafts[selectedFilePath].reply![parentComment.id];
+                                                    if (Object.keys(newDrafts[selectedFilePath].reply!).length === 0) {
+                                                      delete newDrafts[selectedFilePath].reply;
+                                                      if (!newDrafts[selectedFilePath].inline) {
+                                                        delete newDrafts[selectedFilePath];
+                                                      }
+                                                    }
+                                                  }
+                                                  return newDrafts;
+                                                });
+                                              }
+
+                                              // Reload local comments and show review panel
+                                              await loadLocalComments();
+                                              setIsInlineCommentOpen(true);
+
+                                              // Create pending review override
+                                              if (prDetail && authQuery.data?.login) {
+                                                const localReview: PullRequestReview = {
+                                                  id: prDetail.number,
+                                                  state: "PENDING",
+                                                  author: authQuery.data.login,
+                                                  submitted_at: null,
+                                                  body: null,
+                                                  html_url: null,
+                                                  commit_id: prDetail.head_sha,
+                                                  is_mine: true,
+                                                };
+                                                setPendingReviewOverride(localReview);
+                                              }
+
                                               setTimeout(() => {
                                                 setReplyingToCommentId(null);
                                                 setReplySuccess(false);
                                               }, 1500);
-                                              // Refetch comments and pending review
-                                              queryClient.invalidateQueries({ 
-                                                queryKey: ["pr-comments", repoRef.owner, repoRef.repo, selectedPr] 
-                                              });
-                                              queryClient.invalidateQueries({ 
-                                                queryKey: ["pending-review", repoRef.owner, repoRef.repo, selectedPr] 
-                                              });
                                             } catch (err) {
                                               setReplyError(err instanceof Error ? err.message : String(err));
                                             }
@@ -3424,12 +3631,317 @@ function App() {
                             );
                           })}
                         </ul>
+                        {/* Inline new comment composer */}
+                        {(isAddingInlineComment || (selectedFilePath && draftsByFile[selectedFilePath]?.inline)) && (
+                          <div className="comment-panel__reply-composer">
+                            <div className="comment-panel__reply-composer-header">
+                              <span className="comment-panel__reply-composer-title">New comment</span>
+                              <div className="comment-panel__reply-composer-header-actions">
+                                <button
+                                  type="button"
+                                  className="comment-panel__reply-composer-maximize"
+                                  onClick={() => {
+                                    setFileCommentDraft(inlineCommentDraft);
+                                    setFileCommentLine(inlineCommentLine);
+                                    setIsAddingInlineComment(false);
+                                    setInlineCommentDraft("");
+                                    setInlineCommentLine("");
+                                    // Clear the draft from storage since it's being moved to full editor
+                                    if (selectedFilePath) {
+                                      setDraftsByFile(prev => {
+                                        const newDrafts = { ...prev };
+                                        if (newDrafts[selectedFilePath]) {
+                                          delete newDrafts[selectedFilePath].inline;
+                                          if (!newDrafts[selectedFilePath].reply || Object.keys(newDrafts[selectedFilePath].reply!).length === 0) {
+                                            delete newDrafts[selectedFilePath];
+                                          }
+                                        }
+                                        return newDrafts;
+                                      });
+                                    }
+                                    openFileCommentComposer(pendingReview ? "review" : "single");
+                                  }}
+                                  aria-label="Maximize to full editor"
+                                  title="Maximize"
+                                >
+                                  ⊡
+                                </button>
+                                <button
+                                  type="button"
+                                  className="comment-panel__reply-composer-close"
+                                  onClick={() => {
+                                    setIsAddingInlineComment(false);
+                                    setInlineCommentDraft("");
+                                    setInlineCommentError(null);
+                                    setInlineCommentSuccess(false);
+                                    // Clear the draft from storage
+                                    if (selectedFilePath) {
+                                      setDraftsByFile(prev => {
+                                        const newDrafts = { ...prev };
+                                        if (newDrafts[selectedFilePath]) {
+                                          delete newDrafts[selectedFilePath].inline;
+                                          if (!newDrafts[selectedFilePath].reply || Object.keys(newDrafts[selectedFilePath].reply!).length === 0) {
+                                            delete newDrafts[selectedFilePath];
+                                          }
+                                        }
+                                        return newDrafts;
+                                      });
+                                    }
+                                  }}
+                                  aria-label="Close comment composer"
+                                  title="Close"
+                                >
+                                  ×
+                                </button>
+                              </div>
+                            </div>
+                            <textarea
+                              value={inlineCommentDraft}
+                              onChange={(e) => {
+                                const newValue = e.target.value;
+                                setInlineCommentDraft(newValue);
+                                if (selectedFilePath) {
+                                  setDraftsByFile(prev => ({
+                                    ...prev,
+                                    [selectedFilePath]: {
+                                      ...prev[selectedFilePath],
+                                      inline: newValue || undefined
+                                    }
+                                  }));
+                                }
+                              }}
+                              placeholder="Write a comment..."
+                              className="comment-panel__reply-textarea"
+                              rows={4}
+                              autoFocus
+                            />
+                            <div className="comment-panel__line-input">
+                              <label htmlFor="inline-comment-line">Line number: </label>
+                              <input
+                                id="inline-comment-line"
+                                type="text"
+                                placeholder="(optional)"
+                                value={inlineCommentLine}
+                                onChange={(e) => setInlineCommentLine(e.target.value)}
+                              />
+                            </div>
+                            {inlineCommentError && (
+                              <div className="comment-panel__error">{inlineCommentError}</div>
+                            )}
+                            <div className="comment-panel__reply-actions">
+                              <button
+                                type="button"
+                                className="comment-submit"
+                                onClick={async () => {
+                                  if (!inlineCommentDraft.trim()) {
+                                    setInlineCommentError("Comment cannot be empty");
+                                    return;
+                                  }
+                                  if (!prDetail || !repoRef || !selectedFilePath) {
+                                    setInlineCommentError("No file selected");
+                                    return;
+                                  }
+                                  try {
+                                    setInlineCommentError(null);
+                                    const lineNum = inlineCommentLine.trim() ? parseInt(inlineCommentLine.trim(), 10) : null;
+                                    const hasLine = lineNum !== null && !isNaN(lineNum) && lineNum > 0;
+                                    await invoke("cmd_submit_file_comment", {
+                                      args: {
+                                        owner: repoRef.owner,
+                                        repo: repoRef.repo,
+                                        number: prDetail.number,
+                                        path: selectedFilePath,
+                                        body: inlineCommentDraft,
+                                        commit_id: prDetail.head_sha,
+                                        line: hasLine ? lineNum : null,
+                                        side: hasLine ? "RIGHT" : null,
+                                        subject_type: hasLine ? null : "file",
+                                        mode: "single",
+                                        pending_review_id: null,
+                                        in_reply_to: null,
+                                      },
+                                    });
+                                    setInlineCommentDraft("");
+                                    setInlineCommentLine("");
+                                    setIsAddingInlineComment(false);
+                                    if (selectedFilePath) {
+                                      setDraftsByFile(prev => {
+                                        const newDrafts = { ...prev };
+                                        if (newDrafts[selectedFilePath]) {
+                                          delete newDrafts[selectedFilePath].inline;
+                                          if (!newDrafts[selectedFilePath].reply || Object.keys(newDrafts[selectedFilePath].reply!).length === 0) {
+                                            delete newDrafts[selectedFilePath];
+                                          }
+                                        }
+                                        return newDrafts;
+                                      });
+                                    }
+                                    await queryClient.refetchQueries({ 
+                                      queryKey: ["pr-comments", repoRef.owner, repoRef.repo, selectedPr] 
+                                    });
+                                    await queryClient.refetchQueries({ 
+                                      queryKey: ["pull-request", repoRef.owner, repoRef.repo, selectedPr] 
+                                    });
+                                  } catch (err) {
+                                    setInlineCommentError(err instanceof Error ? err.message : String(err));
+                                  }
+                                }}
+                              >
+                                Post comment
+                              </button>
+                              {pendingReview && !pendingReview.html_url ? (
+                                <button
+                                  type="button"
+                                  className="comment-submit comment-submit--secondary"
+                                  onClick={async () => {
+                                    if (!inlineCommentDraft.trim()) {
+                                      setInlineCommentError("Comment cannot be empty");
+                                      return;
+                                    }
+                                    if (!prDetail || !repoRef || !selectedFilePath) {
+                                      setInlineCommentError("No file selected");
+                                      return;
+                                    }
+                                    try {
+                                      setInlineCommentError(null);
+                                      
+                                      // Parse line number
+                                      const lineNum = inlineCommentLine.trim() ? parseInt(inlineCommentLine.trim(), 10) : null;
+                                      const hasLine = lineNum !== null && !isNaN(lineNum) && lineNum > 0;
+                                      
+                                      // Add comment to local review
+                                      await invoke("cmd_local_add_comment", {
+                                        owner: repoRef.owner,
+                                        repo: repoRef.repo,
+                                        prNumber: prDetail.number,
+                                        filePath: selectedFilePath,
+                                        lineNumber: hasLine ? lineNum : null,
+                                        side: hasLine ? "RIGHT" : "LEFT",
+                                        body: inlineCommentDraft,
+                                        commitId: prDetail.head_sha,
+                                      });
+                                      
+                                      // Clear form
+                                      setInlineCommentDraft("");
+                                      setInlineCommentLine("");
+                                      
+                                      // Clear drafts
+                                      if (selectedFilePath) {
+                                        setDraftsByFile(prev => {
+                                          const newDrafts = { ...prev };
+                                          if (newDrafts[selectedFilePath]) {
+                                            delete newDrafts[selectedFilePath].inline;
+                                            if (!newDrafts[selectedFilePath].reply || Object.keys(newDrafts[selectedFilePath].reply!).length === 0) {
+                                              delete newDrafts[selectedFilePath];
+                                            }
+                                          }
+                                          return newDrafts;
+                                        });
+                                      }
+                                      
+                                      // Reload local comments
+                                      await loadLocalComments();
+                                    } catch (err) {
+                                      setInlineCommentError(err instanceof Error ? err.message : String(err));
+                                    }
+                                  }}
+                                >
+                                  Add to review
+                                </button>
+                              ) : !pendingReview ? (
+                                <button
+                                  type="button"
+                                  className="comment-submit comment-submit--secondary"
+                                  onClick={async () => {
+                                    if (!inlineCommentDraft.trim()) {
+                                      setInlineCommentError("Comment cannot be empty");
+                                      return;
+                                    }
+                                    if (!prDetail || !repoRef || !selectedFilePath) {
+                                      setInlineCommentError("No file selected");
+                                      return;
+                                    }
+                                    try {
+                                      setInlineCommentError(null);
+                                      // Start review first
+                                      await invoke("cmd_local_start_review", {
+                                        owner: repoRef.owner,
+                                        repo: repoRef.repo,
+                                        prNumber: prDetail.number,
+                                        commitId: prDetail.head_sha,
+                                        body: null,
+                                      });
+
+                                      // Parse line number
+                                      const lineNum = inlineCommentLine.trim() ? parseInt(inlineCommentLine.trim(), 10) : null;
+                                      const hasLine = lineNum !== null && !isNaN(lineNum) && lineNum > 0;
+
+                                      // Add comment to local review
+                                      await invoke("cmd_local_add_comment", {
+                                        owner: repoRef.owner,
+                                        repo: repoRef.repo,
+                                        prNumber: prDetail.number,
+                                        filePath: selectedFilePath,
+                                        lineNumber: hasLine ? lineNum : null,
+                                        side: hasLine ? "RIGHT" : "LEFT",
+                                        body: inlineCommentDraft,
+                                        commitId: prDetail.head_sha,
+                                      });
+
+                                      // Clear form
+                                      setInlineCommentDraft("");
+                                      setInlineCommentLine("");
+                                      setIsAddingInlineComment(false);
+
+                                      // Clear drafts
+                                      if (selectedFilePath) {
+                                        setDraftsByFile(prev => {
+                                          const newDrafts = { ...prev };
+                                          if (newDrafts[selectedFilePath]) {
+                                            delete newDrafts[selectedFilePath].inline;
+                                            if (!newDrafts[selectedFilePath].reply || Object.keys(newDrafts[selectedFilePath].reply!).length === 0) {
+                                              delete newDrafts[selectedFilePath];
+                                            }
+                                          }
+                                          return newDrafts;
+                                        });
+                                      }
+
+                                      // Reload local comments and show review panel
+                                      await loadLocalComments();
+                                      setIsInlineCommentOpen(true);
+
+                                      // Create pending review override
+                                      if (prDetail && authQuery.data?.login) {
+                                        const localReview: PullRequestReview = {
+                                          id: prDetail.number,
+                                          state: "PENDING",
+                                          author: authQuery.data.login,
+                                          submitted_at: null,
+                                          body: null,
+                                          html_url: null,
+                                          commit_id: prDetail.head_sha,
+                                          is_mine: true,
+                                        };
+                                        setPendingReviewOverride(localReview);
+                                      }
+                                    } catch (err) {
+                                      setInlineCommentError(err instanceof Error ? err.message : String(err));
+                                    }
+                                  }}
+                                >
+                                  Start review
+                                </button>
+                              ) : null}
+                            </div>
+                          </div>
+                        )}
                         <div className="comment-panel__actions">
                           {pendingReview?.html_url ? (
                             <div className="comment-panel__info-note">
                               Submit or delete the pending GitHub review to be able to add a new comment.
                             </div>
-                          ) : (
+                          ) : !isAddingInlineComment && !(selectedFilePath && draftsByFile[selectedFilePath]?.inline) && (
                             <>
                               <button
                                 type="button"
@@ -3549,7 +4061,7 @@ function App() {
                                 onClick={() => setShowRepoMRU(!showRepoMRU)}
                                 aria-label="Recent repositories"
                               >
-                                v
+                                ▼
                               </button>
                               {showRepoMRU && (
                                 <div className="repo-form__mru">
@@ -3776,6 +4288,9 @@ function App() {
                                     setSelectedFilePath(null);
                                     setIsPrCommentsView(false);
                                     setIsPrCommentComposerOpen(false);
+                                    setIsInlineCommentOpen(false);
+                                    setIsAddingInlineComment(false);
+                                    setReplyingToCommentId(null);
                                   }}
                                 >
                                   <span className="pr-item__title">#{pr.number} · {pr.title}</span>
@@ -3846,17 +4361,6 @@ function App() {
                         <div className="pr-comments-view">
                           {isPrCommentComposerOpen ? (
                             <div className="pr-comment-composer">
-                              {prLevelComments.length > 0 && (
-                                <div className="pr-comment-composer__header">
-                                  <button
-                                    type="button"
-                                    className="comment-panel__action-button comment-panel__action-button--subtle"
-                                    onClick={() => setIsPrCommentComposerOpen(false)}
-                                  >
-                                    ← Back to comments
-                                  </button>
-                                </div>
-                              )}
                               <form className="comment-composer comment-composer--pr-pane" onSubmit={handleCommentSubmit}>
                                 <textarea
                                   id="pr-comment-draft"
@@ -3963,8 +4467,8 @@ function App() {
                                   <span className="file-list__name">{displayName}</span>
                                   {commentCount > 0 && (
                                     <span 
-                                      className={`file-list__badge${fileHasPendingComments(file.path) ? ' file-list__badge--pending' : ''}`}
-                                      title={`${commentCount} comment${commentCount !== 1 ? 's' : ''}`}
+                                      className={`file-list__badge${fileHasPendingComments(file.path) ? ' file-list__badge--pending' : ''}${fileHasDraftsInProgress(file.path) ? ' file-list__badge--draft' : ''}`}
+                                      title={`${commentCount} comment${commentCount !== 1 ? 's' : ''}${fileHasDraftsInProgress(file.path) ? ' (comment in progress)' : ''}`}
                                       onClick={(e) => {
                                         e.stopPropagation();
                                         if (selectedFilePath !== file.path) {
@@ -4157,6 +4661,47 @@ function App() {
                           minimap: { enabled: false },
                           scrollBeyondLastLine: false,
                           wordWrap: "on",
+                          glyphMargin: true,
+                        }}
+                        onMount={(editor) => {
+                          const modifiedEditor = editor.getModifiedEditor();
+                          
+                          const hoveredLineRef = { current: null as number | null };
+                          const decorationsRef = { current: [] as string[] };
+                          
+                          // Handle mouse move for hover effect
+                          modifiedEditor.onMouseMove((e) => {
+                            const lineNumber = e.target.position?.lineNumber;
+                            const isOverGlyphOrLineNumber = 
+                              e.target.type === 2 || // GUTTER_GLYPH_MARGIN
+                              e.target.type === 3;   // GUTTER_LINE_NUMBERS
+                            
+                            if (lineNumber && isOverGlyphOrLineNumber && hoveredLineRef.current !== lineNumber) {
+                              hoveredLineRef.current = lineNumber;
+                              decorationsRef.current = modifiedEditor.deltaDecorations(decorationsRef.current, [
+                                {
+                                  range: new (window as any).monaco.Range(lineNumber, 1, lineNumber, 1),
+                                  options: {
+                                    glyphMarginClassName: 'monaco-glyph-margin-plus',
+                                    glyphMarginHoverMessage: { value: 'Add comment' }
+                                  }
+                                }
+                              ]);
+                            } else if (!isOverGlyphOrLineNumber && hoveredLineRef.current !== null) {
+                              hoveredLineRef.current = null;
+                              decorationsRef.current = modifiedEditor.deltaDecorations(decorationsRef.current, []);
+                            }
+                          });
+                          
+                          // Handle mouse down for clicking on glyph margin
+                          modifiedEditor.onMouseDown((e) => {
+                            const lineNumber = e.target.position?.lineNumber;
+                            const isGlyphMargin = e.target.type === 2; // GUTTER_GLYPH_MARGIN
+                            
+                            if (lineNumber && isGlyphMargin && handleGlyphClickRef.current) {
+                              handleGlyphClickRef.current(lineNumber);
+                            }
+                          });
                         }}
                       />
                     ) : (
@@ -4236,17 +4781,8 @@ function App() {
                             const lineNumber = e.target.position?.lineNumber;
                             const isGlyphMargin = e.target.type === 2; // GUTTER_GLYPH_MARGIN
                             
-                            if (lineNumber && isGlyphMargin) {
-                              // Set the line and open directly to composer
-                              setIsSidebarCollapsed(false);
-                              setFileCommentLine(lineNumber.toString());
-                              setFileCommentSide("RIGHT");
-                              setFileCommentIsFileLevel(false);
-                              setFileCommentDraft("");
-                              setFileCommentError(null);
-                              setFileCommentSuccess(false);
-                              setIsFileCommentComposerVisible(true);
-                              setIsInlineCommentOpen(true);
+                            if (lineNumber && isGlyphMargin && handleGlyphClickRef.current) {
+                              handleGlyphClickRef.current(lineNumber);
                             }
                           });
                         }}
