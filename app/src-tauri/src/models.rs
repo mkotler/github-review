@@ -80,6 +80,7 @@ pub struct PullRequestComment {
     pub state: Option<String>,
     pub is_mine: bool,
     pub review_id: Option<u64>,
+    pub in_reply_to_id: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Clone)]

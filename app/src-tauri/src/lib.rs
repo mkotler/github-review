@@ -33,6 +33,8 @@ struct SubmitFileCommentArgs {
     mode: Option<String>,
     #[serde(alias = "pending_review_id")]
     pending_review_id: Option<u64>,
+    #[serde(alias = "in_reply_to")]
+    in_reply_to: Option<u64>,
 }
 
 fn init_logging() {
@@ -126,6 +128,7 @@ async fn cmd_submit_file_comment(args: SubmitFileCommentArgs) -> Result<(), Stri
         subject_type,
         mode,
         pending_review_id,
+        in_reply_to,
     } = args;
 
     let mode = match mode.as_deref() {
@@ -145,6 +148,7 @@ async fn cmd_submit_file_comment(args: SubmitFileCommentArgs) -> Result<(), Stri
         subject_type.as_deref(),
         mode,
         pending_review_id,
+        in_reply_to,
     )
     .await
     .map_err(|err| err.to_string())

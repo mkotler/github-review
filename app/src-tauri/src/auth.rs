@@ -195,6 +195,7 @@ pub async fn publish_file_comment(
     subject_type: Option<&str>,
     mode: CommentMode,
     pending_review_id: Option<u64>,
+    in_reply_to: Option<u64>,
 ) -> AppResult<()> {
     let token = require_token()?;
     submit_file_comment(
@@ -210,6 +211,7 @@ pub async fn publish_file_comment(
         subject_type,
         mode,
         pending_review_id,
+        in_reply_to,
     )
     .await
 }

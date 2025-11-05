@@ -583,6 +583,7 @@ pub async fn submit_file_comment(
     subject_type: Option<&str>,
     mode: CommentMode,
     pending_review_id: Option<u64>,
+    in_reply_to: Option<u64>,
 ) -> AppResult<()> {
     let client = build_client(token)?;
 
@@ -615,6 +616,11 @@ pub async fn submit_file_comment(
             "side".into(),
             Value::String(side.unwrap_or("RIGHT").to_string()),
         );
+    }
+
+    // Add in_reply_to if provided
+    if let Some(reply_to_id) = in_reply_to {
+        single_comment_fields.insert("in_reply_to".into(), Value::Number(reply_to_id.into()));
     }
 
     match mode {
@@ -657,6 +663,11 @@ pub async fn submit_file_comment(
                 "commit_id".into(),
                 Value::String(commit_id.to_string()),
             );
+
+            // Add in_reply_to if provided
+            if let Some(reply_to_id) = in_reply_to {
+                review_comment_fields.insert("in_reply_to".into(), Value::Number(reply_to_id.into()));
+            }
 
             // If we don't have a pending_review_id, the user must call "Start review" first
             let review_id = pending_review_id.ok_or_else(|| {
@@ -1044,6 +1055,7 @@ fn map_review_comment(comment: &GitHubReviewComment, is_mine: bool, patch: Optio
         state: comment.state.clone(),
         is_mine,
         review_id: comment.pull_request_review_id,
+        in_reply_to_id: comment.in_reply_to_id,
     }
 }
 
@@ -1143,6 +1155,7 @@ fn map_issue_comment(comment: &GitHubIssueComment, is_mine: bool) -> PullRequest
         state: None,
         is_mine,
         review_id: None,
+        in_reply_to_id: None,
     }
 }
 
@@ -1218,6 +1231,8 @@ struct GitHubReviewComment {
     pub created_at: String,
     #[serde(default)]
     pub pull_request_review_id: Option<u64>,
+    #[serde(default)]
+    pub in_reply_to_id: Option<u64>,
     #[allow(dead_code)]
     pub subject_type: Option<String>, // "line" or "file" - reserved for future use
 }

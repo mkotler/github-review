@@ -72,6 +72,7 @@ type PullRequestComment = {
   state?: string | null;
   is_mine: boolean;
   review_id?: number | null;
+  in_reply_to_id?: number | null;
 };
 
 type PullRequestReview = {
@@ -247,6 +248,11 @@ function App() {
   const [fileCommentIsFileLevel, setFileCommentIsFileLevel] = useState(false);
   const [fileCommentError, setFileCommentError] = useState<string | null>(null);
   const [fileCommentSuccess, setFileCommentSuccess] = useState(false);
+  const [replyingToCommentId, setReplyingToCommentId] = useState<number | null>(null);
+  const [replyDraft, setReplyDraft] = useState("");
+  const [replyMode, setReplyMode] = useState<"single" | "review">("single");
+  const [replyError, setReplyError] = useState<string | null>(null);
+  const [replySuccess, setReplySuccess] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isRepoPanelCollapsed, setIsRepoPanelCollapsed] = useState(false);
   const [isPrPanelCollapsed, setIsPrPanelCollapsed] = useState(false);
@@ -1207,6 +1213,33 @@ function App() {
     });
   }, [reviewAwareComments, selectedFilePath]);
 
+  // Group comments into threads (parent + replies)
+  const commentThreads = useMemo(() => {
+    const threads: Array<{ parent: PullRequestComment; replies: PullRequestComment[] }> = [];
+    const replyMap = new Map<number, PullRequestComment[]>();
+    
+    // Group replies by parent comment ID
+    fileComments.forEach(comment => {
+      if (comment.in_reply_to_id) {
+        const replies = replyMap.get(comment.in_reply_to_id) || [];
+        replies.push(comment);
+        replyMap.set(comment.in_reply_to_id, replies);
+      }
+    });
+    
+    // Build threads with top-level comments as parents
+    fileComments.forEach(comment => {
+      if (!comment.in_reply_to_id) {
+        threads.push({
+          parent: comment,
+          replies: replyMap.get(comment.id) || []
+        });
+      }
+    });
+    
+    return threads;
+  }, [fileComments]);
+
   const hasAnyFileComments = fileComments.length > 0;
   const shouldShowFileCommentComposer = isFileCommentComposerVisible;
   const formattedRepo = repoRef ? `${repoRef.owner}/${repoRef.repo}` : "";
@@ -1824,6 +1857,14 @@ function App() {
   const getFileCommentCount = useCallback((filePath: string): number => {
     return reviewAwareComments.filter(c => c.path === filePath).length;
   }, [reviewAwareComments]);
+
+  // Check if a file has any pending comments (draft or pending GitHub review)
+  const fileHasPendingComments = useCallback((filePath: string): boolean => {
+    return reviewAwareComments.some(c => 
+      c.path === filePath && 
+      (c.is_draft || (c.review_id === pendingReview?.id && pendingReview?.html_url))
+    );
+  }, [reviewAwareComments, pendingReview]);
 
   const handleLogin = useCallback(async () => {
     await loginMutation.mutateAsync();
@@ -3020,125 +3061,365 @@ function App() {
                           </div>
                         )}
                         <ul className="comment-panel__list">
-                          {fileComments.map((comment) => {
-                            const formattedTimestamp = new Date(comment.created_at).toLocaleString();
-                            // Check if this is a pending GitHub review comment
-                            const isPendingGitHubReviewComment = comment.review_id === pendingReview?.id && pendingReview?.html_url;
-                            // Show edit button for local comments OR submitted GitHub comments (not pending GitHub review comments)
-                            const showEditButton = !isPendingGitHubReviewComment && 
-                              ((comment.is_draft && !pendingReview?.html_url) || (comment.is_mine && !comment.is_draft));
-                            console.log('Comment icon logic:', {
-                              commentId: comment.id,
-                              is_draft: comment.is_draft,
-                              is_mine: comment.is_mine,
-                              review_id: comment.review_id,
-                              pendingReviewId: pendingReview?.id,
-                              pendingReviewHtmlUrl: pendingReview?.html_url,
-                              isPendingGitHubReviewComment,
-                              showEditButton
-                            });
-                            const isCollapsed = collapsedComments.has(comment.id);
+                          {commentThreads.map((thread) => {
+                            const allCommentsInThread = [thread.parent, ...thread.replies];
+                            const parentComment = thread.parent;
+                            
+                            // Calculate collapse state based on parent comment
+                            const isCollapsed = collapsedComments.has(parentComment.id);
                             const toggleCollapse = () => {
                               setCollapsedComments(prev => {
                                 const next = new Set(prev);
-                                if (next.has(comment.id)) {
-                                  next.delete(comment.id);
+                                if (next.has(parentComment.id)) {
+                                  next.delete(parentComment.id);
                                 } else {
-                                  next.add(comment.id);
+                                  next.add(parentComment.id);
                                 }
                                 return next;
                               });
                             };
                             
+                            // Check if thread is long enough to show collapse button (more than 5 lines total)
+                            const totalLineCount = allCommentsInThread.reduce((sum, c) => sum + c.body.split('\n').length, 0);
+                            const showCollapseButton = totalLineCount > 5;
+                            
                             return (
-                              <li key={comment.id} className="comment-panel__item">
-                                <div className="comment-panel__item-header" title={formattedTimestamp}>
+                              <li key={parentComment.id} className="comment-panel__item">
+                                <div className="comment-panel__item-header">
                                   <div className="comment-panel__item-header-info">
-                                    <span className="comment-panel__item-author">{comment.author}</span>
-                                    {(comment.is_draft || isPendingGitHubReviewComment) && (
-                                      <span className="comment-panel__item-badge">Pending</span>
+                                    {parentComment.line && parentComment.line > 0 && (
+                                      <span 
+                                        className="comment-panel__item-line comment-panel__item-line--clickable"
+                                        onClick={() => {
+                                          if (editorRef.current && parentComment.line) {
+                                            const editor = editorRef.current;
+                                            const lineNumber = parentComment.line;
+                                            
+                                            // Reveal the line with some context
+                                            editor.revealLineInCenter(lineNumber);
+                                            
+                                            // Set cursor position at the line
+                                            editor.setPosition({ lineNumber, column: 1 });
+                                            editor.focus();
+                                          }
+                                        }}
+                                        title="Click to jump to line in editor"
+                                      >
+                                        #{parentComment.line}
+                                      </span>
                                     )}
                                   </div>
                                   <div className="comment-panel__item-actions">
-                                    <button
-                                      type="button"
-                                      className="comment-panel__item-collapse"
-                                      onClick={toggleCollapse}
-                                      aria-label={isCollapsed ? "Expand comment" : "Collapse comment"}
-                                      title={isCollapsed ? "Expand" : "Collapse"}
-                                    >
-                                      {isCollapsed ? "▼" : "▲"}
-                                    </button>
-                                    {/* Show edit button for local comments OR submitted GitHub comments (not pending GitHub review) */}
-                                    {showEditButton && (
+                                    {showCollapseButton && (
                                       <button
                                         type="button"
-                                        className="comment-panel__item-edit"
-                                        onClick={() => {
-                                          setEditingCommentId(comment.id);
-                                          setEditingComment(comment);
-                                          setFileCommentDraft(comment.body);
-                                          setFileCommentLine(comment.line?.toString() || "");
-                                          setFileCommentSide(comment.side || "RIGHT");
-                                          setFileCommentIsFileLevel(!comment.line);
-                                          setFileCommentError(null);
-                                          setFileCommentSuccess(false);
-                                          setIsFileCommentComposerVisible(true);
-                                        }}
-                                        aria-label="Edit comment"
+                                        className="comment-panel__item-collapse"
+                                        onClick={toggleCollapse}
+                                        aria-label={isCollapsed ? "Expand thread" : "Collapse thread"}
+                                        title={isCollapsed ? "Expand" : "Collapse"}
                                       >
-                                        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" width="16" height="16">
-                                          <path
-                                            d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"
-                                            fill="currentColor"
-                                          />
-                                        </svg>
+                                        {isCollapsed ? "▼" : "▲"}
                                       </button>
                                     )}
                                   </div>
                                 </div>
-                                <div className="comment-panel__item-body">
-                                  {comment.line && comment.line > 0 && (
-                                    <span 
-                                      className="comment-panel__item-line comment-panel__item-line--clickable"
-                                      onClick={() => {
-                                        if (editorRef.current && comment.line) {
-                                          const editor = editorRef.current;
-                                          const lineNumber = comment.line;
-                                          
-                                          // Reveal the line with some context
-                                          editor.revealLineInCenter(lineNumber);
-                                          
-                                          // Set cursor position at the line
-                                          editor.setPosition({ lineNumber, column: 1 });
-                                          editor.focus();
-                                        }
-                                      }}
-                                      title="Click to jump to line in editor"
-                                    >
-                                      #{comment.line}.
-                                    </span>
-                                  )}
-                                  <div className={`comment-panel__item-content${isCollapsed ? " comment-panel__item-content--collapsed" : ""}`}>
-                                    <ReactMarkdown 
-                                      remarkPlugins={[remarkGfm]}
-                                      components={{
-                                        code: ({ className, children, ...props }) => {
-                                          const match = /language-(\w+)/.exec(className || '');
-                                          const language = match ? match[1] : null;
-                                          
-                                          if (language === 'mermaid') {
-                                            return <MermaidCode>{String(children).trim()}</MermaidCode>;
-                                          }
-                                          
-                                          return <code className={className} {...props}>{children}</code>;
-                                        }
-                                      }}
-                                    >
-                                      {comment.body}
-                                    </ReactMarkdown>
-                                  </div>
+                                <div className={`comment-panel__item-body${isCollapsed ? " comment-panel__item-content--collapsed" : ""}`}>
+                                  {/* Render all comments in thread */}
+                                  {allCommentsInThread.map((comment, index) => {
+                                    const formattedTimestamp = new Date(comment.created_at).toLocaleString();
+                                    const isPendingGitHubReviewComment = comment.review_id === pendingReview?.id && pendingReview?.html_url;
+                                    const isPendingLocalReviewComment = comment.is_draft && !pendingReview?.html_url;
+                                    const isLastCommentInThread = index === allCommentsInThread.length - 1;
+                                    
+                                    // Edit button rules:
+                                    // - Show for pending local review comments (draft, no GitHub review)
+                                    // - Show for my own non-draft comments
+                                    // - Hide for pending GitHub review comments
+                                    const showEditButton = !isPendingGitHubReviewComment && 
+                                      (isPendingLocalReviewComment || (comment.is_mine && !comment.is_draft));
+                                    
+                                    // Reply button rules:
+                                    // - Only show on last comment in thread
+                                    // - Hide for pending local review comments
+                                    // - Hide for pending GitHub review comments
+                                    const showReplyButton = isLastCommentInThread && 
+                                      !isPendingLocalReviewComment && 
+                                      !isPendingGitHubReviewComment;
+                                    
+                                    return (
+                                      <div key={comment.id} className={`comment-panel__thread-comment${index > 0 ? " comment-panel__thread-comment--reply" : ""}`}>
+                                        <div className="comment-panel__thread-comment-header" title={formattedTimestamp}>
+                                          <div className="comment-panel__thread-comment-info">
+                                            <span className="comment-panel__item-author">{comment.author}</span>
+                                            {(comment.is_draft || isPendingGitHubReviewComment) && (
+                                              <span className="comment-panel__item-badge">Pending</span>
+                                            )}
+                                          </div>
+                                          <div className="comment-panel__thread-comment-actions">
+                                            {showEditButton && (
+                                              <button
+                                                type="button"
+                                                className="comment-panel__item-edit"
+                                                onClick={() => {
+                                                  setEditingCommentId(comment.id);
+                                                  setEditingComment(comment);
+                                                  setFileCommentDraft(comment.body);
+                                                  setFileCommentLine(comment.line?.toString() || "");
+                                                  setFileCommentSide(comment.side || "RIGHT");
+                                                  setFileCommentIsFileLevel(!comment.line);
+                                                  setFileCommentError(null);
+                                                  setFileCommentSuccess(false);
+                                                  setIsFileCommentComposerVisible(true);
+                                                }}
+                                                aria-label="Edit comment"
+                                                title="Edit comment"
+                                              >
+                                                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" width="16" height="16">
+                                                  <path
+                                                    d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"
+                                                    fill="currentColor"
+                                                  />
+                                                </svg>
+                                              </button>
+                                            )}
+                                            {showReplyButton && (
+                                              <button
+                                                type="button"
+                                                className="comment-panel__item-reply"
+                                                onClick={() => {
+                                                  setReplyingToCommentId(parentComment.id);
+                                                  setReplyDraft("");
+                                                  setReplyError(null);
+                                                  setReplySuccess(false);
+                                                }}
+                                                aria-label="Reply to comment"
+                                                title="Reply to comment"
+                                              >
+                                                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" width="16" height="16">
+                                                  <path
+                                                    d="M10 9V5l-7 7 7 7v-4.1c5 0 8.5 1.6 11 5.1-1-5-4-10-11-11z"
+                                                    fill="currentColor"
+                                                  />
+                                                </svg>
+                                              </button>
+                                            )}
+                                          </div>
+                                        </div>
+                                        <div className="comment-panel__thread-comment-content">
+                                          <ReactMarkdown 
+                                            remarkPlugins={[remarkGfm]}
+                                            components={{
+                                              code: ({ className, children, ...props }) => {
+                                                const match = /language-(\w+)/.exec(className || '');
+                                                const language = match ? match[1] : null;
+                                                
+                                                if (language === 'mermaid') {
+                                                  return <MermaidCode>{String(children).trim()}</MermaidCode>;
+                                                }
+                                                
+                                                return <code className={className} {...props}>{children}</code>;
+                                              }
+                                            }}
+                                          >
+                                            {comment.body}
+                                          </ReactMarkdown>
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
                                 </div>
+                                {/* Reply composer shown under this thread */}
+                                {replyingToCommentId === parentComment.id && (
+                                  <div className="comment-panel__reply-composer">
+                                    <div className="comment-panel__reply-composer-header">
+                                      <span className="comment-panel__reply-composer-title">Reply to comment</span>
+                                      <button
+                                        type="button"
+                                        className="comment-panel__reply-composer-close"
+                                        onClick={() => {
+                                          setReplyingToCommentId(null);
+                                          setReplyDraft("");
+                                          setReplyError(null);
+                                          setReplySuccess(false);
+                                        }}
+                                        aria-label="Close reply composer"
+                                        title="Close"
+                                      >
+                                        ×
+                                      </button>
+                                    </div>
+                                    <textarea
+                                      value={replyDraft}
+                                      onChange={(e) => setReplyDraft(e.target.value)}
+                                      placeholder="Write a reply..."
+                                      className="comment-panel__reply-textarea"
+                                      rows={4}
+                                    />
+                                    {replyError && (
+                                      <div className="comment-panel__error">{replyError}</div>
+                                    )}
+                                    {replySuccess && (
+                                      <div className="comment-panel__success">Reply posted!</div>
+                                    )}
+                                    <div className="comment-panel__reply-actions">
+                                      <button
+                                        type="button"
+                                        className="comment-submit"
+                                        onClick={async () => {
+                                          if (!replyDraft.trim()) {
+                                            setReplyError("Reply cannot be empty");
+                                            return;
+                                          }
+                                          if (!prDetail || !repoRef) {
+                                            setReplyError("No PR details available");
+                                            return;
+                                          }
+                                          try {
+                                            setReplyError(null);
+                                            await invoke("cmd_submit_file_comment", {
+                                              args: {
+                                                owner: repoRef.owner,
+                                                repo: repoRef.repo,
+                                                number: prDetail.number,
+                                                path: selectedFilePath,
+                                                body: replyDraft,
+                                                commit_id: prDetail.head_sha,
+                                                line: parentComment.line || null,
+                                                side: parentComment.side || null,
+                                                subject_type: parentComment.line ? null : "file",
+                                                mode: "single",
+                                                pending_review_id: pendingReview?.id || null,
+                                                in_reply_to: parentComment.id,
+                                              },
+                                            });
+                                            setReplySuccess(true);
+                                            setReplyDraft("");
+                                            setTimeout(() => {
+                                              setReplyingToCommentId(null);
+                                              setReplySuccess(false);
+                                            }, 1500);
+                                            // Refetch comments
+                                            queryClient.invalidateQueries({ 
+                                              queryKey: ["pr-comments", repoRef.owner, repoRef.repo, selectedPr] 
+                                            });
+                                          } catch (err) {
+                                            setReplyError(err instanceof Error ? err.message : String(err));
+                                          }
+                                        }}
+                                      >
+                                        Post comment
+                                      </button>
+                                      {pendingReview && !pendingReview.html_url ? (
+                                        <button
+                                          type="button"
+                                          className="comment-submit comment-submit--secondary"
+                                          onClick={async () => {
+                                            if (!replyDraft.trim()) {
+                                              setReplyError("Reply cannot be empty");
+                                              return;
+                                            }
+                                            if (!prDetail || !repoRef) {
+                                              setReplyError("No PR details available");
+                                              return;
+                                            }
+                                            try {
+                                              setReplyError(null);
+                                              await invoke("cmd_submit_file_comment", {
+                                                args: {
+                                                  owner: repoRef.owner,
+                                                  repo: repoRef.repo,
+                                                  number: prDetail.number,
+                                                  path: selectedFilePath,
+                                                  body: replyDraft,
+                                                  commit_id: prDetail.head_sha,
+                                                  line: parentComment.line || null,
+                                                  side: parentComment.side || null,
+                                                  subject_type: parentComment.line ? null : "file",
+                                                  mode: "review",
+                                                  pending_review_id: pendingReview.id,
+                                                  in_reply_to: parentComment.id,
+                                                },
+                                              });
+                                              setReplySuccess(true);
+                                              setReplyDraft("");
+                                              setTimeout(() => {
+                                                setReplyingToCommentId(null);
+                                                setReplySuccess(false);
+                                              }, 1500);
+                                              // Refetch comments
+                                              queryClient.invalidateQueries({ 
+                                                queryKey: ["pr-comments", repoRef.owner, repoRef.repo, selectedPr] 
+                                              });
+                                            } catch (err) {
+                                              setReplyError(err instanceof Error ? err.message : String(err));
+                                            }
+                                          }}
+                                        >
+                                          Add to review
+                                        </button>
+                                      ) : !pendingReview ? (
+                                        <button
+                                          type="button"
+                                          className="comment-submit comment-submit--secondary"
+                                          onClick={async () => {
+                                            if (!replyDraft.trim()) {
+                                              setReplyError("Reply cannot be empty");
+                                              return;
+                                            }
+                                            if (!prDetail || !repoRef) {
+                                              setReplyError("No PR details available");
+                                              return;
+                                            }
+                                            try {
+                                              setReplyError(null);
+                                              // Start a review first
+                                              const review = await invoke<PendingReview>("cmd_start_review", {
+                                                owner: repoRef.owner,
+                                                repo: repoRef.repo,
+                                                number: prDetail.number,
+                                                commit_id: prDetail.head_sha,
+                                              });
+                                              // Then add the reply to the review
+                                              await invoke("cmd_submit_file_comment", {
+                                                args: {
+                                                  owner: repoRef.owner,
+                                                  repo: repoRef.repo,
+                                                  number: prDetail.number,
+                                                  path: selectedFilePath,
+                                                  body: replyDraft,
+                                                  commit_id: prDetail.head_sha,
+                                                  line: parentComment.line || null,
+                                                  side: parentComment.side || null,
+                                                  subject_type: parentComment.line ? null : "file",
+                                                  mode: "review",
+                                                  pending_review_id: review.id,
+                                                  in_reply_to: parentComment.id,
+                                                },
+                                              });
+                                              setReplySuccess(true);
+                                              setReplyDraft("");
+                                              setTimeout(() => {
+                                                setReplyingToCommentId(null);
+                                                setReplySuccess(false);
+                                              }, 1500);
+                                              // Refetch comments and pending review
+                                              queryClient.invalidateQueries({ 
+                                                queryKey: ["pr-comments", repoRef.owner, repoRef.repo, selectedPr] 
+                                              });
+                                              queryClient.invalidateQueries({ 
+                                                queryKey: ["pending-review", repoRef.owner, repoRef.repo, selectedPr] 
+                                              });
+                                            } catch (err) {
+                                              setReplyError(err instanceof Error ? err.message : String(err));
+                                            }
+                                          }}
+                                        >
+                                          Start review
+                                        </button>
+                                      ) : null}
+                                    </div>
+                                  </div>
+                                )}
                               </li>
                             );
                           })}
@@ -3682,7 +3963,7 @@ function App() {
                                   <span className="file-list__name">{displayName}</span>
                                   {commentCount > 0 && (
                                     <span 
-                                      className="file-list__badge"
+                                      className={`file-list__badge${fileHasPendingComments(file.path) ? ' file-list__badge--pending' : ''}`}
                                       title={`${commentCount} comment${commentCount !== 1 ? 's' : ''}`}
                                       onClick={(e) => {
                                         e.stopPropagation();
