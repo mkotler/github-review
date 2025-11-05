@@ -106,12 +106,13 @@ const MIN_SIDEBAR_WIDTH = 340;
 const MIN_CONTENT_WIDTH = 480;
 
 // Component to handle async image loading
-function AsyncImage({ owner, repo, reference, path, alt, ...props }: { 
+function AsyncImage({ owner, repo, reference, path, alt, onClick, ...props }: { 
   owner: string; 
   repo: string; 
   reference: string; 
   path: string; 
   alt?: string;
+  onClick?: () => void;
   [key: string]: any;
 }) {
   const [imageData, setImageData] = useState<string | null>(null);
@@ -170,7 +171,15 @@ function AsyncImage({ owner, repo, reference, path, alt, ...props }: {
     return null; // Don't show anything while loading to avoid flicker
   }
   
-  return <img src={imageData} alt={alt} {...props} />;
+  return (
+    <img 
+      src={imageData} 
+      alt={alt} 
+      onClick={onClick}
+      className={onClick ? 'clickable-image' : ''}
+      {...props} 
+    />
+  );
 }
 
 // Initialize Mermaid
@@ -261,8 +270,9 @@ function App() {
   const [showDeleteReviewConfirm, setShowDeleteReviewConfirm] = useState(false);
   const [showDiff, setShowDiff] = useState(false);
   const [showSourceMenu, setShowSourceMenu] = useState(false);
-  const [maximizedPane, setMaximizedPane] = useState<'source' | 'preview' | null>(null);
+  const [maximizedPane, setMaximizedPane] = useState<'source' | 'preview' | 'media' | null>(null);
   const [savedSplitRatio, setSavedSplitRatio] = useState<string | null>(null);
+  const [mediaViewerContent, setMediaViewerContent] = useState<{ type: 'image' | 'mermaid', content: string } | null>(null);
   const [showFilesMenu, setShowFilesMenu] = useState(false);
   const [isPrCommentsView, setIsPrCommentsView] = useState(false);
   const [isPrCommentComposerOpen, setIsPrCommentComposerOpen] = useState(false);
@@ -1689,6 +1699,21 @@ function App() {
       });
     }
   }, [pullsQuery.isSuccess, pullsQuery.isError, repoRef]);
+
+  // Handle ESC key for media viewer
+  useEffect(() => {
+    if (maximizedPane !== 'media') return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setMaximizedPane(null);
+        setMediaViewerContent(null);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [maximizedPane]);
 
   // Auto-navigate to pending review if no published comments
   useEffect(() => {
@@ -3657,7 +3682,7 @@ function App() {
       <section className="content-area">
         <div className="workspace">
           <div className="workspace__body" ref={workspaceBodyRef}>
-            <div className={`pane pane--diff ${maximizedPane === 'source' ? 'pane--maximized' : maximizedPane === 'preview' ? 'pane--hidden' : ''}`}>
+            <div className={`pane pane--diff ${maximizedPane === 'source' ? 'pane--maximized' : (maximizedPane === 'preview' || maximizedPane === 'media') ? 'pane--hidden' : ''}`}>
               <div className="pane__header">
                 <div className="pane__title-group">
                   <span>Source</span>
@@ -3890,7 +3915,7 @@ function App() {
               </div>
             </div>
 
-            {!maximizedPane && (
+            {!maximizedPane || maximizedPane === 'media' ? null : (
               <div
                 className={`workspace__divider${isResizing ? " workspace__divider--active" : ""}`}
                 onMouseDown={handleResizeStart}
@@ -3900,7 +3925,7 @@ function App() {
               />
             )}
 
-            <div className={`pane pane--preview ${maximizedPane === 'preview' ? 'pane--maximized' : maximizedPane === 'source' ? 'pane--hidden' : ''}`}>
+            <div className={`pane pane--preview ${maximizedPane === 'preview' ? 'pane--maximized' : (maximizedPane === 'source' || maximizedPane === 'media') ? 'pane--hidden' : ''}`}>
               <div className="pane__header">
                 <div className="pane__title-group">
                   <span>Preview</span>
@@ -3977,7 +4002,19 @@ function App() {
                               const language = match ? match[1] : null;
                               
                               if (language === 'mermaid') {
-                                return <MermaidCode>{String(children).trim()}</MermaidCode>;
+                                const mermaidContent = String(children).trim();
+                                return (
+                                  <div 
+                                    onClick={() => {
+                                      setMediaViewerContent({ type: 'mermaid', content: mermaidContent });
+                                      setMaximizedPane('media');
+                                    }}
+                                    style={{ cursor: 'pointer' }}
+                                    title="Click to view fullscreen"
+                                  >
+                                    <MermaidCode>{mermaidContent}</MermaidCode>
+                                  </div>
+                                );
                               }
                               
                               return <code className={className} {...props}>{children}</code>;
@@ -4044,7 +4081,20 @@ function App() {
                             img: ({src, alt, ...props}) => {
                               // If src is already a full URL, use it directly
                               if (!src || src.startsWith('http://') || src.startsWith('https://')) {
-                                return <img src={src} alt={alt} {...props} />;
+                                return (
+                                  <img 
+                                    src={src} 
+                                    alt={alt} 
+                                    className="clickable-image"
+                                    onClick={() => {
+                                      if (src) {
+                                        setMediaViewerContent({ type: 'image', content: src });
+                                        setMaximizedPane('media');
+                                      }
+                                    }}
+                                    {...props} 
+                                  />
+                                );
                               }
                               
                               if (!repoRef || !prDetail || !selectedFile) {
@@ -4081,6 +4131,30 @@ function App() {
                                 reference={prDetail.head_sha} 
                                 path={resolvedPath} 
                                 alt={alt} 
+                                onClick={async () => {
+                                  try {
+                                    const base64Data = await invoke<string>("cmd_fetch_file_content", {
+                                      owner: repoRef.owner,
+                                      repo: repoRef.repo,
+                                      reference: prDetail.head_sha,
+                                      path: resolvedPath
+                                    });
+                                    const ext = resolvedPath.split('.').pop()?.toLowerCase();
+                                    const mimeTypes: Record<string, string> = {
+                                      'png': 'image/png',
+                                      'jpg': 'image/jpeg',
+                                      'jpeg': 'image/jpeg',
+                                      'gif': 'image/gif',
+                                      'svg': 'image/svg+xml',
+                                      'webp': 'image/webp'
+                                    };
+                                    const mimeType = mimeTypes[ext || ''] || 'image/png';
+                                    setMediaViewerContent({ type: 'image', content: `data:${mimeType};base64,${base64Data}` });
+                                    setMaximizedPane('media');
+                                  } catch (err) {
+                                    console.error('Failed to open image:', err);
+                                  }
+                                }}
                                 {...props} 
                               />;
                             }
@@ -4132,6 +4206,46 @@ function App() {
                 </div>
               </div>
             </div>
+
+            {/* Media Viewer Pane */}
+            {maximizedPane === 'media' && mediaViewerContent && (
+              <div className="pane pane--media pane--maximized">
+                <div className="pane__header">
+                  <div className="pane__title-group">
+                    <span>Media</span>
+                  </div>
+                  <div className="pane__actions">
+                    <button
+                      type="button"
+                      className="panel__title-button"
+                      onClick={() => {
+                        setMaximizedPane(null);
+                        setMediaViewerContent(null);
+                      }}
+                      aria-label="Close media viewer"
+                      title="Close media viewer (ESC)"
+                    >
+                      ×
+                    </button>
+                  </div>
+                </div>
+                <div className="pane__content">
+                  <div className="media-viewer">
+                    {mediaViewerContent.type === 'image' ? (
+                      <img 
+                        src={mediaViewerContent.content} 
+                        alt="Media content" 
+                        className="media-viewer__image"
+                      />
+                    ) : (
+                      <div className="media-viewer__mermaid-container">
+                        <MermaidCode>{mediaViewerContent.content}</MermaidCode>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </section>
