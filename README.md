@@ -10,6 +10,7 @@ A desktop application built with Tauri and React that streamlines the GitHub pul
 - **Smart File Loading** - Progressive file loading prioritized by toc.yml order with background content preloading for instant file viewing
 - **Enhanced Code Review** - Monaco editor integration with diff view and side-by-side source/preview panes
 - **Inline Comment Creation** - Hover over line numbers to reveal "+" buttons for quick line-level commenting
+- **PR-Level Comments** - View and create pull request-level (issue) comments via dedicated pane accessible from Files menu
 - **Comment Count Badges** - Visual indicators on file list showing number of comments per file (includes both published and pending review comments)
 - **File Viewed Tracking** - Checkbox on each file to mark as viewed with state persisted across sessions by PR
 - **Auto-Navigate to Pending Review** - Automatically opens comment panel when pending review exists with no published comments

@@ -261,11 +261,15 @@ function App() {
   const [showDeleteReviewConfirm, setShowDeleteReviewConfirm] = useState(false);
   const [showDiff, setShowDiff] = useState(false);
   const [showSourceMenu, setShowSourceMenu] = useState(false);
+  const [showFilesMenu, setShowFilesMenu] = useState(false);
+  const [isPrCommentsView, setIsPrCommentsView] = useState(false);
+  const [isPrCommentComposerOpen, setIsPrCommentComposerOpen] = useState(false);
   const workspaceBodyRef = useRef<HTMLDivElement | null>(null);
   const appShellRef = useRef<HTMLDivElement | null>(null);
   const userMenuRef = useRef<HTMLDivElement | null>(null);
   const prFilterMenuRef = useRef<HTMLDivElement | null>(null);
   const sourceMenuRef = useRef<HTMLDivElement | null>(null);
+  const filesMenuRef = useRef<HTMLDivElement | null>(null);
   const previewViewerRef = useRef<HTMLElement | null>(null);
   const editorRef = useRef<any>(null);
   const isScrollingSyncRef = useRef(false);
@@ -485,6 +489,9 @@ function App() {
   //   }
   //   return prDetail?.my_comments ?? [];
   // }, [comments, prDetail]);
+
+  // Filter to get only PR-level (issue) comments, not file review comments
+  const prLevelComments = useMemo(() => comments.filter(c => !c.is_review_comment), [comments]);
 
   const reviews = prDetail?.reviews ?? [];
   const pendingReviewFromServer = useMemo(() => {
@@ -976,18 +983,6 @@ function App() {
     setFileCommentError(null);
     setFileCommentSuccess(false);
     setIsFileCommentComposerVisible(false);
-  }, []);
-
-  const toggleGeneralCommentComposer = useCallback(() => {
-    setIsGeneralCommentOpen((previous) => {
-      const next = !previous;
-      if (next) {
-        setCommentError(null);
-        setCommentSuccess(false);
-        setIsInlineCommentOpen(false);
-      }
-      return next;
-    });
   }, []);
 
   const toggleUserMenu = useCallback(() => {
@@ -1565,6 +1560,8 @@ function App() {
     // Select the PR
     setSelectedPr(pr.number);
     setSelectedFilePath(null);
+    setIsPrCommentsView(false);
+    setIsPrCommentComposerOpen(false);
     
     // Switch to repo mode to show file list
     setPrMode("repo");
@@ -1614,6 +1611,9 @@ function App() {
       setCommentError(null);
       setCommentSuccess(true);
       setIsGeneralCommentOpen(false);
+      if (isPrCommentComposerOpen) {
+        setIsPrCommentComposerOpen(false);
+      }
       void refetchPullDetail();
     },
     onError: (error: unknown) => {
@@ -3069,6 +3069,8 @@ function App() {
                                   onClick={() => {
                                     setSelectedPr(pr.number);
                                     setSelectedFilePath(null);
+                                    setIsPrCommentsView(false);
+                                    setIsPrCommentComposerOpen(false);
                                   }}
                                 >
                                   <span className="pr-item__title">#{pr.number} · {pr.title}</span>
@@ -3090,20 +3092,145 @@ function App() {
                 {selectedPr && !isInlineCommentOpen && (
                   <div className="panel panel--files">
                     <div className="panel__header panel__header--static">
-                      <span>Files</span>
+                      <span>{isPrCommentsView ? "PR Comments" : "Files"}</span>
+                      <div className="panel__header-actions">
+                        <div className="source-menu-container" ref={filesMenuRef}>
+                          <button
+                            type="button"
+                            className="panel__title-button"
+                            onClick={() => setShowFilesMenu(!showFilesMenu)}
+                            aria-label="More options"
+                          >
+                            …
+                          </button>
+                          {showFilesMenu && (
+                            <div className="source-menu">
+                              {!isPrCommentsView && (
+                                <button
+                                  type="button"
+                                  className="source-menu__item"
+                                  onClick={() => {
+                                    setIsPrCommentsView(true);
+                                    setIsPrCommentComposerOpen(prLevelComments.length === 0);
+                                    setShowFilesMenu(false);
+                                  }}
+                                >
+                                  View PR Comments
+                                </button>
+                              )}
+                              {isPrCommentsView && (
+                                <button
+                                  type="button"
+                                  className="source-menu__item"
+                                  onClick={() => {
+                                    setIsPrCommentsView(false);
+                                    setIsPrCommentComposerOpen(false);
+                                    setShowFilesMenu(false);
+                                  }}
+                                >
+                                  View Files
+                                </button>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      </div>
                     </div>
                     <div className="panel__body panel__body--flush">
-                      {pullDetailQuery.isLoading || (tocFileMetadata && tocContentQuery.isLoading) ? (
-                        <div className="empty-state empty-state--subtle">Loading files…</div>
-                      ) : !prDetail ? (
-                        <div className="empty-state empty-state--subtle">Select a pull request.</div>
-                      ) : sortedFiles.length === 0 ? (
-                        <div className="empty-state empty-state--subtle">
-                          No Markdown or YAML files in this pull request.
+                      {isPrCommentsView ? (
+                        <div className="pr-comments-view">
+                          {isPrCommentComposerOpen ? (
+                            <div className="pr-comment-composer">
+                              {prLevelComments.length > 0 && (
+                                <div className="pr-comment-composer__header">
+                                  <button
+                                    type="button"
+                                    className="comment-panel__action-button comment-panel__action-button--subtle"
+                                    onClick={() => setIsPrCommentComposerOpen(false)}
+                                  >
+                                    ← Back to comments
+                                  </button>
+                                </div>
+                              )}
+                              <form className="comment-composer comment-composer--pr-pane" onSubmit={handleCommentSubmit}>
+                                <textarea
+                                  id="pr-comment-draft"
+                                  value={commentDraft}
+                                  placeholder="Share your thoughts on this change…"
+                                  onChange={(event) => {
+                                    setCommentDraft(event.target.value);
+                                    setCommentError(null);
+                                    setCommentSuccess(false);
+                                  }}
+                                  rows={4}
+                                />
+                                <div className="comment-composer__actions">
+                                  <div className="comment-composer__status">
+                                    {commentError && (
+                                      <span className="comment-status comment-status--error">{commentError}</span>
+                                    )}
+                                  </div>
+                                  <button
+                                    type="submit"
+                                    className="comment-submit"
+                                    disabled={submitCommentMutation.isPending}
+                                  >
+                                    {submitCommentMutation.isPending ? "Posting…" : "Post comment"}
+                                  </button>
+                                </div>
+                              </form>
+                            </div>
+                          ) : (
+                            <>
+                              {prLevelComments.length === 0 ? (
+                                <div className="empty-state empty-state--subtle">
+                                  No PR comments yet.
+                                </div>
+                              ) : (
+                                <div className="pr-comments-list">
+                                  {prLevelComments.map((comment) => (
+                                    <div key={comment.id} className="pr-comment">
+                                      <div className="pr-comment__header">
+                                        <span className="pr-comment__author">{comment.author}</span>
+                                        <span className="pr-comment__date">
+                                          {new Date(comment.created_at).toLocaleDateString()}
+                                        </span>
+                                      </div>
+                                      <div className="pr-comment__body">{comment.body}</div>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                              <div className="pr-comments-view__footer">
+                                <button
+                                  type="button"
+                                  className="comment-panel__action-button comment-panel__action-button--primary"
+                                  onClick={() => {
+                                    setCommentDraft("");
+                                    setCommentError(null);
+                                    setCommentSuccess(false);
+                                    setIsPrCommentComposerOpen(true);
+                                  }}
+                                >
+                                  Add PR Comment
+                                </button>
+                              </div>
+                            </>
+                          )}
                         </div>
                       ) : (
-                      <>
-                        <ul className="file-list file-list--compact">
+                        <>
+                          {pullDetailQuery.isLoading || (tocFileMetadata && tocContentQuery.isLoading) ? (
+                            <div className="empty-state empty-state--subtle">Loading files…</div>
+                          ) : !prDetail ? (
+                            <div className="empty-state empty-state--subtle">Select a pull request.</div>
+                          ) : sortedFiles.length === 0 ? (
+                            <div className="empty-state empty-state--subtle">
+                              No Markdown or YAML files in this pull request.
+                            </div>
+                          ) : (
+                          <>
+                            <ul className="file-list file-list--compact">
                           {visibleFiles.map((file) => {
                             const displayName = formatFileLabel(file.path);
                             const tooltip = formatFileTooltip(file);
@@ -3148,8 +3275,10 @@ function App() {
                               </li>
                             );
                           })}
-                        </ul>
-                      </>
+                            </ul>
+                          </>
+                          )}
+                        </>
                       )}
                     </div>
                   </div>
@@ -3206,16 +3335,6 @@ function App() {
                         </button>
                         {showSourceMenu && (
                           <div className="source-menu">
-                            <button
-                              type="button"
-                              className="source-menu__item"
-                              onClick={() => {
-                                toggleGeneralCommentComposer();
-                                setShowSourceMenu(false);
-                              }}
-                            >
-                              {isGeneralCommentOpen ? "Close PR Comment" : "Add PR Comment"}
-                            </button>
                             <button
                               type="button"
                               className="source-menu__item"
