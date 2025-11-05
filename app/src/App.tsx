@@ -22,6 +22,8 @@ type PullRequestSummary = {
   author: string;
   updated_at: string;
   head_ref: string;
+  has_pending_review: boolean;
+  file_count: number;
 };
 
 type FileLanguage = "markdown" | "yaml";
@@ -251,6 +253,7 @@ function App() {
   const [isInlineCommentOpen, setIsInlineCommentOpen] = useState(false);
   const [hasManuallyClosedCommentPanel, setHasManuallyClosedCommentPanel] = useState(false);
   const [isGeneralCommentOpen, setIsGeneralCommentOpen] = useState(false);
+  const [collapsedComments, setCollapsedComments] = useState<Set<number>>(new Set());
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
   const [isPrFilterMenuOpen, setIsPrFilterMenuOpen] = useState(false);
   const [visibleFileCount, setVisibleFileCount] = useState(50);
@@ -344,71 +347,109 @@ function App() {
     retry: false,
   });
 
-  // Query all MRU repos for PRs with pending reviews
-  const mruPrsQueries = useQueries({
+  // Query all MRU repos for OPEN PRs with pending reviews
+  const mruOpenPrsQueries = useQueries({
     queries: repoMRU.slice(0, 10).map(repoString => {
       const match = repoString.match(/^([^/]+)\/(.+)$/);
-      if (!match) return { queryKey: ["mru-prs-skip"], enabled: false };
+      if (!match) return { queryKey: ["mru-open-prs-skip"], enabled: false };
       
       const [, owner, repo] = match;
       const currentLogin = authQuery.data?.login;
       
       return {
-        queryKey: ["mru-prs", owner, repo, currentLogin],
+        queryKey: ["mru-open-prs", owner, repo, currentLogin],
         queryFn: async () => {
           if (!currentLogin) {
             return [];
           }
           
-          // Fetch open PRs for this repo
+          // Fetch open PRs with has_pending_review flag already populated by backend
           const prs = await invoke<PullRequestSummary[]>("cmd_list_pull_requests", {
             owner,
             repo,
             state: "open",
+            currentLogin,
           });
           
-          // For each PR, check if there's a pending review
-          const prsWithPendingReviews: PrUnderReview[] = [];
+          // Filter for PRs with pending reviews and convert to PrUnderReview format
+          const prsWithPendingReviews: PrUnderReview[] = prs
+            .filter(pr => pr.has_pending_review)
+            .map(pr => ({
+              owner,
+              repo,
+              number: pr.number,
+              title: pr.title,
+              has_local_review: false,
+              has_pending_review: true,
+              viewed_count: 0,
+              total_count: pr.file_count,
+            }));
           
-          for (const pr of prs) {
-            try {
-              const prDetail = await invoke<PullRequestDetail>("cmd_get_pull_request", {
-                owner,
-                repo,
-                number: pr.number,
-                currentLogin,
-              });
-              
-              // Check for pending review from current user
-              const hasPendingReview = prDetail.reviews.some(
-                r => r.is_mine && r.state === "PENDING"
-              );
-              
-              console.log(`  Has pending review: ${hasPendingReview}`);
-              
-              if (hasPendingReview) {
-                console.log(`✓ Found pending review in ${owner}/${repo}#${pr.number}`);
-                prsWithPendingReviews.push({
-                  owner,
-                  repo,
-                  number: pr.number,
-                  title: pr.title,
-                  has_local_review: false,
-                  has_pending_review: true,
-                  viewed_count: 0,
-                  total_count: prDetail.files.length,
-                });
-              }
-            } catch (err) {
-              console.error(`Error fetching PR ${owner}/${repo}#${pr.number}:`, err);
-            }
+          if (prsWithPendingReviews.length > 0) {
+            console.log(`✓ Found ${prsWithPendingReviews.length} PR(s) with pending review in ${owner}/${repo} (open)`);
           }
           
           return prsWithPendingReviews;
         },
         enabled: authQuery.data?.is_authenticated === true && !!currentLogin,
         retry: false,
-        staleTime: 5 * 60 * 1000, // 5 minutes
+        staleTime: 60 * 60 * 1000, // 1 hour
+        gcTime: 60 * 60 * 1000, // Keep in cache for 1 hour
+      };
+    }),
+  });
+
+  // Query all MRU repos for CLOSED PRs with pending reviews (only after open queries finish)
+  const allOpenQueriesFinished = mruOpenPrsQueries.length > 0 && mruOpenPrsQueries.every(q => 
+    (q.isFetched || q.isError) && !q.isLoading && !q.isFetching
+  );
+  const mruClosedPrsQueries = useQueries({
+    queries: repoMRU.slice(0, 10).map(repoString => {
+      const match = repoString.match(/^([^/]+)\/(.+)$/);
+      if (!match) return { queryKey: ["mru-closed-prs-skip"], enabled: false };
+      
+      const [, owner, repo] = match;
+      const currentLogin = authQuery.data?.login;
+      
+      return {
+        queryKey: ["mru-closed-prs", owner, repo, currentLogin],
+        queryFn: async () => {
+          if (!currentLogin) {
+            return [];
+          }
+          
+          // Fetch closed PRs with has_pending_review flag already populated by backend
+          const prs = await invoke<PullRequestSummary[]>("cmd_list_pull_requests", {
+            owner,
+            repo,
+            state: "closed",
+            currentLogin,
+          });
+          
+          // Filter for PRs with pending reviews and convert to PrUnderReview format
+          const prsWithPendingReviews: PrUnderReview[] = prs
+            .filter(pr => pr.has_pending_review)
+            .map(pr => ({
+              owner,
+              repo,
+              number: pr.number,
+              title: pr.title,
+              has_local_review: false,
+              has_pending_review: true,
+              viewed_count: 0,
+              total_count: pr.file_count,
+            }));
+          
+          if (prsWithPendingReviews.length > 0) {
+            console.log(`✓ Found ${prsWithPendingReviews.length} PR(s) with pending review in ${owner}/${repo} (closed)`);
+          }
+          
+          return prsWithPendingReviews;
+        },
+        enabled: authQuery.data?.is_authenticated === true && !!currentLogin && allOpenQueriesFinished,
+        retry: false,
+        staleTime: 60 * 60 * 1000, // 1 hour
+        gcTime: 60 * 60 * 1000, // Keep in cache for 1 hour
       };
     }),
   });
@@ -505,7 +546,7 @@ function App() {
   // Filter to get only PR-level (issue) comments, not file review comments
   const prLevelComments = useMemo(() => comments.filter(c => !c.is_review_comment), [comments]);
 
-  const reviews = prDetail?.reviews ?? [];
+  const reviews = useMemo(() => prDetail?.reviews ?? [], [prDetail?.reviews]);
   const pendingReviewFromServer = useMemo(() => {
     console.log("Checking for pending review, reviews:", reviews);
     const review = reviews.find(
@@ -518,15 +559,8 @@ function App() {
     return review ?? null;
   }, [reviews]);
 
-  const pendingReview = useMemo(() => {
-    console.log("Computing pendingReview:", {
-      pendingReviewOverride,
-      pendingReviewFromServer,
-      result: pendingReviewOverride
-    });
-    // Only use pendingReviewOverride - user must explicitly click "Show Review" to load GitHub review
-    return pendingReviewOverride;
-  }, [pendingReviewOverride]);
+  // Only use pendingReviewOverride - user must explicitly click "Show Review" to load GitHub review
+  const pendingReview = pendingReviewOverride;
 
   useEffect(() => {
     if (!pendingReviewOverride) {
@@ -1549,8 +1583,8 @@ function App() {
       prMap.set(key, pr);
     });
     
-    // Add PRs with pending reviews from MRU queries
-    mruPrsQueries.forEach(query => {
+    // Add PRs with pending reviews from MRU queries (both open and closed)
+    [...mruOpenPrsQueries, ...mruClosedPrsQueries].forEach(query => {
       if (query.data) {
         query.data.forEach(pr => {
           const key = `${pr.owner}/${pr.repo}#${pr.number}`;
@@ -1663,7 +1697,7 @@ function App() {
         has_pending_review: hasPendingReview,
       } : null;
     }).filter((pr): pr is PrUnderReview => pr !== null);
-  }, [prsUnderReviewQuery.data, viewedFiles, queryClient, authQuery.data?.login, repoMRU, mruPrsQueries]);
+  }, [prsUnderReviewQuery.data, viewedFiles, queryClient, authQuery.data?.login, repoMRU, mruOpenPrsQueries, mruClosedPrsQueries]);
 
   // Prefetch PR details for PRs under review that don't have titles
   useEffect(() => {
@@ -1736,13 +1770,20 @@ function App() {
   // Auto-switch PR mode based on whether there are PRs under review
   // Only switch after queries have finished loading to avoid premature switching
   useEffect(() => {
-    const allQueriesFinished = mruPrsQueries.every(q => !q.isLoading);
-    const prsQueryFinished = !prsUnderReviewQuery.isLoading;
+    // Check if queries have actually fetched at least once (not just "not loading")
+    const allOpenQueriesReady = mruOpenPrsQueries.every(q => 
+      (!q.isLoading && !q.isFetching && q.isFetched) || q.isError
+    );
+    const allClosedQueriesReady = mruClosedPrsQueries.every(q => 
+      (!q.isLoading && !q.isFetching && q.isFetched) || q.isError
+    );
+    const prsQueryReady = (!prsUnderReviewQuery.isLoading && !prsUnderReviewQuery.isFetching && prsUnderReviewQuery.isFetched) || prsUnderReviewQuery.isError;
     
-    if (prMode === "under-review" && enhancedPrsUnderReview.length === 0 && allQueriesFinished && prsQueryFinished) {
+    // Only switch away from "under-review" if all queries have completed AND we confirmed there are no PRs
+    if (prMode === "under-review" && enhancedPrsUnderReview.length === 0 && allOpenQueriesReady && allClosedQueriesReady && prsQueryReady) {
       setPrMode("repo");
     }
-  }, [prMode, enhancedPrsUnderReview.length, mruPrsQueries, prsUnderReviewQuery.isLoading]);
+  }, [prMode, enhancedPrsUnderReview.length, mruOpenPrsQueries, mruClosedPrsQueries, prsUnderReviewQuery.isLoading, prsUnderReviewQuery.isFetching, prsUnderReviewQuery.isFetched]);
 
   // Handler for selecting a PR from the under-review list
   const handleSelectPrUnderReview = useCallback((pr: PrUnderReview) => {
@@ -2996,6 +3037,19 @@ function App() {
                               isPendingGitHubReviewComment,
                               showEditButton
                             });
+                            const isCollapsed = collapsedComments.has(comment.id);
+                            const toggleCollapse = () => {
+                              setCollapsedComments(prev => {
+                                const next = new Set(prev);
+                                if (next.has(comment.id)) {
+                                  next.delete(comment.id);
+                                } else {
+                                  next.add(comment.id);
+                                }
+                                return next;
+                              });
+                            };
+                            
                             return (
                               <li key={comment.id} className="comment-panel__item">
                                 <div className="comment-panel__item-header" title={formattedTimestamp}>
@@ -3006,6 +3060,15 @@ function App() {
                                     )}
                                   </div>
                                   <div className="comment-panel__item-actions">
+                                    <button
+                                      type="button"
+                                      className="comment-panel__item-collapse"
+                                      onClick={toggleCollapse}
+                                      aria-label={isCollapsed ? "Expand comment" : "Collapse comment"}
+                                      title={isCollapsed ? "Expand" : "Collapse"}
+                                    >
+                                      {isCollapsed ? "▼" : "▲"}
+                                    </button>
                                     {/* Show edit button for local comments OR submitted GitHub comments (not pending GitHub review) */}
                                     {showEditButton && (
                                       <button
@@ -3056,7 +3119,7 @@ function App() {
                                       #{comment.line}.
                                     </span>
                                   )}
-                                  <div className="comment-panel__item-content">
+                                  <div className={`comment-panel__item-content${isCollapsed ? " comment-panel__item-content--collapsed" : ""}`}>
                                     <ReactMarkdown 
                                       remarkPlugins={[remarkGfm]}
                                       components={{
@@ -3227,6 +3290,7 @@ function App() {
                                           setSelectedPr(null);
                                           setSelectedFilePath(null);
                                           setPrSearchFilter("");
+                                          setPrMode("repo"); // Switch to repo mode when selecting from MRU
                                           queryClient.removeQueries({ queryKey: ["pull-request"] });
                                         }
                                       }}
@@ -3370,7 +3434,8 @@ function App() {
                       )}
                       <div className="panel__scroll-content">
                         {prMode === "under-review" ? (
-                          prsUnderReviewQuery.isLoading ? (
+                          // Only show loading if we have no results yet
+                          enhancedPrsUnderReview.length === 0 && (prsUnderReviewQuery.isLoading || mruOpenPrsQueries.some(q => q.isLoading) || mruClosedPrsQueries.some(q => q.isLoading)) ? (
                             <div className="empty-state empty-state--subtle">Loading PRs under review…</div>
                           ) : enhancedPrsUnderReview.length === 0 ? (
                             <div className="empty-state empty-state--subtle">

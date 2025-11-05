@@ -65,8 +65,9 @@ async fn cmd_list_pull_requests(
     owner: String,
     repo: String,
     state: Option<String>,
+    current_login: Option<String>,
 ) -> Result<Vec<PullRequestSummary>, String> {
-    list_repo_pull_requests(&owner, &repo, state.as_deref())
+    list_repo_pull_requests(&owner, &repo, state.as_deref(), current_login.as_deref())
         .await
         .map_err(|err| err.to_string())
 }

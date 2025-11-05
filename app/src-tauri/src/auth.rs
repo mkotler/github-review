@@ -10,8 +10,9 @@ use url::Url;
 
 use crate::error::{AppError, AppResult};
 use crate::github::{
-    create_pending_review, fetch_authenticated_user, get_file_contents, get_pull_request, list_pull_requests,
-    submit_file_comment, submit_general_comment, submit_pending_review, CommentMode,
+    create_pending_review, fetch_authenticated_user, get_file_contents, get_pull_request, 
+    list_pull_requests_with_login, submit_file_comment, submit_general_comment, 
+    submit_pending_review, CommentMode,
 };
 use crate::models::{AuthStatus, PullRequestDetail, PullRequestReview, PullRequestSummary};
 use crate::storage::{delete_token, read_token, store_token};
@@ -127,9 +128,10 @@ pub async fn list_repo_pull_requests(
     owner: &str,
     repo: &str,
     state: Option<&str>,
+    current_login: Option<&str>,
 ) -> AppResult<Vec<PullRequestSummary>> {
     let token = require_token()?;
-    let pulls = list_pull_requests(&token, owner, repo, state).await?;
+    let pulls = list_pull_requests_with_login(&token, owner, repo, state, current_login).await?;
 
     info!(owner, repo, count = pulls.len(), "fetched pull requests");
     for pr in &pulls {
@@ -140,6 +142,7 @@ pub async fn list_repo_pull_requests(
             title = %pr.title,
             author = %pr.author,
             head = %pr.head_ref,
+            has_pending_review = pr.has_pending_review,
             "pull request summary"
         );
     }

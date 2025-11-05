@@ -26,6 +26,8 @@ pub struct PullRequestSummary {
     pub author: String,
     pub updated_at: String,
     pub head_ref: String,
+    pub has_pending_review: bool,
+    pub file_count: usize,
 }
 
 #[derive(Debug, Serialize)]

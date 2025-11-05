@@ -187,11 +187,12 @@ pub async fn fetch_authenticated_user(token: &str) -> AppResult<GitHubUser> {
     Ok(response.json::<GitHubUser>().await?)
 }
 
-pub async fn list_pull_requests(
+pub async fn list_pull_requests_with_login(
     token: &str,
     owner: &str,
     repo: &str,
     state: Option<&str>,
+    current_login: Option<&str>,
 ) -> AppResult<Vec<PullRequestSummary>> {
     let client = build_client(token)?;
     let state_value = state.unwrap_or("open");
@@ -214,13 +215,25 @@ pub async fn list_pull_requests(
         let parsed = pulls.json::<Vec<GitHubPullRequest>>().await?;
         
         let page_count = parsed.len();
-        all_pulls.extend(parsed.into_iter().map(|pr| PullRequestSummary {
-            number: pr.number,
-            title: pr.title,
-            author: pr.user.login,
-            updated_at: pr.updated_at,
-            head_ref: pr.head.r#ref,
-        }));
+        
+        // For each PR, check if there's a pending review if current_login is provided
+        for pr in parsed {
+            let (has_pending_review, file_count) = if let Some(login) = current_login {
+                check_has_pending_review(&client, owner, repo, pr.number, login).await.unwrap_or((false, 0))
+            } else {
+                (false, 0)
+            };
+            
+            all_pulls.push(PullRequestSummary {
+                number: pr.number,
+                title: pr.title,
+                author: pr.user.login,
+                updated_at: pr.updated_at,
+                head_ref: pr.head.r#ref,
+                has_pending_review,
+                file_count,
+            });
+        }
 
         // Stop if we got less than per_page results (last page)
         if page_count < per_page {
@@ -231,6 +244,57 @@ pub async fn list_pull_requests(
     }
 
     Ok(all_pulls)
+}
+
+async fn check_has_pending_review(
+    client: &reqwest::Client,
+    owner: &str,
+    repo: &str,
+    number: u64,
+    current_login: &str,
+) -> AppResult<(bool, usize)> {
+    let reviews = fetch_pull_request_reviews(client, owner, repo, number).await?;
+    let normalized_login = current_login.to_ascii_lowercase();
+    
+    let has_pending = reviews.iter().any(|review| {
+        review.user.login.eq_ignore_ascii_case(&normalized_login) && 
+        review.state.eq_ignore_ascii_case("pending")
+    });
+    
+    // If there's a pending review, also fetch file count
+    let file_count = if has_pending {
+        let files_response = client
+            .get(format!("{API_BASE}/repos/{owner}/{repo}/pulls/{number}/files"))
+            .query(&[("per_page", "1")]) // We only need the count, not the actual files
+            .send()
+            .await?;
+        
+        if let Ok(_response) = ensure_success(files_response, "count pull request files").await {
+            // GitHub returns the total count in the Link header, but for simplicity we can fetch all
+            // Actually, let's fetch with per_page=100 to get most in one call
+            let files_response = client
+                .get(format!("{API_BASE}/repos/{owner}/{repo}/pulls/{number}/files"))
+                .query(&[("per_page", "100")])
+                .send()
+                .await?;
+            
+            if let Ok(response) = ensure_success(files_response, "list pull request files").await {
+                if let Ok(files) = response.json::<Vec<serde_json::Value>>().await {
+                    files.len()
+                } else {
+                    0
+                }
+            } else {
+                0
+            }
+        } else {
+            0
+        }
+    } else {
+        0
+    };
+    
+    Ok((has_pending, file_count))
 }
 
 pub async fn get_pull_request(

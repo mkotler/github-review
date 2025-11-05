@@ -1306,6 +1306,23 @@ select {
   cursor: pointer;
 }
 
+.comment-panel__item-collapse {
+  padding: 2px;
+  border: none;
+  background: transparent;
+  color: #a7c0ff;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 0.18s ease;
+}
+
+.comment-panel__item-collapse:hover,
+.comment-panel__item-collapse:focus-visible {
+  color: #d4e0ff;
+  outline: none;
+}
+
 .comment-panel__item-edit:hover,
 .comment-panel__item-edit:focus-visible,
 .comment-panel__item-open:hover,
@@ -1365,14 +1382,50 @@ select {
 .comment-panel__item-content {
   flex: 1;
   min-width: 0;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
 }
 
 .comment-panel__item-content p {
   margin: 0;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
 }
 
 .comment-panel__item-content p + p {
   margin-top: 6px;
+}
+
+.comment-panel__item-content a {
+  word-break: break-all;
+}
+
+.comment-panel__item-content code {
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  word-break: break-all;
+  white-space: pre-wrap;
+}
+
+.comment-panel__item-content pre {
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  white-space: pre-wrap;
+}
+
+.comment-panel__item-content--collapsed {
+  max-height: 3.6em;
+  overflow: hidden;
+  position: relative;
+}
+
+.comment-panel__item-content--collapsed::after {
+  content: "...";
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  padding-left: 20px;
+  background: linear-gradient(to right, transparent, rgba(16, 20, 32, 0.95) 20%, rgba(16, 20, 32, 1) 40%);
 }
 
 .comment-panel__action-button {
@@ -2184,6 +2237,24 @@ select {
   line-height: 1.5;
   white-space: pre-wrap;
   word-wrap: break-word;
+  overflow-wrap: break-word;
+}
+
+.pr-comment__body a {
+  word-break: break-all;
+}
+
+.pr-comment__body code {
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  word-break: break-all;
+  white-space: pre-wrap;
+}
+
+.pr-comment__body pre {
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  white-space: pre-wrap;
 }
 
 .pr-comments-view__footer {
