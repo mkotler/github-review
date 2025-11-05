@@ -261,6 +261,8 @@ function App() {
   const [showDeleteReviewConfirm, setShowDeleteReviewConfirm] = useState(false);
   const [showDiff, setShowDiff] = useState(false);
   const [showSourceMenu, setShowSourceMenu] = useState(false);
+  const [maximizedPane, setMaximizedPane] = useState<'source' | 'preview' | null>(null);
+  const [savedSplitRatio, setSavedSplitRatio] = useState<string | null>(null);
   const [showFilesMenu, setShowFilesMenu] = useState(false);
   const [isPrCommentsView, setIsPrCommentsView] = useState(false);
   const [isPrCommentComposerOpen, setIsPrCommentComposerOpen] = useState(false);
@@ -3655,7 +3657,7 @@ function App() {
       <section className="content-area">
         <div className="workspace">
           <div className="workspace__body" ref={workspaceBodyRef}>
-            <div className="pane pane--diff">
+            <div className={`pane pane--diff ${maximizedPane === 'source' ? 'pane--maximized' : maximizedPane === 'preview' ? 'pane--hidden' : ''}`}>
               <div className="pane__header">
                 <div className="pane__title-group">
                   <span>Source</span>
@@ -3711,6 +3713,31 @@ function App() {
                       )}
                     </div>
                   )}
+                  <button
+                    type="button"
+                    className="panel__title-button panel__title-button--maximize"
+                    onClick={() => {
+                      if (maximizedPane === 'source') {
+                        // Restore
+                        if (savedSplitRatio && workspaceBodyRef.current) {
+                          workspaceBodyRef.current.style.setProperty('--split-ratio', savedSplitRatio);
+                        }
+                        setMaximizedPane(null);
+                        setSavedSplitRatio(null);
+                      } else {
+                        // Maximize
+                        if (workspaceBodyRef.current) {
+                          const currentRatio = workspaceBodyRef.current.style.getPropertyValue('--split-ratio') || '50%';
+                          setSavedSplitRatio(currentRatio);
+                        }
+                        setMaximizedPane('source');
+                      }
+                    }}
+                    aria-label={maximizedPane === 'source' ? 'Restore pane size' : 'Maximize pane'}
+                    title={maximizedPane === 'source' ? 'Restore pane size' : 'Maximize pane'}
+                  >
+                    {maximizedPane === 'source' ? '⊟' : '⊡'}
+                  </button>
                 </div>
               </div>
               <div className="pane__content">
@@ -3863,18 +3890,47 @@ function App() {
               </div>
             </div>
 
-            <div
-              className={`workspace__divider${isResizing ? " workspace__divider--active" : ""}`}
-              onMouseDown={handleResizeStart}
-              role="separator"
-              aria-orientation="vertical"
-              aria-label="Resize diff and preview panes"
-            />
+            {!maximizedPane && (
+              <div
+                className={`workspace__divider${isResizing ? " workspace__divider--active" : ""}`}
+                onMouseDown={handleResizeStart}
+                role="separator"
+                aria-orientation="vertical"
+                aria-label="Resize diff and preview panes"
+              />
+            )}
 
-            <div className="pane pane--preview">
+            <div className={`pane pane--preview ${maximizedPane === 'preview' ? 'pane--maximized' : maximizedPane === 'source' ? 'pane--hidden' : ''}`}>
               <div className="pane__header">
                 <div className="pane__title-group">
                   <span>Preview</span>
+                </div>
+                <div className="pane__actions">
+                  <button
+                    type="button"
+                    className="panel__title-button panel__title-button--maximize"
+                    onClick={() => {
+                      if (maximizedPane === 'preview') {
+                        // Restore
+                        if (savedSplitRatio && workspaceBodyRef.current) {
+                          workspaceBodyRef.current.style.setProperty('--split-ratio', savedSplitRatio);
+                        }
+                        setMaximizedPane(null);
+                        setSavedSplitRatio(null);
+                      } else {
+                        // Maximize
+                        if (workspaceBodyRef.current) {
+                          const currentRatio = workspaceBodyRef.current.style.getPropertyValue('--split-ratio') || '50%';
+                          setSavedSplitRatio(currentRatio);
+                        }
+                        setMaximizedPane('preview');
+                      }
+                    }}
+                    aria-label={maximizedPane === 'preview' ? 'Restore pane size' : 'Maximize pane'}
+                    title={maximizedPane === 'preview' ? 'Restore pane size' : 'Maximize pane'}
+                  >
+                    {maximizedPane === 'preview' ? '⊟' : '⊡'}
+                  </button>
                 </div>
               </div>
               <div className="pane__content">

@@ -405,6 +405,10 @@ select {
   cursor: not-allowed;
 }
 
+.panel__title-button--maximize {
+  font-weight: 300;
+}
+
 .panel__expando-icon {
   width: 16px;
   display: inline-flex;
@@ -1071,6 +1075,14 @@ select {
   display: flex;
   flex-direction: column;
   background: #ffffff;
+}
+
+.pane--maximized {
+  flex: 1 1 100% !important;
+}
+
+.pane--hidden {
+  display: none !important;
 }
 
 .comment-composer {
