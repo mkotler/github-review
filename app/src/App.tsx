@@ -2026,8 +2026,7 @@ function App() {
     setIsPrCommentsView(false);
     setIsPrCommentComposerOpen(false);
     
-    // Switch to repo mode to show file list
-    setPrMode("repo");
+    // Keep the current PR mode (stay in "under-review" if already there)
   }, []);
 
   const toggleFileViewed = useCallback((filePath: string) => {
