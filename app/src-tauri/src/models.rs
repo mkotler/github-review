@@ -57,13 +57,7 @@ pub struct PullRequestFile {
     pub previous_filename: Option<String>,
 }
 
-#[derive(Debug, Serialize, Clone, Copy)]
-pub enum FileLanguage {
-    #[serde(rename = "markdown")]
-    Markdown,
-    #[serde(rename = "yaml")]
-    Yaml,
-}
+pub type FileLanguage = String;
 
 #[derive(Debug, Serialize, Clone)]
 pub struct PullRequestComment {

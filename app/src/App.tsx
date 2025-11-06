@@ -26,7 +26,7 @@ type PullRequestSummary = {
   file_count: number;
 };
 
-type FileLanguage = "markdown" | "yaml";
+type FileLanguage = string;
 
 type PullRequestFile = {
   path: string;
@@ -292,6 +292,7 @@ function App() {
   const [showFilesMenu, setShowFilesMenu] = useState(false);
   const [isPrCommentsView, setIsPrCommentsView] = useState(false);
   const [isPrCommentComposerOpen, setIsPrCommentComposerOpen] = useState(false);
+  const [showAllFileTypes, setShowAllFileTypes] = useState(false);
   const workspaceBodyRef = useRef<HTMLDivElement | null>(null);
   const appShellRef = useRef<HTMLDivElement | null>(null);
   const userMenuRef = useRef<HTMLDivElement | null>(null);
@@ -837,6 +838,10 @@ function App() {
     return `...${path.slice(-(maxLength - 3))}`;
   }, []);
 
+  const isImageFile = useCallback((file: PullRequestFile | null | undefined): boolean => {
+    return file?.language === "image";
+  }, []);
+
   const files = prDetail?.files ?? [];
 
   // Find toc.yml file if it exists
@@ -972,34 +977,44 @@ function App() {
     return ordered;
   }, [files, tocFileMetadata, tocContentQuery.data]);
 
+  // Apply file type filtering
+  const filteredSortedFiles = useMemo(() => {
+    if (showAllFileTypes) {
+      return sortedFiles;
+    }
+    return sortedFiles.filter(f => 
+      f.language === "markdown" || f.language === "yaml"
+    );
+  }, [sortedFiles, showAllFileTypes]);
+
   const visibleFiles = useMemo(() => {
-    return sortedFiles.slice(0, visibleFileCount);
-  }, [sortedFiles, visibleFileCount]);
+    return filteredSortedFiles.slice(0, visibleFileCount);
+  }, [filteredSortedFiles, visibleFileCount]);
 
   // Reset visible file count when PR changes
   useEffect(() => {
     setVisibleFileCount(50);
   }, [selectedPr]);
 
-  // Auto-select first file when sorted files load
+  // Auto-select first file when filtered sorted files load
   useEffect(() => {
-    if (sortedFiles.length > 0 && !selectedFilePath) {
-      setSelectedFilePath(sortedFiles[0].path);
+    if (filteredSortedFiles.length > 0 && !selectedFilePath) {
+      setSelectedFilePath(filteredSortedFiles[0].path);
     }
-  }, [sortedFiles, selectedFilePath]);
+  }, [filteredSortedFiles, selectedFilePath]);
 
   // Progressively load more file metadata in the background
   useEffect(() => {
-    if (visibleFileCount >= sortedFiles.length) {
+    if (visibleFileCount >= filteredSortedFiles.length) {
       return;
     }
 
     const timer = setTimeout(() => {
-      setVisibleFileCount(prev => Math.min(prev + 50, sortedFiles.length));
+      setVisibleFileCount(prev => Math.min(prev + 50, filteredSortedFiles.length));
     }, 100);
 
     return () => clearTimeout(timer);
-  }, [visibleFileCount, sortedFiles.length]);
+  }, [visibleFileCount, filteredSortedFiles.length]);
 
   // Preload file contents in the background (one at a time, in order)
   useEffect(() => {
@@ -1298,17 +1313,17 @@ function App() {
   }, [selectedPr]);
 
   useEffect(() => {
-    if (sortedFiles.length > 0) {
+    if (filteredSortedFiles.length > 0) {
       setSelectedFilePath((current) => {
-        if (current && sortedFiles.some((file) => file.path === current)) {
+        if (current && filteredSortedFiles.some((file) => file.path === current)) {
           return current;
         }
-        return sortedFiles[0].path;
+        return filteredSortedFiles[0].path;
       });
     } else {
       setSelectedFilePath(null);
     }
-  }, [sortedFiles]);
+  }, [filteredSortedFiles]);
 
   useEffect(() => {
     if (commentSuccess) {
@@ -1742,7 +1757,14 @@ function App() {
       ]);
       
       if (cachedPrDetail) {
-        totalCount = cachedPrDetail.files.length;
+        // Calculate total count based on current filter state
+        if (showAllFileTypes) {
+          totalCount = cachedPrDetail.files.length;
+        } else {
+          totalCount = cachedPrDetail.files.filter(f => 
+            f.language === "markdown" || f.language === "yaml"
+          ).length;
+        }
         title = cachedPrDetail.title;
         // Check for pending reviews
         const myPendingReview = cachedPrDetail.reviews.find(
@@ -1767,7 +1789,7 @@ function App() {
         has_pending_review: hasPendingReview,
       } : null;
     }).filter((pr): pr is PrUnderReview => pr !== null);
-  }, [prsUnderReviewQuery.data, viewedFiles, queryClient, authQuery.data?.login, repoMRU, mruOpenPrsQueries, mruClosedPrsQueries]);
+  }, [prsUnderReviewQuery.data, viewedFiles, queryClient, authQuery.data?.login, repoMRU, mruOpenPrsQueries, mruClosedPrsQueries, showAllFileTypes]);
 
   // Prefetch PR details for PRs under review that don't have titles
   useEffect(() => {
@@ -4377,6 +4399,30 @@ function App() {
                                   View Files
                                 </button>
                               )}
+                              {!isPrCommentsView && !showAllFileTypes && (
+                                <button
+                                  type="button"
+                                  className="source-menu__item"
+                                  onClick={() => {
+                                    setShowAllFileTypes(true);
+                                    setShowFilesMenu(false);
+                                  }}
+                                >
+                                  Show all file types
+                                </button>
+                              )}
+                              {!isPrCommentsView && showAllFileTypes && (
+                                <button
+                                  type="button"
+                                  className="source-menu__item"
+                                  onClick={() => {
+                                    setShowAllFileTypes(false);
+                                    setShowFilesMenu(false);
+                                  }}
+                                >
+                                  Show only markdown
+                                </button>
+                              )}
                             </div>
                           )}
                         </div>
@@ -4460,6 +4506,10 @@ function App() {
                           ) : !prDetail ? (
                             <div className="empty-state empty-state--subtle">Select a pull request.</div>
                           ) : sortedFiles.length === 0 ? (
+                            <div className="empty-state empty-state--subtle">
+                              No files in this pull request.
+                            </div>
+                          ) : filteredSortedFiles.length === 0 ? (
                             <div className="empty-state empty-state--subtle">
                               No Markdown or YAML files in this pull request.
                             </div>
@@ -4558,7 +4608,7 @@ function App() {
       <section className="content-area">
         <div className="workspace">
           <div className="workspace__body" ref={workspaceBodyRef}>
-            <div className={`pane pane--diff ${maximizedPane === 'source' ? 'pane--maximized' : (maximizedPane === 'preview' || maximizedPane === 'media') ? 'pane--hidden' : ''}`}>
+            <div className={`pane pane--diff ${maximizedPane === 'source' ? 'pane--maximized' : (maximizedPane === 'preview' || maximizedPane === 'media' || isImageFile(selectedFile)) ? 'pane--hidden' : ''}`}>
               <div className="pane__header">
                 <div className="pane__title-group">
                   <span>Source</span>
@@ -4823,7 +4873,7 @@ function App() {
               </div>
             </div>
 
-            {!maximizedPane || maximizedPane === 'media' ? null : (
+            {!maximizedPane || maximizedPane === 'media' || maximizedPane === 'source' || isImageFile(selectedFile) ? null : (
               <div
                 className={`workspace__divider${isResizing ? " workspace__divider--active" : ""}`}
                 onMouseDown={handleResizeStart}
@@ -4833,43 +4883,56 @@ function App() {
               />
             )}
 
-            <div className={`pane pane--preview ${maximizedPane === 'preview' ? 'pane--maximized' : (maximizedPane === 'source' || maximizedPane === 'media') ? 'pane--hidden' : ''}`}>
+            <div className={`pane pane--preview ${maximizedPane === 'preview' || isImageFile(selectedFile) ? 'pane--maximized' : (maximizedPane === 'source' || maximizedPane === 'media') ? 'pane--hidden' : ''}`}>
               <div className="pane__header">
                 <div className="pane__title-group">
                   <span>Preview</span>
                 </div>
                 <div className="pane__actions">
-                  <button
-                    type="button"
-                    className="panel__title-button panel__title-button--maximize"
-                    onClick={() => {
-                      if (maximizedPane === 'preview') {
-                        // Restore
-                        if (savedSplitRatio && workspaceBodyRef.current) {
-                          workspaceBodyRef.current.style.setProperty('--split-ratio', savedSplitRatio);
+                  {!isImageFile(selectedFile) && (
+                    <button
+                      type="button"
+                      className="panel__title-button panel__title-button--maximize"
+                      onClick={() => {
+                        if (maximizedPane === 'preview') {
+                          // Restore
+                          if (savedSplitRatio && workspaceBodyRef.current) {
+                            workspaceBodyRef.current.style.setProperty('--split-ratio', savedSplitRatio);
+                          }
+                          setMaximizedPane(null);
+                          setSavedSplitRatio(null);
+                        } else {
+                          // Maximize
+                          if (workspaceBodyRef.current) {
+                            const currentRatio = workspaceBodyRef.current.style.getPropertyValue('--split-ratio') || '50%';
+                            setSavedSplitRatio(currentRatio);
+                          }
+                          setMaximizedPane('preview');
                         }
-                        setMaximizedPane(null);
-                        setSavedSplitRatio(null);
-                      } else {
-                        // Maximize
-                        if (workspaceBodyRef.current) {
-                          const currentRatio = workspaceBodyRef.current.style.getPropertyValue('--split-ratio') || '50%';
-                          setSavedSplitRatio(currentRatio);
-                        }
-                        setMaximizedPane('preview');
-                      }
-                    }}
-                    aria-label={maximizedPane === 'preview' ? 'Restore pane size' : 'Maximize pane'}
-                    title={maximizedPane === 'preview' ? 'Restore pane size' : 'Maximize pane'}
-                  >
-                    {maximizedPane === 'preview' ? '⊟' : '⊡'}
-                  </button>
+                      }}
+                      aria-label={maximizedPane === 'preview' ? 'Restore pane size' : 'Maximize pane'}
+                      title={maximizedPane === 'preview' ? 'Restore pane size' : 'Maximize pane'}
+                    >
+                      {maximizedPane === 'preview' ? '⊟' : '⊡'}
+                    </button>
+                  )}
                 </div>
               </div>
               <div className="pane__content">
                 <div className="pane__viewer">
                   {selectedFile ? (
-                    selectedFile.language === "markdown" ? (
+                    selectedFile.language === "image" ? (
+                      <div className="image-preview">
+                        {selectedFile.head_content ? (
+                          <img 
+                            src={`data:image/${selectedFile.path.split('.').pop()};base64,${selectedFile.head_content}`}
+                            alt={selectedFile.path}
+                          />
+                        ) : (
+                          <div className="empty-state">Loading image...</div>
+                        )}
+                      </div>
+                    ) : selectedFile.language === "markdown" ? (
                       <div 
                         className="markdown-preview" 
                         ref={previewViewerRef as React.RefObject<HTMLDivElement>}

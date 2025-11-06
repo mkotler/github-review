@@ -14,7 +14,6 @@ const API_BASE: &str = "https://api.github.com";
 const USER_AGENT_VALUE: &str = "github-review-app/0.1";
 const API_VERSION_HEADER: &str = "x-github-api-version";
 const API_VERSION_VALUE: &str = "2022-11-28";
-const SUPPORTED_EXTENSIONS: [&str; 4] = [".md", ".markdown", ".yaml", ".yml"];
 
 struct SsoHeaderInfo {
     organization: Option<String>,
@@ -329,17 +328,18 @@ pub async fn get_pull_request(
 
     let files = files_response.json::<Vec<GitHubPullRequestFile>>().await?;
 
-    let supported: Vec<_> = files
+    // Return all files (frontend will filter if needed)
+    let non_removed: Vec<_> = files
         .into_iter()
-        .filter(|file| is_supported(&file.filename) && file.status != "removed")
+        .filter(|file| file.status != "removed")
         .collect();
 
     let base_sha = pr.base.sha.clone();
     let head_sha = pr.head.sha.clone();
 
-    let mut collected = Vec::with_capacity(supported.len());
+    let mut collected = Vec::with_capacity(non_removed.len());
 
-    for file in supported {
+    for file in non_removed {
         let filename = file.filename;
         collected.push(PullRequestFile {
             path: filename.clone(),
@@ -704,20 +704,57 @@ async fn fetch_file_contents(
     path: &str,
     reference: &str,
 ) -> AppResult<String> {
-    let response = client
-        .get(format!("{API_BASE}/repos/{owner}/{repo}/contents/{path}"))
-        .query(&[("ref", reference)])
-        .header(ACCEPT, "application/vnd.github.v3.raw")
-        .send()
+    // Check if this is an image file
+    let is_image = path.to_ascii_lowercase().ends_with(".png") 
+        || path.to_ascii_lowercase().ends_with(".jpg")
+        || path.to_ascii_lowercase().ends_with(".jpeg")
+        || path.to_ascii_lowercase().ends_with(".gif")
+        || path.to_ascii_lowercase().ends_with(".svg")
+        || path.to_ascii_lowercase().ends_with(".webp")
+        || path.to_ascii_lowercase().ends_with(".bmp")
+        || path.to_ascii_lowercase().ends_with(".ico");
+    
+    if is_image {
+        // For images, get the JSON response with base64 content
+        let response = client
+            .get(format!("{API_BASE}/repos/{owner}/{repo}/contents/{path}"))
+            .query(&[("ref", reference)])
+            .send()
+            .await?;
+
+        let response = ensure_success(
+            response,
+            &format!("fetch file contents for {owner}/{repo}:{reference}:{path}"),
+        )
         .await?;
 
-    let response = ensure_success(
-        response,
-        &format!("fetch file contents for {owner}/{repo}:{reference}:{path}"),
-    )
-    .await?;
+        let content_json: Value = response.json().await?;
+        
+        // GitHub returns content as base64 in the "content" field
+        if let Some(content) = content_json.get("content").and_then(|c| c.as_str()) {
+            // Remove whitespace/newlines that GitHub adds to the base64 string
+            let cleaned: String = content.chars().filter(|c| !c.is_whitespace()).collect();
+            Ok(cleaned)
+        } else {
+            Err(AppError::Api("Image content not found in response".to_string()))
+        }
+    } else {
+        // For text files, get raw content
+        let response = client
+            .get(format!("{API_BASE}/repos/{owner}/{repo}/contents/{path}"))
+            .query(&[("ref", reference)])
+            .header(ACCEPT, "application/vnd.github.v3.raw")
+            .send()
+            .await?;
 
-    Ok(response.text().await?)
+        let response = ensure_success(
+            response,
+            &format!("fetch file contents for {owner}/{repo}:{reference}:{path}"),
+        )
+        .await?;
+
+        Ok(response.text().await?)
+    }
 }
 
 async fn fetch_review_comments(
@@ -1159,16 +1196,57 @@ fn map_issue_comment(comment: &GitHubIssueComment, is_mine: bool) -> PullRequest
     }
 }
 
-fn is_supported(filename: &str) -> bool {
-    let lower = filename.to_ascii_lowercase();
-    SUPPORTED_EXTENSIONS.iter().any(|ext| lower.ends_with(ext))
-}
-
 fn detect_language(filename: &str) -> FileLanguage {
-    if filename.ends_with(".yml") || filename.ends_with(".yaml") {
-        FileLanguage::Yaml
+    let lower = filename.to_ascii_lowercase();
+    
+    if lower.ends_with(".yml") || lower.ends_with(".yaml") {
+        "yaml".to_string()
+    } else if lower.ends_with(".md") || lower.ends_with(".markdown") {
+        "markdown".to_string()
+    } else if lower.ends_with(".json") {
+        "json".to_string()
+    } else if lower.ends_with(".js") || lower.ends_with(".jsx") {
+        "javascript".to_string()
+    } else if lower.ends_with(".ts") || lower.ends_with(".tsx") {
+        "typescript".to_string()
+    } else if lower.ends_with(".py") {
+        "python".to_string()
+    } else if lower.ends_with(".rs") {
+        "rust".to_string()
+    } else if lower.ends_with(".go") {
+        "go".to_string()
+    } else if lower.ends_with(".java") {
+        "java".to_string()
+    } else if lower.ends_with(".c") || lower.ends_with(".h") {
+        "c".to_string()
+    } else if lower.ends_with(".cpp") || lower.ends_with(".hpp") || lower.ends_with(".cc") {
+        "cpp".to_string()
+    } else if lower.ends_with(".cs") {
+        "csharp".to_string()
+    } else if lower.ends_with(".rb") {
+        "ruby".to_string()
+    } else if lower.ends_with(".php") {
+        "php".to_string()
+    } else if lower.ends_with(".html") || lower.ends_with(".htm") {
+        "html".to_string()
+    } else if lower.ends_with(".css") {
+        "css".to_string()
+    } else if lower.ends_with(".sh") || lower.ends_with(".bash") {
+        "shell".to_string()
+    } else if lower.ends_with(".xml") {
+        "xml".to_string()
+    } else if lower.ends_with(".sql") {
+        "sql".to_string()
+    } else if lower.ends_with(".png") || lower.ends_with(".jpg") || lower.ends_with(".jpeg") || 
+              lower.ends_with(".gif") || lower.ends_with(".svg") || lower.ends_with(".webp") ||
+              lower.ends_with(".bmp") || lower.ends_with(".ico") {
+        "image".to_string()
     } else {
-        FileLanguage::Markdown
+        // Get extension or use "text" as fallback
+        filename
+            .rsplit_once('.')
+            .map(|(_, ext)| ext.to_string())
+            .unwrap_or_else(|| "text".to_string())
     }
 }
 

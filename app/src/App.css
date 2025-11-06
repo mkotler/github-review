@@ -2203,6 +2203,23 @@ select {
   transition: opacity 0.2s;
 }
 
+.image-preview {
+  padding: 18px 22px;
+  overflow-y: auto;
+  background: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100%;
+}
+
+.image-preview img {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
 .clickable-image:hover {
   opacity: 0.8;
 }
