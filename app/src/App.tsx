@@ -220,6 +220,103 @@ const MermaidCode = ({ children }: { children: string }) => {
   return <div ref={ref} className="mermaid-diagram" />;
 };
 
+// Helper component for comment thread items with collapse functionality
+const CommentThreadItem = ({ 
+  thread, 
+  collapsedComments, 
+  setCollapsedComments,
+  editorRef,
+  pendingReview,
+  setEditingCommentId,
+  setEditingComment,
+  setFileCommentDraft,
+  setFileCommentLine,
+  setFileCommentSide,
+  setFileCommentIsFileLevel,
+  setFileCommentError,
+  setFileCommentSuccess,
+  setIsFileCommentComposerVisible,
+  setReplyingToCommentId,
+  setReplyDraft,
+  setReplyError,
+  setReplySuccess,
+  children
+}: any) => {
+  const allCommentsInThread = [thread.parent, ...thread.replies];
+  const parentComment = thread.parent;
+  
+  // Calculate collapse state based on parent comment
+  const isCollapsed = collapsedComments.has(parentComment.id);
+  const toggleCollapse = () => {
+    setCollapsedComments((prev: Set<number>) => {
+      const next = new Set(prev);
+      if (next.has(parentComment.id)) {
+        next.delete(parentComment.id);
+      } else {
+        next.add(parentComment.id);
+      }
+      return next;
+    });
+  };
+  
+  // Use ref to measure comment height and determine if collapse button should be shown
+  const commentBodyRef = useRef<HTMLDivElement>(null);
+  const [showCollapseButton, setShowCollapseButton] = useState(false);
+  
+  useEffect(() => {
+    if (commentBodyRef.current && !isCollapsed) {
+      const height = commentBodyRef.current.offsetHeight;
+      setShowCollapseButton(height > 150);
+    }
+  }, [allCommentsInThread, isCollapsed]);
+  
+  return (
+    <li className="comment-panel__item">
+      <div className="comment-panel__item-header">
+        <div className="comment-panel__item-header-info">
+          {parentComment.line && parentComment.line > 0 && (
+            <span 
+              className="comment-panel__item-line comment-panel__item-line--clickable"
+              onClick={() => {
+                if (editorRef.current && parentComment.line) {
+                  const editor = editorRef.current;
+                  const lineNumber = parentComment.line;
+                  
+                  // Reveal the line with some context
+                  editor.revealLineInCenter(lineNumber);
+                  
+                  // Set cursor position at the line
+                  editor.setPosition({ lineNumber, column: 1 });
+                  editor.focus();
+                }
+              }}
+              title="Click to jump to line in editor"
+            >
+              #{parentComment.line}
+            </span>
+          )}
+        </div>
+        <div className="comment-panel__item-actions">
+          {showCollapseButton && (
+            <button
+              type="button"
+              className="comment-panel__item-collapse"
+              onClick={toggleCollapse}
+              aria-label={isCollapsed ? "Expand thread" : "Collapse thread"}
+              title={isCollapsed ? "Expand" : "Collapse"}
+            >
+              {isCollapsed ? "▼" : "▲"}
+            </button>
+          )}
+        </div>
+      </div>
+      <div ref={commentBodyRef} className={`comment-panel__item-body${isCollapsed ? " comment-panel__item-content--collapsed" : ""}`}>
+        {children(allCommentsInThread, isCollapsed, parentComment)}
+      </div>
+    </li>
+  );
+};
+
 function App() {
   const [repoRef, setRepoRef] = useState<RepoRef | null>(null);
   const [repoInput, setRepoInput] = useState("");
@@ -3379,71 +3476,32 @@ function App() {
                           </div>
                         )}
                         <ul className="comment-panel__list">
-                          {commentThreads.map((thread) => {
-                            const allCommentsInThread = [thread.parent, ...thread.replies];
-                            const parentComment = thread.parent;
-                            
-                            // Calculate collapse state based on parent comment
-                            const isCollapsed = collapsedComments.has(parentComment.id);
-                            const toggleCollapse = () => {
-                              setCollapsedComments(prev => {
-                                const next = new Set(prev);
-                                if (next.has(parentComment.id)) {
-                                  next.delete(parentComment.id);
-                                } else {
-                                  next.add(parentComment.id);
-                                }
-                                return next;
-                              });
-                            };
-                            
-                            // Check if thread is long enough to show collapse button (more than 5 lines total)
-                            const totalLineCount = allCommentsInThread.reduce((sum, c) => sum + c.body.split('\n').length, 0);
-                            const showCollapseButton = totalLineCount > 5;
-                            
-                            return (
-                              <li key={parentComment.id} className="comment-panel__item">
-                                <div className="comment-panel__item-header">
-                                  <div className="comment-panel__item-header-info">
-                                    {parentComment.line && parentComment.line > 0 && (
-                                      <span 
-                                        className="comment-panel__item-line comment-panel__item-line--clickable"
-                                        onClick={() => {
-                                          if (editorRef.current && parentComment.line) {
-                                            const editor = editorRef.current;
-                                            const lineNumber = parentComment.line;
-                                            
-                                            // Reveal the line with some context
-                                            editor.revealLineInCenter(lineNumber);
-                                            
-                                            // Set cursor position at the line
-                                            editor.setPosition({ lineNumber, column: 1 });
-                                            editor.focus();
-                                          }
-                                        }}
-                                        title="Click to jump to line in editor"
-                                      >
-                                        #{parentComment.line}
-                                      </span>
-                                    )}
-                                  </div>
-                                  <div className="comment-panel__item-actions">
-                                    {showCollapseButton && (
-                                      <button
-                                        type="button"
-                                        className="comment-panel__item-collapse"
-                                        onClick={toggleCollapse}
-                                        aria-label={isCollapsed ? "Expand thread" : "Collapse thread"}
-                                        title={isCollapsed ? "Expand" : "Collapse"}
-                                      >
-                                        {isCollapsed ? "▼" : "▲"}
-                                      </button>
-                                    )}
-                                  </div>
-                                </div>
-                                <div className={`comment-panel__item-body${isCollapsed ? " comment-panel__item-content--collapsed" : ""}`}>
+                          {commentThreads.map((thread) => (
+                            <CommentThreadItem
+                              key={thread.parent.id}
+                              thread={thread}
+                              collapsedComments={collapsedComments}
+                              setCollapsedComments={setCollapsedComments}
+                              editorRef={editorRef}
+                              pendingReview={pendingReview}
+                              setEditingCommentId={setEditingCommentId}
+                              setEditingComment={setEditingComment}
+                              setFileCommentDraft={setFileCommentDraft}
+                              setFileCommentLine={setFileCommentLine}
+                              setFileCommentSide={setFileCommentSide}
+                              setFileCommentIsFileLevel={setFileCommentIsFileLevel}
+                              setFileCommentError={setFileCommentError}
+                              setFileCommentSuccess={setFileCommentSuccess}
+                              setIsFileCommentComposerVisible={setIsFileCommentComposerVisible}
+                              setReplyingToCommentId={setReplyingToCommentId}
+                              setReplyDraft={setReplyDraft}
+                              setReplyError={setReplyError}
+                              setReplySuccess={setReplySuccess}
+                            >
+                              {(allCommentsInThread: any, isCollapsed: boolean, parentComment: any) => (
+                                <>
                                   {/* Render all comments in thread */}
-                                  {allCommentsInThread.map((comment, index) => {
+                                  {allCommentsInThread.map((comment: any, index: number) => {
                                     const formattedTimestamp = new Date(comment.created_at).toLocaleString();
                                     const isPendingGitHubReviewComment = comment.review_id === pendingReview?.id && pendingReview?.html_url;
                                     const isPendingLocalReviewComment = comment.is_draft && !pendingReview?.html_url;
@@ -3551,7 +3609,6 @@ function App() {
                                       </div>
                                     );
                                   })}
-                                </div>
                                 {/* Reply composer shown under this thread */}
                                 {replyingToCommentId === parentComment.id && (
                                   <div className="comment-panel__reply-composer">
@@ -3823,9 +3880,10 @@ function App() {
                                     </div>
                                   </div>
                                 )}
-                              </li>
-                            );
-                          })}
+                                </>
+                              )}
+                            </CommentThreadItem>
+                          ))}
                         </ul>
                         {/* Inline new comment composer */}
                         {(isAddingInlineComment || (selectedFilePath && draftsByFile[selectedFilePath]?.inline)) && (

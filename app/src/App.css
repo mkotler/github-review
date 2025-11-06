@@ -1329,6 +1329,12 @@ select {
   display: flex;
   align-items: center;
   gap: 8px;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.comment-panel__item-header:hover .comment-panel__item-actions {
+  opacity: 1;
 }
 
 .comment-panel__item-edit,
@@ -1348,11 +1354,11 @@ select {
 }
 
 .comment-panel__item-collapse {
-  padding: 2px;
+  padding: 1px;
   border: none;
   background: transparent;
   color: #a7c0ff;
-  font-size: 12px;
+  font-size: 9px;
   line-height: 1;
   cursor: pointer;
   transition: color 0.18s ease;
@@ -1461,7 +1467,7 @@ select {
 }
 
 .comment-panel__item-content--collapsed {
-  max-height: 3.6em;
+  max-height: 100px;
   overflow: hidden;
   position: relative;
 }
