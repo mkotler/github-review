@@ -74,6 +74,35 @@ npm run tauri dev
 
 This starts the Vite dev server and launches the Tauri application window.
 
+### Configuring Log Levels
+
+The Rust backend uses the `tracing` framework for logging. By default, only warnings and errors are displayed to keep terminal output clean during development.
+
+**Available Log Levels** (in order of verbosity):
+- `error` - Only critical errors
+- `warn` - Warnings and errors (default)
+- `info` - Informational messages, warnings, and errors
+- `debug` - Debug messages and all above
+- `trace` - Most verbose, includes all log messages
+
+**To change the log level**, set the `RUST_LOG` environment variable:
+
+```bash
+# Show all informational messages (useful for debugging)
+RUST_LOG=info npm run tauri dev
+
+# Show only errors
+RUST_LOG=error npm run tauri dev
+
+# Show debug messages
+RUST_LOG=debug npm run tauri dev
+
+# Filter to specific modules (e.g., only github module logs)
+RUST_LOG=github_review::github=info npm run tauri dev
+```
+
+The default level is `warn`, which provides a good balance between visibility and noise during normal development.
+
 ### Using Inline Comments
 
 When viewing a pull request file in the Monaco Editor:

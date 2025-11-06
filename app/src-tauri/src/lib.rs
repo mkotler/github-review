@@ -15,6 +15,7 @@ use models::{AuthStatus, PullRequestDetail, PullRequestReview, PullRequestSummar
 use review_storage::{ReviewComment, ReviewMetadata};
 use serde::Deserialize;
 use tauri::Manager;
+use tracing::{error, info};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -39,7 +40,7 @@ struct SubmitFileCommentArgs {
 
 fn init_logging() {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
 
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
@@ -54,7 +55,17 @@ async fn cmd_start_github_oauth(app: tauri::AppHandle) -> Result<AuthStatus, Str
 
 #[tauri::command]
 async fn cmd_check_auth_status() -> Result<AuthStatus, String> {
-    check_auth_status().await.map_err(|err| err.to_string())
+    info!("cmd_check_auth_status: checking authentication status");
+    match check_auth_status().await {
+        Ok(status) => {
+            info!("cmd_check_auth_status: is_authenticated={}", status.is_authenticated);
+            Ok(status)
+        }
+        Err(err) => {
+            error!("cmd_check_auth_status: error - {}", err);
+            Err(err.to_string())
+        }
+    }
 }
 
 #[tauri::command]
@@ -69,9 +80,17 @@ async fn cmd_list_pull_requests(
     state: Option<String>,
     current_login: Option<String>,
 ) -> Result<Vec<PullRequestSummary>, String> {
-    list_repo_pull_requests(&owner, &repo, state.as_deref(), current_login.as_deref())
-        .await
-        .map_err(|err| err.to_string())
+    info!("cmd_list_pull_requests: owner={}, repo={}, state={:?}", owner, repo, state);
+    match list_repo_pull_requests(&owner, &repo, state.as_deref(), current_login.as_deref()).await {
+        Ok(prs) => {
+            info!("cmd_list_pull_requests: success, found {} PRs", prs.len());
+            Ok(prs)
+        }
+        Err(err) => {
+            error!("cmd_list_pull_requests: error - {}", err);
+            Err(err.to_string())
+        }
+    }
 }
 
 #[tauri::command]
@@ -81,9 +100,17 @@ async fn cmd_get_pull_request(
     number: u64,
     current_login: Option<String>,
 ) -> Result<PullRequestDetail, String> {
-    fetch_pull_request_details(&owner, &repo, number, current_login.as_deref())
-        .await
-        .map_err(|err| err.to_string())
+    info!("cmd_get_pull_request: owner={}, repo={}, pr={}", owner, repo, number);
+    match fetch_pull_request_details(&owner, &repo, number, current_login.as_deref()).await {
+        Ok(pr) => {
+            info!("cmd_get_pull_request: success, {} files", pr.files.len());
+            Ok(pr)
+        }
+        Err(err) => {
+            error!("cmd_get_pull_request: error - {}", err);
+            Err(err.to_string())
+        }
+    }
 }
 
 #[tauri::command]
@@ -546,8 +573,7 @@ async fn cmd_open_url(url: String) -> Result<(), String> {
 pub fn run() {
     dotenvy::dotenv().ok();
     init_logging();
-    tracing::info!("logging initialised");
-
+    
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
@@ -564,6 +590,53 @@ pub fn run() {
                 })?;
             
             tracing::info!("Review storage initialized successfully");
+            
+            // Set up panic handler to log panics to the log folder
+            let log_dir = data_dir.join("review_logs");
+            std::panic::set_hook(Box::new(move |panic_info| {
+                let payload = panic_info.payload();
+                let msg = if let Some(s) = payload.downcast_ref::<&str>() {
+                    s
+                } else if let Some(s) = payload.downcast_ref::<String>() {
+                    s
+                } else {
+                    "Unknown panic payload"
+                };
+                
+                let location = if let Some(loc) = panic_info.location() {
+                    format!("{}:{}:{}", loc.file(), loc.line(), loc.column())
+                } else {
+                    "unknown location".to_string()
+                };
+                
+                let crash_msg = format!("PANIC occurred at {}: {}", location, msg);
+                
+                // Log to tracing/stderr
+                tracing::error!("{}", crash_msg);
+                eprintln!("💥💥💥 {} 💥💥💥", crash_msg);
+                
+                // Also write to crash log file in the review_logs directory
+                let crash_log = log_dir.join("crash.log");
+                let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
+                let crash_entry = format!("[{}] {}\n", timestamp, crash_msg);
+                
+                // Create log directory if it doesn't exist
+                let _ = std::fs::create_dir_all(&log_dir);
+                
+                // Append to crash log
+                if let Ok(mut file) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&crash_log) {
+                    use std::io::Write;
+                    let _ = file.write_all(crash_entry.as_bytes());
+                    let _ = file.write_all(format!("Backtrace: {:?}\n\n", std::backtrace::Backtrace::capture()).as_bytes());
+                    eprintln!("💥 Crash log written to: {}", crash_log.display());
+                }
+            }));
+            
+            eprintln!("🚀 Application starting - if crash occurs, check crash.log in log folder");
+            
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

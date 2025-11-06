@@ -101,6 +101,59 @@ type PrUnderReview = {
 
 const AUTH_QUERY_KEY = ["auth-status"] as const;
 
+// Global error handlers to catch crashes
+if (typeof window !== 'undefined') {
+  // Store original console methods
+  const originalError = console.error;
+
+  // Override console.error to ensure it's always visible
+  console.error = (...args: any[]) => {
+    originalError.apply(console, args);
+    // Force flush to ensure it's written
+    if (typeof (console as any).flush === 'function') {
+      (console as any).flush();
+    }
+  };
+
+  window.addEventListener('error', (event) => {
+    console.error('💥💥💥 UNHANDLED ERROR 💥💥💥');
+    console.error('Message:', event.message);
+    console.error('File:', event.filename, 'Line:', event.lineno, 'Col:', event.colno);
+    console.error('Error object:', event.error);
+    if (event.error?.stack) {
+      console.error('Stack trace:', event.error.stack);
+    }
+    // Prevent default to ensure we see the error
+    event.preventDefault();
+  });
+
+  window.addEventListener('unhandledrejection', (event) => {
+    console.error('💥💥💥 UNHANDLED PROMISE REJECTION 💥💥💥');
+    console.error('Reason:', event.reason);
+    if (event.reason?.stack) {
+      console.error('Stack trace:', event.reason.stack);
+    }
+    console.error('Promise:', event.promise);
+    // Prevent default to ensure we see the error
+    event.preventDefault();
+  });
+
+  // Catch errors in Tauri invoke calls
+  const originalInvoke = invoke;
+  (window as any).originalInvoke = originalInvoke;
+  
+  // Monitor for crashes every 5 seconds
+  let lastHeartbeat = Date.now();
+  setInterval(() => {
+    const now = Date.now();
+    if (now - lastHeartbeat > 10000) {
+      console.error('💥 App may have frozen! No heartbeat for', Math.floor((now - lastHeartbeat) / 1000), 'seconds');
+    }
+    lastHeartbeat = now;
+    console.log('💓 Heartbeat', new Date().toISOString());
+  }, 5000);
+}
+
 const openDevtoolsWindow = () => {
   void invoke("cmd_open_devtools").catch((error) => {
     console.warn("Failed to open devtools", error);
@@ -423,6 +476,27 @@ function App() {
       fileCommentTextareaRef.current.focus();
     }
   }, [isFileCommentComposerVisible]);
+
+  // Monitor memory usage periodically to detect leaks
+  useEffect(() => {
+    const memoryInterval = setInterval(() => {
+      if ((performance as any).memory) {
+        const memory = (performance as any).memory;
+        const usedMB = Math.round(memory.usedJSHeapSize / 1024 / 1024);
+        const totalMB = Math.round(memory.totalJSHeapSize / 1024 / 1024);
+        const limitMB = Math.round(memory.jsHeapSizeLimit / 1024 / 1024);
+        
+        console.log(`Memory: ${usedMB}MB / ${totalMB}MB (limit: ${limitMB}MB)`);
+        
+        // Warn if approaching memory limit
+        if (usedMB > limitMB * 0.9) {
+          console.warn(`⚠️ Memory usage high: ${usedMB}MB / ${limitMB}MB`);
+        }
+      }
+    }, 30000); // Log every 30 seconds
+    
+    return () => clearInterval(memoryInterval);
+  }, []);
 
   const authQuery = useQuery({
     queryKey: AUTH_QUERY_KEY,
