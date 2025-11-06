@@ -236,6 +236,7 @@ async fn cmd_local_add_comment(
     side: String,
     body: String,
     commit_id: String,
+    in_reply_to_id: Option<i64>,
 ) -> Result<ReviewComment, String> {
     let storage = review_storage::get_storage().map_err(|e| e.to_string())?;
     storage
@@ -248,6 +249,7 @@ async fn cmd_local_add_comment(
             &side,
             &body,
             &commit_id,
+            in_reply_to_id,
         )
         .await
         .map_err(|e| e.to_string())

@@ -21,6 +21,7 @@ pub struct ReviewComment {
     pub created_at: String,
     pub updated_at: String,
     pub deleted: bool,
+    pub in_reply_to_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -87,6 +88,12 @@ impl ReviewStorage {
         // Migration: Add deleted column if it doesn't exist
         let _ = conn.execute(
             "ALTER TABLE review_comments ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        
+        // Migration: Add in_reply_to_id column if it doesn't exist
+        let _ = conn.execute(
+            "ALTER TABLE review_comments ADD COLUMN in_reply_to_id INTEGER",
             [],
         );
         
@@ -176,6 +183,7 @@ impl ReviewStorage {
         side: &str,
         body: &str,
         commit_id: &str,
+        in_reply_to_id: Option<i64>,
     ) -> AppResult<ReviewComment> {
         let now = Utc::now().to_rfc3339();
         
@@ -184,10 +192,10 @@ impl ReviewStorage {
             
             conn.execute(
                 "INSERT INTO review_comments 
-                 (owner, repo, pr_number, file_path, line_number, side, body, commit_id, created_at, updated_at, deleted)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0)",
+                 (owner, repo, pr_number, file_path, line_number, side, body, commit_id, created_at, updated_at, deleted, in_reply_to_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, ?11)",
                 params![
-                    owner, repo, pr_number, file_path, line_number, side, body, commit_id, &now, &now
+                    owner, repo, pr_number, file_path, line_number, side, body, commit_id, &now, &now, in_reply_to_id
                 ],
             )?;
             
@@ -206,6 +214,7 @@ impl ReviewStorage {
                 created_at: now.clone(),
                 updated_at: now,
                 deleted: false,
+                in_reply_to_id,
             }
         };
         
@@ -232,7 +241,7 @@ impl ReviewStorage {
             )?;
             
             conn.query_row(
-                "SELECT id, owner, repo, pr_number, file_path, line_number, side, body, commit_id, created_at, updated_at, deleted
+                "SELECT id, owner, repo, pr_number, file_path, line_number, side, body, commit_id, created_at, updated_at, deleted, in_reply_to_id
                  FROM review_comments WHERE id = ?1",
                 params![comment_id],
                 |row| {
@@ -249,6 +258,7 @@ impl ReviewStorage {
                         created_at: row.get(9)?,
                         updated_at: row.get(10)?,
                         deleted: row.get::<_, i64>(11)? != 0,
+                        in_reply_to_id: row.get(12).ok(),
                     })
                 },
             )?
@@ -308,7 +318,7 @@ impl ReviewStorage {
         let conn = self.conn.lock().map_err(|_| AppError::Internal("Lock poisoned".into()))?;
         
         let mut stmt = conn.prepare(
-            "SELECT id, owner, repo, pr_number, file_path, line_number, side, body, commit_id, created_at, updated_at, deleted
+            "SELECT id, owner, repo, pr_number, file_path, line_number, side, body, commit_id, created_at, updated_at, deleted, in_reply_to_id
              FROM review_comments
              WHERE owner = ?1 AND repo = ?2 AND pr_number = ?3 AND deleted = 0
              ORDER BY file_path, line_number"
@@ -329,6 +339,7 @@ impl ReviewStorage {
                     created_at: row.get(9)?,
                     updated_at: row.get(10)?,
                     deleted: row.get::<_, i64>(11)? != 0,
+                    in_reply_to_id: row.get(12).ok(),
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -645,7 +656,7 @@ impl ReviewStorage {
             )?;
             
             let mut stmt = conn.prepare(
-                "SELECT id, owner, repo, pr_number, file_path, line_number, side, body, commit_id, created_at, updated_at, deleted
+                "SELECT id, owner, repo, pr_number, file_path, line_number, side, body, commit_id, created_at, updated_at, deleted, in_reply_to_id
                  FROM review_comments
                  WHERE owner = ?1 AND repo = ?2 AND pr_number = ?3
                  ORDER BY file_path, line_number"
@@ -666,6 +677,7 @@ impl ReviewStorage {
                         created_at: row.get(9)?,
                         updated_at: row.get(10)?,
                         deleted: row.get::<_, i64>(11)? != 0,
+                        in_reply_to_id: row.get(12).ok(),
                     })
                 })?
                 .collect::<Result<Vec<_>, _>>()?;

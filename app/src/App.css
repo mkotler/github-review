@@ -1158,6 +1158,19 @@ select {
   outline: none;
 }
 
+.comment-composer textarea::-webkit-scrollbar {
+  width: 6px;
+}
+
+.comment-composer textarea::-webkit-scrollbar-track {
+  background: rgba(12, 15, 23, 0.3);
+}
+
+.comment-composer textarea::-webkit-scrollbar-thumb {
+  background: rgba(87, 108, 160, 0.4);
+  border-radius: 3px;
+}
+
 .comment-composer__actions {
   display: flex;
   justify-content: space-between;
@@ -1673,6 +1686,19 @@ select {
   border-color: rgba(118, 152, 224, 0.55);
 }
 
+.comment-panel__reply-textarea::-webkit-scrollbar {
+  width: 6px;
+}
+
+.comment-panel__reply-textarea::-webkit-scrollbar-track {
+  background: rgba(12, 15, 23, 0.3);
+}
+
+.comment-panel__reply-textarea::-webkit-scrollbar-thumb {
+  background: rgba(87, 108, 160, 0.4);
+  border-radius: 3px;
+}
+
 .comment-panel__line-input {
   display: flex;
   align-items: center;
@@ -1784,6 +1810,19 @@ select {
 .comment-panel__form textarea:focus {
   border-color: rgba(126, 162, 235, 0.8);
   outline: none;
+}
+
+.comment-panel__form textarea::-webkit-scrollbar {
+  width: 6px;
+}
+
+.comment-panel__form textarea::-webkit-scrollbar-track {
+  background: rgba(12, 15, 23, 0.3);
+}
+
+.comment-panel__form textarea::-webkit-scrollbar-thumb {
+  background: rgba(87, 108, 160, 0.4);
+  border-radius: 3px;
 }
 
 .comment-panel__checkbox {

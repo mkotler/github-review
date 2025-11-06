@@ -620,6 +620,7 @@ function App() {
           commit_id: string;
           created_at: string;
           updated_at: string;
+          in_reply_to_id: number | null;
         };
 
         const localCommentData = await invoke<LocalComment[]>("cmd_local_get_comments", {
@@ -661,6 +662,7 @@ function App() {
               state: null,
               is_mine: true,
               review_id: prDetail.number,
+              in_reply_to_id: lc.in_reply_to_id,
             };
           });
   
@@ -708,6 +710,7 @@ function App() {
         commit_id: string;
         created_at: string;
         updated_at: string;
+        in_reply_to_id: number | null;
       };
 
   
@@ -734,6 +737,7 @@ function App() {
         state: null,
         is_mine: true,
         review_id: effectiveReviewId,
+        in_reply_to_id: lc.in_reply_to_id,
       }));
 
   
@@ -1135,6 +1139,7 @@ function App() {
           commit_id: string;
           created_at: string;
           updated_at: string;
+          in_reply_to_id: number | null;
         };
 
         const localCommentData = await invoke<LocalComment[]>("cmd_local_get_comments", {
@@ -1175,6 +1180,7 @@ function App() {
             state: null,
             is_mine: true,
             review_id: localReview.id,
+            in_reply_to_id: lc.in_reply_to_id,
           }));
           setLocalComments(converted);
           setPendingReviewOverride(localReview);
@@ -1329,7 +1335,36 @@ function App() {
       const stored = localStorage.getItem(key);
       if (stored) {
         try {
-          setDraftsByFile(JSON.parse(stored));
+          const loadedDrafts = JSON.parse(stored);
+          // Clean up empty drafts
+          const cleanedDrafts: Record<string, { reply?: Record<number, string>, inline?: string }> = {};
+          for (const [filePath, fileDraft] of Object.entries(loadedDrafts)) {
+            const cleaned: { reply?: Record<number, string>, inline?: string } = {};
+            
+            // Keep inline draft only if non-empty
+            if (fileDraft.inline && fileDraft.inline.trim()) {
+              cleaned.inline = fileDraft.inline;
+            }
+            
+            // Keep reply drafts only if non-empty
+            if (fileDraft.reply) {
+              const nonEmptyReplies: Record<number, string> = {};
+              for (const [commentId, replyText] of Object.entries(fileDraft.reply)) {
+                if (replyText && replyText.trim()) {
+                  nonEmptyReplies[Number(commentId)] = replyText;
+                }
+              }
+              if (Object.keys(nonEmptyReplies).length > 0) {
+                cleaned.reply = nonEmptyReplies;
+              }
+            }
+            
+            // Only keep file entry if it has any non-empty drafts
+            if (cleaned.inline || cleaned.reply) {
+              cleanedDrafts[filePath] = cleaned;
+            }
+          }
+          setDraftsByFile(cleanedDrafts);
         } catch (e) {
           console.error('Failed to parse stored drafts:', e);
         }
@@ -2038,6 +2073,14 @@ function App() {
     );
   }, [reviewAwareComments, pendingReview]);
 
+  // Helper to check if a file draft entry should be deleted (no non-empty drafts)
+  const shouldDeleteFileDraft = useCallback((fileDrafts: { inline?: string; reply?: Record<string, string> } | undefined): boolean => {
+    if (!fileDrafts) return true;
+    if (fileDrafts.inline && fileDrafts.inline.trim()) return false;
+    if (fileDrafts.reply && Object.values(fileDrafts.reply).some(draft => draft && draft.trim())) return false;
+    return true;
+  }, []);
+
   // Check if a file has any drafts in progress (unsaved comments/replies)
   const fileHasDraftsInProgress = useCallback((filePath: string): boolean => {
     const fileDrafts = draftsByFile[filePath];
@@ -2110,6 +2153,7 @@ function App() {
           side,
           body,
           commitId: prDetail.head_sha,
+          inReplyToId: null,
         });
       } else {
         // For single comments, use the old API
@@ -2568,6 +2612,7 @@ function App() {
         side: fileCommentSide,
         body: trimmed,
         commitId: prDetail.head_sha,
+        inReplyToId: null,
       });
 
       // Clear the form
@@ -3615,11 +3660,8 @@ function App() {
                                                 const newDrafts = { ...prev };
                                                 if (newDrafts[selectedFilePath]?.reply) {
                                                   delete newDrafts[selectedFilePath].reply![parentComment.id];
-                                                  if (Object.keys(newDrafts[selectedFilePath].reply!).length === 0) {
-                                                    delete newDrafts[selectedFilePath].reply;
-                                                    if (!newDrafts[selectedFilePath].inline) {
-                                                      delete newDrafts[selectedFilePath];
-                                                    }
+                                                  if (shouldDeleteFileDraft(newDrafts[selectedFilePath])) {
+                                                    delete newDrafts[selectedFilePath];
                                                   }
                                                 }
                                                 return newDrafts;
@@ -3665,6 +3707,7 @@ function App() {
                                                 side: parentComment.side || "LEFT",
                                                 body: replyDraft,
                                                 commitId: prDetail.head_sha,
+                                                inReplyToId: parentComment.id,
                                               });
                                               
                                               // Clear form
@@ -3677,11 +3720,8 @@ function App() {
                                                   const newDrafts = { ...prev };
                                                   if (newDrafts[selectedFilePath]?.reply) {
                                                     delete newDrafts[selectedFilePath].reply![parentComment.id];
-                                                    if (Object.keys(newDrafts[selectedFilePath].reply!).length === 0) {
-                                                      delete newDrafts[selectedFilePath].reply;
-                                                      if (!newDrafts[selectedFilePath].inline) {
-                                                        delete newDrafts[selectedFilePath];
-                                                      }
+                                                    if (shouldDeleteFileDraft(newDrafts[selectedFilePath])) {
+                                                      delete newDrafts[selectedFilePath];
                                                     }
                                                   }
                                                   return newDrafts;
@@ -3731,6 +3771,7 @@ function App() {
                                                 side: parentComment.side || "LEFT",
                                                 body: replyDraft,
                                                 commitId: prDetail.head_sha,
+                                                inReplyToId: parentComment.id,
                                               });
 
                                               // Clear form
@@ -3743,11 +3784,8 @@ function App() {
                                                   const newDrafts = { ...prev };
                                                   if (newDrafts[selectedFilePath]?.reply) {
                                                     delete newDrafts[selectedFilePath].reply![parentComment.id];
-                                                    if (Object.keys(newDrafts[selectedFilePath].reply!).length === 0) {
-                                                      delete newDrafts[selectedFilePath].reply;
-                                                      if (!newDrafts[selectedFilePath].inline) {
-                                                        delete newDrafts[selectedFilePath];
-                                                      }
+                                                    if (shouldDeleteFileDraft(newDrafts[selectedFilePath])) {
+                                                      delete newDrafts[selectedFilePath];
                                                     }
                                                   }
                                                   return newDrafts;
@@ -3813,7 +3851,7 @@ function App() {
                                         const newDrafts = { ...prev };
                                         if (newDrafts[selectedFilePath]) {
                                           delete newDrafts[selectedFilePath].inline;
-                                          if (!newDrafts[selectedFilePath].reply || Object.keys(newDrafts[selectedFilePath].reply!).length === 0) {
+                                          if (shouldDeleteFileDraft(newDrafts[selectedFilePath])) {
                                             delete newDrafts[selectedFilePath];
                                           }
                                         }
@@ -3841,7 +3879,7 @@ function App() {
                                         const newDrafts = { ...prev };
                                         if (newDrafts[selectedFilePath]) {
                                           delete newDrafts[selectedFilePath].inline;
-                                          if (!newDrafts[selectedFilePath].reply || Object.keys(newDrafts[selectedFilePath].reply!).length === 0) {
+                                          if (shouldDeleteFileDraft(newDrafts[selectedFilePath])) {
                                             delete newDrafts[selectedFilePath];
                                           }
                                         }
@@ -3930,7 +3968,7 @@ function App() {
                                         const newDrafts = { ...prev };
                                         if (newDrafts[selectedFilePath]) {
                                           delete newDrafts[selectedFilePath].inline;
-                                          if (!newDrafts[selectedFilePath].reply || Object.keys(newDrafts[selectedFilePath].reply!).length === 0) {
+                                          if (shouldDeleteFileDraft(newDrafts[selectedFilePath])) {
                                             delete newDrafts[selectedFilePath];
                                           }
                                         }
@@ -3980,6 +4018,7 @@ function App() {
                                         side: hasLine ? "RIGHT" : "LEFT",
                                         body: inlineCommentDraft,
                                         commitId: prDetail.head_sha,
+                                        inReplyToId: null,
                                       });
                                       
                                       // Clear form
@@ -3993,7 +4032,7 @@ function App() {
                                           const newDrafts = { ...prev };
                                           if (newDrafts[selectedFilePath]) {
                                             delete newDrafts[selectedFilePath].inline;
-                                            if (!newDrafts[selectedFilePath].reply || Object.keys(newDrafts[selectedFilePath].reply!).length === 0) {
+                                            if (shouldDeleteFileDraft(newDrafts[selectedFilePath])) {
                                               delete newDrafts[selectedFilePath];
                                             }
                                           }
@@ -4048,6 +4087,7 @@ function App() {
                                         side: hasLine ? "RIGHT" : "LEFT",
                                         body: inlineCommentDraft,
                                         commitId: prDetail.head_sha,
+                                        inReplyToId: null,
                                       });
 
                                       // Clear form
@@ -4061,7 +4101,7 @@ function App() {
                                           const newDrafts = { ...prev };
                                           if (newDrafts[selectedFilePath]) {
                                             delete newDrafts[selectedFilePath].inline;
-                                            if (!newDrafts[selectedFilePath].reply || Object.keys(newDrafts[selectedFilePath].reply!).length === 0) {
+                                            if (shouldDeleteFileDraft(newDrafts[selectedFilePath])) {
                                               delete newDrafts[selectedFilePath];
                                             }
                                           }
