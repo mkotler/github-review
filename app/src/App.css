@@ -1501,6 +1501,12 @@ select {
   align-items: center;
   gap: 6px;
   flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.comment-panel__thread-comment:hover .comment-panel__thread-comment-actions {
+  opacity: 1;
 }
 
 .comment-panel__item-reply {

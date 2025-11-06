@@ -2926,7 +2926,7 @@ function App() {
               <div className="comment-panel">
                 <div className="comment-panel__header">
                   <div className="comment-panel__title-group">
-                    <span className="comment-panel__title">{shouldShowFileCommentComposer ? 'Add comment' : 'File comments'}</span>
+                    <span className="comment-panel__title">{shouldShowFileCommentComposer ? (editingCommentId !== null ? 'Edit comment' : 'Add comment') : 'File comments'}</span>
                     {selectedFilePath && (
                       <span className="comment-panel__subtitle" title={selectedFilePath}>
                         {selectedFilePath}
@@ -2934,43 +2934,62 @@ function App() {
                     )}
                   </div>
                   {shouldShowFileCommentComposer ? (
-                    <button
-                      type="button"
-                      className="comment-panel__close comment-panel__close--restore"
-                      onClick={() => {
-                        // Transfer the draft from full editor to inline editor
-                        const currentDraft = fileCommentDraft;
-                        const currentLine = fileCommentLine;
-                        setIsFileCommentComposerVisible(false);
-                        setEditingCommentId(null);
-                        setEditingComment(null);
-                        setFileCommentDraft("");
-                        setFileCommentLine("");
-                        setFileCommentError(null);
-                        
-                        // If there's content in the full editor, restore it to inline editor
-                        if (currentDraft.trim() || (selectedFilePath && draftsByFile[selectedFilePath]?.inline)) {
-                          setIsAddingInlineComment(true);
-                          const draft = currentDraft || (selectedFilePath ? draftsByFile[selectedFilePath]?.inline || "" : "");
-                          setInlineCommentDraft(draft);
-                          setInlineCommentLine(currentLine);
-                          // Save to draftsByFile
-                          if (selectedFilePath && draft) {
-                            setDraftsByFile(prev => ({
-                              ...prev,
-                              [selectedFilePath]: {
-                                ...prev[selectedFilePath],
-                                inline: draft
-                              }
-                            }));
+                    editingCommentId !== null ? (
+                      <button
+                        type="button"
+                        className="comment-panel__close"
+                        onClick={() => {
+                          setIsFileCommentComposerVisible(false);
+                          setEditingCommentId(null);
+                          setEditingComment(null);
+                          setFileCommentDraft("");
+                          setFileCommentLine("");
+                          setFileCommentError(null);
+                        }}
+                        aria-label="Cancel edit"
+                        title="Cancel edit"
+                      >
+                        ×
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        className="comment-panel__close comment-panel__close--restore"
+                        onClick={() => {
+                          // Transfer the draft from full editor to inline editor
+                          const currentDraft = fileCommentDraft;
+                          const currentLine = fileCommentLine;
+                          setIsFileCommentComposerVisible(false);
+                          setEditingCommentId(null);
+                          setEditingComment(null);
+                          setFileCommentDraft("");
+                          setFileCommentLine("");
+                          setFileCommentError(null);
+                          
+                          // If there's content in the full editor, restore it to inline editor
+                          if (currentDraft.trim() || (selectedFilePath && draftsByFile[selectedFilePath]?.inline)) {
+                            setIsAddingInlineComment(true);
+                            const draft = currentDraft || (selectedFilePath ? draftsByFile[selectedFilePath]?.inline || "" : "");
+                            setInlineCommentDraft(draft);
+                            setInlineCommentLine(currentLine);
+                            // Save to draftsByFile
+                            if (selectedFilePath && draft) {
+                              setDraftsByFile(prev => ({
+                                ...prev,
+                                [selectedFilePath]: {
+                                  ...prev[selectedFilePath],
+                                  inline: draft
+                                }
+                              }));
+                            }
                           }
-                        }
-                      }}
-                      aria-label="Back to comments"
-                      title="Back to comments"
-                    >
-                      ⊟
-                    </button>
+                        }}
+                        aria-label="Back to comments"
+                        title="Back to comments"
+                      >
+                        ⊟
+                      </button>
+                    )
                   ) : (
                     <button
                       type="button"
@@ -3015,6 +3034,7 @@ function App() {
                                 type="text"
                                 inputMode="numeric"
                                 pattern="[0-9]*"
+                                placeholder="(optional)"
                                 value={fileCommentLine}
                                 onChange={(event) => {
                                   setFileCommentLine(event.target.value);
@@ -3260,11 +3280,10 @@ function App() {
                                       (isPendingLocalReviewComment || (comment.is_mine && !comment.is_draft));
                                     
                                     // Reply button rules:
-                                    // - Only show on last comment in thread
+                                    // - Show on all comments
                                     // - Hide for pending local review comments
                                     // - Hide for pending GitHub review comments
-                                    const showReplyButton = isLastCommentInThread && 
-                                      !isPendingLocalReviewComment && 
+                                    const showReplyButton = !isPendingLocalReviewComment && 
                                       !isPendingGitHubReviewComment;
                                     
                                     return (
@@ -3312,6 +3331,13 @@ function App() {
                                                   setReplyDraft("");
                                                   setReplyError(null);
                                                   setReplySuccess(false);
+                                                  // Scroll down just enough to show the reply form
+                                                  setTimeout(() => {
+                                                    if (commentPanelBodyRef.current) {
+                                                      const currentScroll = commentPanelBodyRef.current.scrollTop;
+                                                      commentPanelBodyRef.current.scrollTop = currentScroll + 300;
+                                                    }
+                                                  }, 100);
                                                 }}
                                                 aria-label="Reply to comment"
                                                 title="Reply to comment"
