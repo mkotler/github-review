@@ -81,7 +81,6 @@ async fn cmd_get_pull_request(
     number: u64,
     current_login: Option<String>,
 ) -> Result<PullRequestDetail, String> {
-    tracing::warn!("cmd_get_pull_request received current_login: {:?}", current_login);
     fetch_pull_request_details(&owner, &repo, number, current_login.as_deref())
         .await
         .map_err(|err| err.to_string())

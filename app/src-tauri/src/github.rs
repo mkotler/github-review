@@ -303,7 +303,6 @@ pub async fn get_pull_request(
     number: u64,
     current_login: Option<&str>,
 ) -> AppResult<PullRequestDetail> {
-    warn!("get_pull_request called with current_login: {:?}", current_login);
     let client = build_client(token)?;
     let pr = client
         .get(format!("{API_BASE}/repos/{owner}/{repo}/pulls/{number}"))
@@ -358,7 +357,6 @@ pub async fn get_pull_request(
     let issue_comments = fetch_issue_comments(&client, owner, repo, number).await?;
     let reviews = fetch_pull_request_reviews(&client, owner, repo, number).await?;
 
-    warn!("Building reviews with current_login: {:?}", current_login);
     let comments = build_comments(current_login, &review_comments, &issue_comments);
     let mapped_reviews = build_reviews(current_login, &reviews);
     let my_comments = comments
@@ -457,37 +455,12 @@ pub async fn create_pending_review(
     let user = fetch_authenticated_user(token).await?;
     let normalized_login = user.login.to_ascii_lowercase();
 
-    warn!(
-        context = "create_pending_review",
-        authenticated_user = user.login.as_str(),
-        normalized_login = normalized_login.as_str(),
-        "Authenticated user info"
-    );
-
     // First check if there's already a pending review - you can only have one at a time
     let existing_reviews = fetch_pull_request_reviews(&client, owner, repo, number).await?;
-    warn!(
-        context = "create_pending_review",
-        review_count = existing_reviews.len(),
-        "Found existing reviews"
-    );
     for review in existing_reviews {
         let mapped = map_review(&review, Some(&normalized_login));
-        warn!(
-            context = "create_pending_review",
-            review_id = review.id,
-            state = review.state.as_str(),
-            review_author = review.user.login.as_str(),
-            is_mine = mapped.is_mine,
-            "Checking review"
-        );
         if mapped.is_mine && mapped.state.eq_ignore_ascii_case("pending") {
             // Reuse existing pending review
-            warn!(
-                context = "create_pending_review",
-                review_id = review.id,
-                "Reusing existing pending review"
-            );
             return Ok(mapped);
         }
     }
@@ -498,17 +471,6 @@ pub async fn create_pending_review(
     if let Some(commit_id) = commit_id {
         payload.insert("commit_id".into(), Value::String(commit_id.to_string()));
     }
-
-    // Log the payload we're sending
-    let payload_json = serde_json::to_string(&Value::Object(payload.clone())).unwrap_or_default();
-    warn!(
-        context = "create_pending_review",
-        owner = owner,
-        repo = repo,
-        number = number,
-        payload = payload_json.as_str(),
-        "Creating pending review with payload"
-    );
 
     let response = client
         .post(format!(
@@ -778,15 +740,6 @@ async fn fetch_review_comments(
     .await?;
 
     let comments = response.json::<Vec<GitHubReviewComment>>().await?;
-    eprintln!("Fetched {} review comments for PR #{}", comments.len(), number);
-    for comment in &comments {
-        eprintln!("  Comment {}: review_id={:?}, state={:?}, is_pending={}", 
-            comment.id, 
-            comment.pull_request_review_id,
-            comment.state,
-            comment.state.as_deref().map(|s| s.eq_ignore_ascii_case("pending")).unwrap_or(false)
-        );
-    }
     Ok(comments)
 }
 
@@ -1026,20 +979,9 @@ fn map_review(
     normalized_login: Option<&str>,
 ) -> PullRequestReview {
     let review_author_normalized = review.user.login.to_ascii_lowercase();
-    warn!("Review author (original): '{}', normalized: '{}'", review.user.login, review_author_normalized);
-    warn!("Current login provided: {:?}", normalized_login);
     let is_mine = normalized_login
-        .map(|login| {
-            let matches = review_author_normalized == login;
-            warn!("Comparing review author '{}' with current login '{}': {} (lengths: {} vs {})", 
-                review_author_normalized, login, matches, 
-                review_author_normalized.len(), login.len());
-            matches
-        })
-        .unwrap_or_else(|| {
-            warn!("No current login provided for review comparison");
-            false
-        });
+        .map(|login| review_author_normalized == login)
+        .unwrap_or(false);
 
     PullRequestReview {
         id: review.id,
@@ -1429,8 +1371,6 @@ pub async fn fetch_file_content(
 ) -> AppResult<String> {
     let client = build_client(token)?;
     
-    warn!("Fetching file content: {}/{} @ {} path: {}", owner, repo, reference, path);
-    
     let response = client
         .get(format!("{API_BASE}/repos/{owner}/{repo}/contents/{path}"))
         .query(&[("ref", reference)])
@@ -1438,7 +1378,6 @@ pub async fn fetch_file_content(
         .await?;
     
     let status = response.status();
-    warn!("Response status: {}", status);
     
     if !status.is_success() {
         let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
@@ -1452,7 +1391,6 @@ pub async fn fetch_file_content(
     if let Some(content) = content_json.get("content").and_then(|c| c.as_str()) {
         // Remove whitespace/newlines that GitHub adds
         let cleaned = content.chars().filter(|c| !c.is_whitespace()).collect();
-        warn!("Successfully fetched and cleaned content");
         Ok(cleaned)
     } else {
         warn!("Content field not found in response: {:?}", content_json);
