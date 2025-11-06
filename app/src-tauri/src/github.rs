@@ -231,6 +231,8 @@ pub async fn list_pull_requests_with_login(
                 head_ref: pr.head.r#ref,
                 has_pending_review,
                 file_count,
+                state: pr.state.clone(),
+                merged: pr.merged_at.is_some(),
             });
         }
 
@@ -1207,6 +1209,8 @@ struct GitHubPullRequest {
     pub head: GitRef,
     pub base: GitRef,
     pub user: GitHubUser,
+    pub state: String,
+    pub merged_at: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

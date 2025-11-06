@@ -24,6 +24,8 @@ type PullRequestSummary = {
   head_ref: string;
   has_pending_review: boolean;
   file_count: number;
+  state: string;
+  merged: boolean;
 };
 
 type FileLanguage = string;
@@ -4506,7 +4508,12 @@ function App() {
                                 onClick={() => handleSelectPrUnderReview(pr)}
                               >
                                 <div className="pr-item__header">
-                                  <span className="pr-item__title">#{pr.number} · {pr.title || `${pr.owner}/${pr.repo}#${pr.number}`}</span>
+                                  <span className="pr-item__title">
+                                    #{pr.number} · {pr.title || `${pr.owner}/${pr.repo}#${pr.number}`}
+                                    {pr.state && pr.state.toLowerCase() !== 'open' && (
+                                      <>{'\u00a0\u00a0'}<span className={`pr-item__state-badge ${pr.merged ? 'pr-item__state-badge--merged' : 'pr-item__state-badge--closed'}`}>{pr.merged ? 'MERGED' : 'CLOSED'}</span></>
+                                    )}
+                                  </span>
                                   <span 
                                     className="pr-item__file-count" 
                                     title={`${pr.viewed_count} files have been reviewed`}
@@ -4552,7 +4559,12 @@ function App() {
                                     setReplyingToCommentId(null);
                                   }}
                                 >
-                                  <span className="pr-item__title">#{pr.number} · {pr.title}</span>
+                                  <span className="pr-item__title">
+                                    #{pr.number} · {pr.title}
+                                    {pr.state && pr.state.toLowerCase() !== 'open' && (
+                                      <>{'\u00a0\u00a0'}<span className={`pr-item__state-badge ${pr.merged ? 'pr-item__state-badge--merged' : 'pr-item__state-badge--closed'}`}>{pr.merged ? 'MERGED' : 'CLOSED'}</span></>
+                                    )}
+                                  </span>
                                   <span className="pr-item__meta">
                                     <span>{pr.author}</span>
                                     <span>{new Date(pr.updated_at).toLocaleString()}</span>

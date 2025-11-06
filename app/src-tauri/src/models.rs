@@ -28,6 +28,8 @@ pub struct PullRequestSummary {
     pub head_ref: String,
     pub has_pending_review: bool,
     pub file_count: usize,
+    pub state: String,
+    pub merged: bool,
 }
 
 #[derive(Debug, Serialize)]

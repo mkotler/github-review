@@ -845,6 +845,28 @@ select {
   font-size: 14px;
   font-weight: 600;
   color: #f5f8ff;
+  display: inline;
+}
+
+.pr-item__state-badge {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: 6px;
+  letter-spacing: 0.03em;
+  display: inline;
+  white-space: nowrap;
+}
+
+.pr-item__state-badge--merged {
+  background: rgba(160, 120, 200, 0.2);
+  color: #c8b0e8;
+}
+
+.pr-item__state-badge--closed {
+  background: rgba(200, 80, 90, 0.2);
+  color: #ff9da0;
 }
 
 .pr-item__meta {
