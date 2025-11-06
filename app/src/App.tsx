@@ -4963,34 +4963,37 @@ function App() {
                           
                           // Scroll synchronization
                           editor.onDidScrollChange(() => {
-                            if (isScrollingSyncRef.current) return;
                             if (!previewViewerRef.current) return;
                             
-                            const visibleRange = editor.getVisibleRanges()[0];
-                            if (!visibleRange) return;
-                            const model = editor.getModel();
-                            if (!model) return;
+                            // Get actual scroll position from editor
+                            const editorScrollTop = editor.getScrollTop();
+                            const editorScrollHeight = editor.getScrollHeight();
+                            const editorClientHeight = editor.getLayoutInfo().height;
+                            const editorMaxScroll = editorScrollHeight - editorClientHeight;
                             
-                            const totalLines = model.getLineCount();
-                            const topLine = visibleRange.startLineNumber;
-                            const bottomLine = visibleRange.endLineNumber;
+                            // Calculate scroll percentage based on actual scroll position
+                            const scrollPercentage = editorMaxScroll > 0 ? editorScrollTop / editorMaxScroll : 0;
                             
-                            // Calculate scroll percentage
-                            let scrollPercentage = topLine / totalLines;
+                            // Check if we're at the edge
+                            const atTop = editorScrollTop <= 1;
+                            const atBottom = editorScrollTop >= editorMaxScroll - 1;
                             
-                            // If editor is at bottom, ensure preview scrolls to bottom too
-                            if (bottomLine >= totalLines) {
-                              scrollPercentage = 1;
+                            // Only block sync events if we're not at an edge AND not currently syncing
+                            if (!atTop && !atBottom && isScrollingSyncRef.current) return;
+                            
+                            // Apply percentage-based scrolling to preview
+                            const previewMaxScroll = previewViewerRef.current.scrollHeight - previewViewerRef.current.clientHeight;
+                            const targetScroll = scrollPercentage * previewMaxScroll;
+                            
+                            // Only set sync flag if not at edges (allow continued scrolling at edges)
+                            if (!atTop && !atBottom) {
+                              isScrollingSyncRef.current = true;
+                              setTimeout(() => {
+                                isScrollingSyncRef.current = false;
+                              }, 50);
                             }
                             
-                            const previewMaxScroll = previewViewerRef.current.scrollHeight - previewViewerRef.current.clientHeight;
-                            const targetScroll = Math.min(scrollPercentage * previewMaxScroll, previewMaxScroll);
-                            
-                            isScrollingSyncRef.current = true;
                             previewViewerRef.current.scrollTop = targetScroll;
-                            setTimeout(() => {
-                              isScrollingSyncRef.current = false;
-                            }, 50);
                           });
 
                           // Handle mouse move for line hover detection
@@ -5104,31 +5107,44 @@ function App() {
                         className="markdown-preview" 
                         ref={previewViewerRef as React.RefObject<HTMLDivElement>}
                         onScroll={(e) => {
-                          if (isScrollingSyncRef.current) return;
                           if (!editorRef.current) return;
                           
                           const target = e.currentTarget;
-                          const maxScroll = target.scrollHeight - target.clientHeight;
-                          const scrollPercentage = maxScroll > 0 ? target.scrollTop / maxScroll : 0;
-                          
                           const model = editorRef.current.getModel();
                           if (!model) return;
                           
+                          const maxScroll = target.scrollHeight - target.clientHeight;
+                          let scrollPercentage = maxScroll > 0 ? target.scrollTop / maxScroll : 0;
                           const totalLines = model.getLineCount();
-                          let targetLine = Math.floor(scrollPercentage * totalLines);
                           
-                          // If preview is at bottom, scroll editor to bottom
-                          if (target.scrollTop >= maxScroll - 1) {
-                            targetLine = totalLines;
+                          // Check if we're at the edge
+                          const atTop = target.scrollTop <= 1;
+                          const atBottom = target.scrollTop >= maxScroll - 1;
+                          
+                          // Only block sync events if we're not at an edge AND currently syncing
+                          if (!atTop && !atBottom && isScrollingSyncRef.current) return;
+                          
+                          // Handle edge cases
+                          if (atTop) {
+                            scrollPercentage = 0;
                           }
                           
-                          targetLine = Math.max(1, Math.min(targetLine, totalLines));
+                          if (atBottom) {
+                            scrollPercentage = 1.0;
+                          }
                           
-                          isScrollingSyncRef.current = true;
+                          // Calculate target line based on scroll percentage
+                          const targetLine = Math.max(1, Math.min(Math.round(scrollPercentage * totalLines), totalLines));
+                          
+                          // Only set sync flag if not at edges (allow continued scrolling at edges)
+                          if (!atTop && !atBottom) {
+                            isScrollingSyncRef.current = true;
+                            setTimeout(() => {
+                              isScrollingSyncRef.current = false;
+                            }, 50);
+                          }
+                          
                           editorRef.current.revealLineInCenter(targetLine);
-                          setTimeout(() => {
-                            isScrollingSyncRef.current = false;
-                          }, 50);
                         }}
                       >
                         <ReactMarkdown 
