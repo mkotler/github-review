@@ -1969,18 +1969,7 @@ function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [maximizedPane]);
 
-  // Auto-navigate to pending review if no published comments
-  useEffect(() => {
-    if (pendingReview && !isInlineCommentOpen && !hasManuallyClosedCommentPanel) {
-      // Check if there are any comments in the pending review (including local and GitHub pending)
-      const pendingComments = reviewAwareComments.filter(c => c.review_id === pendingReview.id);
-      const publishedComments = comments.filter(c => !c.is_draft && c.review_id !== pendingReview.id);
-      
-      if (pendingComments.length > 0 && publishedComments.length === 0) {
-        setIsInlineCommentOpen(true);
-      }
-    }
-  }, [pendingReview, reviewAwareComments, comments, isInlineCommentOpen, hasManuallyClosedCommentPanel]);
+  // Removed auto-navigate to pending review - users should manually open File Comments panel when desired
 
   // Persist viewed files state
   useEffect(() => {
