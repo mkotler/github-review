@@ -1438,6 +1438,19 @@ function App() {
     };
   }, [closeUserMenu, isUserMenuOpen]);
 
+  // Move cursor to end of textarea when editing a comment
+  useEffect(() => {
+    if (editingCommentId !== null && fileCommentTextareaRef.current) {
+      const textarea = fileCommentTextareaRef.current;
+      // Wait for next tick to ensure textarea value is set
+      setTimeout(() => {
+        const length = textarea.value.length;
+        textarea.setSelectionRange(length, length);
+        textarea.focus();
+      }, 0);
+    }
+  }, [editingCommentId]);
+
   useEffect(() => {
     if (!isPrFilterMenuOpen) {
       return;
@@ -3972,6 +3985,7 @@ function App() {
                                       // Clear form
                                       setInlineCommentDraft("");
                                       setInlineCommentLine("");
+                                      setIsAddingInlineComment(false);
                                       
                                       // Clear drafts
                                       if (selectedFilePath) {
