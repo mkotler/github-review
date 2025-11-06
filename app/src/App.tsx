@@ -919,7 +919,9 @@ function App() {
     };
 
     try {
-      const parsed = parseYaml(content);
+      // Strip BOM if present (some editors add UTF-8 BOM which breaks YAML parsing)
+      const cleanContent = content.replace(/^\uFEFF/, '');
+      const parsed = parseYaml(cleanContent);
       collectFileNames(parsed);
     } catch (error) {
       console.warn("Failed to parse toc.yml for file names", error);
@@ -985,7 +987,9 @@ function App() {
         };
 
         try {
-          const parsed = parseYaml(content);
+          // Strip BOM if present (some editors add UTF-8 BOM which breaks YAML parsing)
+          const cleanContent = content.replace(/^\uFEFF/, '');
+          const parsed = parseYaml(cleanContent);
           collectMarkdownPaths(parsed);
         } catch (error) {
           console.warn("Failed to parse toc.yml", error);
