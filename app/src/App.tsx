@@ -5082,6 +5082,36 @@ function App() {
                           remarkPlugins={[remarkGfm, [remarkFrontmatter, { type: 'yaml', marker: '-' }]]}
                           rehypePlugins={[rehypeRaw, rehypeSanitize]}
                           components={{
+                            h1: ({children, ...props}) => {
+                              const text = String(children);
+                              const id = text.toLowerCase().replace(/[–—]/g, '-').replace(/[^\w\s-]/g, '').replace(/\s+/g, '-').replace(/-{3,}/g, '--');
+                              return <h1 id={id} {...props}>{children}</h1>;
+                            },
+                            h2: ({children, ...props}) => {
+                              const text = String(children);
+                              const id = text.toLowerCase().replace(/[–—]/g, '-').replace(/[^\w\s-]/g, '').replace(/\s+/g, '-').replace(/-{3,}/g, '--');
+                              return <h2 id={id} {...props}>{children}</h2>;
+                            },
+                            h3: ({children, ...props}) => {
+                              const text = String(children);
+                              const id = text.toLowerCase().replace(/[–—]/g, '-').replace(/[^\w\s-]/g, '').replace(/\s+/g, '-').replace(/-{3,}/g, '--');
+                              return <h3 id={id} {...props}>{children}</h3>;
+                            },
+                            h4: ({children, ...props}) => {
+                              const text = String(children);
+                              const id = text.toLowerCase().replace(/[–—]/g, '-').replace(/[^\w\s-]/g, '').replace(/\s+/g, '-').replace(/-{3,}/g, '--');
+                              return <h4 id={id} {...props}>{children}</h4>;
+                            },
+                            h5: ({children, ...props}) => {
+                              const text = String(children);
+                              const id = text.toLowerCase().replace(/[–—]/g, '-').replace(/[^\w\s-]/g, '').replace(/\s+/g, '-').replace(/-{3,}/g, '--');
+                              return <h5 id={id} {...props}>{children}</h5>;
+                            },
+                            h6: ({children, ...props}) => {
+                              const text = String(children);
+                              const id = text.toLowerCase().replace(/[–—]/g, '-').replace(/[^\w\s-]/g, '').replace(/\s+/g, '-').replace(/-{3,}/g, '--');
+                              return <h6 id={id} {...props}>{children}</h6>;
+                            },
                             code: ({ className, children, ...props }) => {
                               const match = /language-(\w+)/.exec(className || '');
                               const language = match ? match[1] : null;
@@ -5107,8 +5137,25 @@ function App() {
                             a: ({href, children, ...props}) => {
                               // Handle link clicks
                               const handleClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
-                                e.preventDefault();
                                 if (!href) return;
+                                
+                                // Handle anchor links (within-page navigation)
+                                if (href.startsWith('#')) {
+                                  e.preventDefault();
+                                  const targetId = href.substring(1);
+                                  const targetElement = previewViewerRef.current?.querySelector(`#${CSS.escape(targetId)}`);
+                                  if (targetElement && previewViewerRef.current) {
+                                    // Scroll to the target element within the preview pane
+                                    const previewPane = previewViewerRef.current;
+                                    const targetRect = targetElement.getBoundingClientRect();
+                                    const paneRect = previewPane.getBoundingClientRect();
+                                    const scrollOffset = targetRect.top - paneRect.top + previewPane.scrollTop;
+                                    previewPane.scrollTo({ top: scrollOffset, behavior: 'smooth' });
+                                  }
+                                  return;
+                                }
+                                
+                                e.preventDefault();
                                 
                                 // Check if it's an external URL
                                 if (href.startsWith('http://') || href.startsWith('https://')) {
