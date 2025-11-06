@@ -802,6 +802,11 @@ function App() {
     : fileCommentMode;
 
   const formatFileLabel = useCallback((path: string, tocNameMap?: Map<string, string>) => {
+    // Check if path contains toc.yml
+    if (path.toLowerCase().includes("toc.yml")) {
+      return "Table of Contents";
+    }
+
     // Check if we have a display name from toc.yml
     const tocName = tocNameMap?.get(path);
     if (tocName) {
@@ -4772,12 +4777,14 @@ function App() {
             <div className={`pane pane--diff ${maximizedPane === 'source' ? 'pane--maximized' : (maximizedPane === 'preview' || maximizedPane === 'media' || isImageFile(selectedFile)) ? 'pane--hidden' : ''}`}>
               <div className="pane__header">
                 <div className="pane__title-group">
-                  <span>Source</span>
-                  {selectedFilePath && (
-                    <span className="pane__subtitle" title={selectedFilePath}>
-                      {formatFilePathWithLeadingEllipsis(selectedFilePath)}
-                    </span>
-                  )}
+                  <span>
+                    Source
+                    {selectedFilePath && (
+                      <span className="pane__subtitle" title={selectedFilePath}>
+                        {" - "}{formatFilePathWithLeadingEllipsis(selectedFilePath)}
+                      </span>
+                    )}
+                  </span>
                 </div>
                 <div className="pane__actions">
                   {commentSuccess && !isGeneralCommentOpen && (

@@ -457,6 +457,8 @@ select {
   padding: 6px;
   width: 32px;
   height: 32px;
+  box-sizing: border-box;
+  text-decoration: none;
 }
 
 .panel__icon-svg {
