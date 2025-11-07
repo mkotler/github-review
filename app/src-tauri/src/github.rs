@@ -2,6 +2,7 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, AUTHORIZATION,
 use reqwest::StatusCode;
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
+use tauri::Emitter;
 use tracing::warn;
 
 use crate::error::{AppError, AppResult};
@@ -1282,6 +1283,7 @@ struct GitHubPullRequestReview {
 }
 
 pub async fn create_review_with_comments(
+    app: &tauri::AppHandle,
     token: &str,
     owner: &str,
     repo: &str,
@@ -1290,10 +1292,11 @@ pub async fn create_review_with_comments(
     _body: Option<&str>,
     _event: Option<&str>,
     comments: &[crate::review_storage::ReviewComment],
-) -> AppResult<Vec<i64>> {
+) -> AppResult<(Vec<i64>, Option<String>)> {
     let client = build_client(token)?;
     
-    warn!("Submitting {} comments to {}/{} PR #{}", comments.len(), owner, repo, number);
+    let total = comments.len();
+    warn!("Submitting {} comments to {}/{} PR #{}", total, owner, repo, number);
     
     let mut succeeded = 0;
     let mut failed = 0;
@@ -1301,7 +1304,7 @@ pub async fn create_review_with_comments(
     let mut succeeded_ids = Vec::new();
     
     // Submit each comment individually, continuing even if some fail
-    for comment in comments {
+    for (index, comment) in comments.iter().enumerate() {
         let mut comment_obj = Map::new();
         comment_obj.insert("body".into(), Value::String(comment.body.clone()));
         comment_obj.insert("commit_id".into(), Value::String(commit_id.to_string()));
@@ -1315,6 +1318,19 @@ pub async fn create_review_with_comments(
             comment_obj.insert("line".into(), Value::Number(comment.line_number.into()));
             comment_obj.insert("side".into(), Value::String(comment.side.clone()));
             warn!("Posting comment to {}:{}: {}", comment.file_path, comment.line_number, comment.body);
+        }
+        
+        // Emit progress event
+        let _ = app.emit("comment-submit-progress", serde_json::json!({
+            "current": index + 1,
+            "total": total,
+            "file": comment.file_path,
+        }));
+        
+        // Add delay between comments to avoid "was submitted too quickly" error
+        // Skip delay for the first comment (index 0)
+        if index > 0 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(600)).await;
         }
         
         match client
@@ -1360,10 +1376,12 @@ pub async fn create_review_with_comments(
         } else {
             format!("Failed to submit all {} comments:\n{}", comments.len(), errors.join("\n"))
         };
-        return Err(AppError::Api(error_summary));
+        // Return succeeded_ids along with error message
+        Ok((succeeded_ids, Some(error_summary)))
+    } else {
+        // All succeeded, no error message
+        Ok((succeeded_ids, None))
     }
-    
-    Ok(succeeded_ids)
 }
 
 pub async fn fetch_file_content(

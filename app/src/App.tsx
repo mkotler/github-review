@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkFrontmatter from "remark-frontmatter";
@@ -455,6 +456,7 @@ function App() {
   const [, setReviewSummaryError] = useState<string | null>(null);
   const [pendingReviewOverride, setPendingReviewOverride] = useState<PullRequestReview | null>(null);
   const [localComments, setLocalComments] = useState<PullRequestComment[]>([]);
+  const [submissionProgress, setSubmissionProgress] = useState<{ current: number; total: number; file: string } | null>(null);
   const commentPanelBodyRef = useRef<HTMLDivElement>(null);
   const [isLoadingPendingComments, setIsLoadingPendingComments] = useState(false);
   const [editingCommentId, setEditingCommentId] = useState<number | null>(null);
@@ -513,6 +515,20 @@ function App() {
     }, 30000); // Log every 30 seconds
     
     return () => clearInterval(memoryInterval);
+  }, []);
+
+  // Listen for comment submission progress events
+  useEffect(() => {
+    const unlisten = listen<{ current: number; total: number; file: string }>(
+      'comment-submit-progress',
+      (event) => {
+        setSubmissionProgress(event.payload);
+      }
+    );
+    
+    return () => {
+      unlisten.then(fn => fn());
+    };
   }, []);
 
   const authQuery = useQuery({
@@ -2790,12 +2806,16 @@ function App() {
       setLocalComments([]);
       setFileCommentError(null);
       setFileCommentSuccess(true);
+      setSubmissionProgress(null);
       void refetchPullDetail();
       void prsUnderReviewQuery.refetch();
     },
     onError: (error: unknown) => {
       const message = error instanceof Error ? error.message : "Failed to submit review.";
       setFileCommentError(message);
+      setSubmissionProgress(null);
+      // Reload local comments to show which ones are left (the ones that failed)
+      void loadLocalComments();
     },
   });
 
@@ -4675,22 +4695,29 @@ function App() {
                 </div>
                 {pendingReview && (
                   <div className="pr-comments-view__footer">
-                    <button
-                      type="button"
-                      className="comment-panel__action-button comment-panel__action-button--primary"
-                      onClick={handleSubmitReviewClick}
-                      disabled={submitReviewMutation.isPending || localComments.length === 0}
-                    >
-                      {submitReviewMutation.isPending ? "Submitting…" : "Submit review"}
-                    </button>
-                    <button
-                      type="button"
-                      className="comment-panel__action-button comment-panel__action-button--danger"
-                      onClick={handleDeleteReviewClick}
-                      disabled={deleteReviewMutation.isPending}
-                    >
-                      {deleteReviewMutation.isPending ? "Deleting…" : "Delete review"}
-                    </button>
+                    {submissionProgress && (
+                      <div className="comment-panel__progress">
+                        Submitting comment {submissionProgress.current} of {submissionProgress.total}...
+                      </div>
+                    )}
+                    <div className="pr-comments-view__footer-buttons">
+                      <button
+                        type="button"
+                        className="comment-panel__action-button comment-panel__action-button--primary"
+                        onClick={handleSubmitReviewClick}
+                        disabled={submitReviewMutation.isPending || localComments.length === 0}
+                      >
+                        {submitReviewMutation.isPending ? "Submitting…" : "Submit review"}
+                      </button>
+                      <button
+                        type="button"
+                        className="comment-panel__action-button comment-panel__action-button--danger"
+                        onClick={handleDeleteReviewClick}
+                        disabled={deleteReviewMutation.isPending}
+                      >
+                        {deleteReviewMutation.isPending ? "Deleting…" : "Delete review"}
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
@@ -5245,22 +5272,29 @@ function App() {
                             </ul>
                             {pendingReview && (
                               <div className="pr-comments-view__footer">
-                                <button
-                                  type="button"
-                                  className="comment-panel__action-button comment-panel__action-button--primary"
-                                  onClick={handleSubmitReviewClick}
-                                  disabled={submitReviewMutation.isPending || localComments.length === 0}
-                                >
-                                  {submitReviewMutation.isPending ? "Submitting…" : "Submit review"}
-                                </button>
-                                <button
-                                  type="button"
-                                  className="comment-panel__action-button comment-panel__action-button--danger"
-                                  onClick={handleDeleteReviewClick}
-                                  disabled={deleteReviewMutation.isPending}
-                                >
-                                  {deleteReviewMutation.isPending ? "Deleting…" : "Delete review"}
-                                </button>
+                                {submissionProgress && (
+                                  <div className="comment-panel__progress">
+                                    Submitting comment {submissionProgress.current} of {submissionProgress.total}...
+                                  </div>
+                                )}
+                                <div className="pr-comments-view__footer-buttons">
+                                  <button
+                                    type="button"
+                                    className="comment-panel__action-button comment-panel__action-button--primary"
+                                    onClick={handleSubmitReviewClick}
+                                    disabled={submitReviewMutation.isPending || localComments.length === 0}
+                                  >
+                                    {submitReviewMutation.isPending ? "Submitting…" : "Submit review"}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="comment-panel__action-button comment-panel__action-button--danger"
+                                    onClick={handleDeleteReviewClick}
+                                    disabled={deleteReviewMutation.isPending}
+                                  >
+                                    {deleteReviewMutation.isPending ? "Deleting…" : "Delete review"}
+                                  </button>
+                                </div>
                               </div>
                             )}
                           </>

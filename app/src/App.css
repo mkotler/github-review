@@ -2684,11 +2684,29 @@ select {
 
 .pr-comments-view__footer {
   display: flex;
+  flex-direction: column;
   gap: 12px;
-  align-items: center;
   border-top: 1px solid rgba(76, 100, 141, 0.28);
   padding: 12px;
   background: rgba(88, 114, 176, 0.05);
+}
+
+.pr-comments-view__footer-buttons {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.comment-panel__progress {
+  font-size: 13px;
+  color: #98a4c1;
+  padding: 4px 0;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
 }
 
 .pr-comment-composer {

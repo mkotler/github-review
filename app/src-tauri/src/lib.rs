@@ -397,6 +397,7 @@ async fn cmd_local_clear_review(
 
 #[tauri::command]
 async fn cmd_submit_local_review(
+    app: tauri::AppHandle,
     owner: String,
     repo: String,
     pr_number: u64,
@@ -417,8 +418,9 @@ async fn cmd_submit_local_review(
         .get_comments(&owner, &repo, pr_number)
         .map_err(|e| e.to_string())?;
     
-    // Submit to GitHub
-    let succeeded_ids = submit_review_with_comments(
+    // Submit to GitHub - returns (succeeded_ids, optional_error_message)
+    let (succeeded_ids, error_msg) = submit_review_with_comments(
+        &app,
         &owner,
         &repo,
         pr_number,
@@ -449,7 +451,12 @@ async fn cmd_submit_local_review(
             .map_err(|e| e.to_string())?;
     }
     
-    Ok(())
+    // Return error if there was a partial or complete failure
+    if let Some(err) = error_msg {
+        Err(err)
+    } else {
+        Ok(())
+    }
 }
 
 #[tauri::command]

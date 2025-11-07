@@ -325,6 +325,7 @@ pub async fn finalize_pending_review(
 }
 
 pub async fn submit_review_with_comments(
+    app: &tauri::AppHandle,
     owner: &str,
     repo: &str,
     number: u64,
@@ -332,11 +333,12 @@ pub async fn submit_review_with_comments(
     body: Option<&str>,
     event: Option<&str>,
     comments: &[crate::review_storage::ReviewComment],
-) -> AppResult<Vec<i64>> {
+) -> AppResult<(Vec<i64>, Option<String>)> {
     use crate::github::create_review_with_comments;
     
     let token = require_token()?;
     create_review_with_comments(
+        app,
         &token,
         owner,
         repo,
