@@ -14,6 +14,7 @@ A desktop application built with Tauri and React that streamlines the GitHub pul
 - **Comment Count Badges** - Visual indicators on file list showing number of comments per file (includes both published and pending review comments)
 - **File Viewed Tracking** - Checkbox on each file to mark as viewed with state persisted across sessions by PR
 - **Auto-Navigate to Pending Review** - Automatically opens comment panel when pending review exists with no published comments
+- **Offline Support** - Full offline capabilities with IndexedDB caching, automatic network detection, and graceful degradation for intermittent connectivity
 - **Local Review Storage** - SQLite-backed comment drafting with automatic log file generation for crash recovery
 - **Comment Management** - Create, edit, and delete comments locally before submitting to GitHub
 - **Bidirectional Scroll Sync** - Synchronized scrolling between source code and markdown preview
@@ -144,6 +145,38 @@ This approach ensures:
 - First file click is instant (auto-selected on PR load)
 - Background preloading makes subsequent clicks instant
 - User can browse file list immediately while contents load silently
+
+### Offline Support
+
+The application provides comprehensive offline capabilities for working in environments with intermittent connectivity (e.g., airplanes, remote locations):
+
+**Automatic Caching:**
+- When a PR is opened online, all files are automatically cached in IndexedDB
+- Cache includes PR details, file contents (both head and base versions), and TOC metadata
+- 7-day cache expiration with automatic cleanup on application startup
+
+**Network Detection:**
+- Detects both interface-level disconnections (WiFi off) and HTTP-level failures (DNS errors, server downtime)
+- Visual offline indicator (red WiFi icon) appears in sidebar when offline
+- Automatic reconnection detection without manual intervention
+
+**Offline Functionality:**
+- View previously loaded PRs and files from cache
+- Navigate between cached files with proper ordering and naming
+- Start reviews and add comments locally (stored in SQLite)
+- File viewed tracking continues to work offline
+
+**Limitations When Offline:**
+- Direct comment posting disabled (single-comment POST requires network)
+- PR list not cached (must be online to browse PRs)
+- New PRs cannot be opened (cache only contains previously viewed PRs)
+
+**Reconnection Behavior:**
+- Network-first query strategy automatically detects when connection returns
+- Moving between PRs or files triggers reconnection check
+- Seamless transition back to online mode without user action
+
+For technical details, see [offlineCache.ts documentation](docs/offlineCache.ts.md) and [useNetworkStatus.ts documentation](docs/useNetworkStatus.ts.md).
 
 ### Build for Production
 

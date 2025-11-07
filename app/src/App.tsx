@@ -9,6 +9,8 @@ import rehypeSanitize from "rehype-sanitize";
 import { Editor, DiffEditor } from "@monaco-editor/react";
 import { parse as parseYaml } from "yaml";
 import mermaid from "mermaid";
+import { useNetworkStatus } from "./useNetworkStatus";
+import * as offlineCache from "./offlineCache";
 
 type AuthStatus = {
   is_authenticated: boolean;
@@ -100,6 +102,12 @@ type PrUnderReview = {
 };
 
 const AUTH_QUERY_KEY = ["auth-status"] as const;
+
+// Retry configuration with exponential backoff
+const RETRY_CONFIG = {
+  retry: 3,
+  retryDelay: (attemptIndex: number) => Math.min(1000 * 2 ** attemptIndex, 30000),
+};
 
 // Global error handlers to catch crashes
 if (typeof window !== 'undefined') {
@@ -380,6 +388,7 @@ const CommentThreadItem = ({
 };
 
 function App() {
+  const { isOnline, markOffline, markOnline } = useNetworkStatus();
   const [repoRef, setRepoRef] = useState<RepoRef | null>(null);
   const [repoInput, setRepoInput] = useState("");
   const [repoError, setRepoError] = useState<string | null>(null);
@@ -545,7 +554,7 @@ function App() {
       return prs;
     },
     enabled: authQuery.data?.is_authenticated === true,
-    retry: false,
+    ...RETRY_CONFIG,
   });
 
   // Query all MRU repos for OPEN PRs with pending reviews
@@ -593,7 +602,7 @@ function App() {
           return prsWithPendingReviews;
         },
         enabled: authQuery.data?.is_authenticated === true && !!currentLogin,
-        retry: false,
+        ...RETRY_CONFIG,
         staleTime: 60 * 60 * 1000, // 1 hour
         gcTime: 60 * 60 * 1000, // Keep in cache for 1 hour
       };
@@ -648,7 +657,7 @@ function App() {
           return prsWithPendingReviews;
         },
         enabled: authQuery.data?.is_authenticated === true && !!currentLogin && allOpenQueriesFinished,
-        retry: false,
+        ...RETRY_CONFIG,
         staleTime: 60 * 60 * 1000, // 1 hour
         gcTime: 60 * 60 * 1000, // Keep in cache for 1 hour
       };
@@ -657,14 +666,35 @@ function App() {
 
   const pullsQuery = useQuery({
     queryKey: ["pull-requests", repoRef?.owner, repoRef?.repo, showClosedPRs],
-    queryFn: async () =>
-      invoke<PullRequestSummary[]>("cmd_list_pull_requests", {
-        owner: repoRef?.owner,
-        repo: repoRef?.repo,
-        state: showClosedPRs ? "all" : "open",
-      }),
+    queryFn: async () => {
+      try {
+        const data = await invoke<PullRequestSummary[]>("cmd_list_pull_requests", {
+          owner: repoRef?.owner,
+          repo: repoRef?.repo,
+          state: showClosedPRs ? "all" : "open",
+        });
+        markOnline();
+        return data;
+      } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        const isNetworkError = 
+          errorMsg.includes('http error') ||
+          errorMsg.includes('error sending request') ||
+          errorMsg.includes('fetch') || 
+          errorMsg.includes('network') || 
+          errorMsg.includes('Failed to invoke') ||
+          errorMsg.includes('connection') ||
+          errorMsg.includes('timeout');
+        
+        if (isNetworkError) {
+          console.log('🌐 Network error detected on PR list:', errorMsg);
+          markOffline();
+        }
+        throw error;
+      }
+    },
     enabled: Boolean(repoRef && authQuery.data?.is_authenticated),
-    retry: false,
+    ...RETRY_CONFIG,
   });
 
   const { refetch: refetchPulls } = pullsQuery;
@@ -683,21 +713,114 @@ function App() {
       selectedPr,
       authQuery.data?.login,
     ],
-    queryFn: () => {
+    queryFn: async () => {
       const currentLogin = authQuery.data?.login ?? null;
-      return invoke<PullRequestDetail>("cmd_get_pull_request", {
-        owner: repoRef?.owner,
-        repo: repoRef?.repo,
-        number: selectedPr,
-        currentLogin,
-      });
+      
+      // Always try network first (to detect coming back online)
+      try {
+        const data = await invoke<PullRequestDetail>("cmd_get_pull_request", {
+          owner: repoRef?.owner,
+          repo: repoRef?.repo,
+          number: selectedPr,
+          currentLogin,
+        });
+        
+        // Successful network request - mark online
+        markOnline();
+        
+        // Cache the result
+        if (repoRef && selectedPr) {
+          await offlineCache.cachePRDetail(repoRef.owner, repoRef.repo, selectedPr, data);
+          console.log(`💾 Cached PR #${selectedPr} for offline access`);
+        }
+        
+        return data;
+      } catch (error) {
+        // Check if it's a network error (Tauri invoke errors or HTTP errors)
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        const isNetworkError = 
+          errorMsg.includes('http error') ||
+          errorMsg.includes('error sending request') ||
+          errorMsg.includes('fetch') || 
+          errorMsg.includes('network') || 
+          errorMsg.includes('Failed to invoke') ||
+          errorMsg.includes('connection') ||
+          errorMsg.includes('timeout');
+        
+        if (isNetworkError) {
+          console.log('🌐 Network error detected:', errorMsg);
+          markOffline();
+          
+          // Try cache as fallback
+          if (repoRef && selectedPr) {
+            const cached = await offlineCache.getCachedPRDetail(repoRef.owner, repoRef.repo, selectedPr);
+            if (cached) {
+              console.log(`📦 Loaded PR #${selectedPr} from offline cache (after network error)`);
+              return cached;
+            }
+          }
+          throw new Error('Network unavailable and no cached data. Data will load when connection is restored.');
+        }
+        throw error;
+      }
     },
     enabled:
       Boolean(repoRef && selectedPr && authQuery.data?.is_authenticated && authQuery.data?.login),
+    retry: (failureCount, error) => {
+      // Don't retry if offline and no cache available
+      if (!isOnline && error instanceof Error && error.message.includes('No cached data available')) {
+        return false;
+      }
+      // Otherwise use normal retry logic
+      return failureCount < 3;
+    },
+    retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 30000),
   });
 
   const { refetch: refetchPullDetail } = pullDetailQuery;
   const prDetail = pullDetailQuery.data;
+
+  // Auto-cache all files when PR opens (if online)
+  useEffect(() => {
+    if (!prDetail || !repoRef || !selectedPr || !isOnline) return;
+    
+    const cacheAllFiles = async () => {
+      console.log(`🔄 Caching ${prDetail.files.length} files for offline access...`);
+      let cached = 0;
+      
+      for (const file of prDetail.files) {
+        try {
+          const [headContent, baseContent] = await invoke<[string | null, string | null]>("cmd_get_file_contents", {
+            owner: repoRef.owner,
+            repo: repoRef.repo,
+            filePath: file.path,
+            baseSha: prDetail.base_sha,
+            headSha: prDetail.head_sha,
+            status: file.status,
+            previousFilename: file.previous_filename ?? null,
+          });
+          
+          await offlineCache.cacheFileContent(
+            repoRef.owner,
+            repoRef.repo,
+            selectedPr,
+            file.path,
+            prDetail.head_sha,
+            prDetail.base_sha,
+            headContent,
+            baseContent
+          );
+          cached++;
+        } catch (error) {
+          console.error(`Failed to cache file ${file.path}:`, error);
+        }
+      }
+      
+      console.log(`✅ Cached ${cached}/${prDetail.files.length} files for offline access`);
+    };
+    
+    cacheAllFiles();
+  }, [prDetail, repoRef, selectedPr, isOnline]);
 
   // Memoize ReactMarkdown components to prevent Mermaid from re-rendering
   const markdownComponents = useMemo(() => ({
@@ -1086,19 +1209,79 @@ function App() {
   const tocContentQuery = useQuery({
     queryKey: ["toc-content", repoRef?.owner, repoRef?.repo, tocFileMetadata?.path, prDetail?.base_sha, prDetail?.head_sha],
     queryFn: async () => {
-      if (!tocFileMetadata || !prDetail || !repoRef) return null;
-      const [headContent, baseContent] = await invoke<[string | null, string | null]>("cmd_get_file_contents", {
-        owner: repoRef.owner,
-        repo: repoRef.repo,
-        filePath: tocFileMetadata.path,
-        baseSha: prDetail.base_sha,
-        headSha: prDetail.head_sha,
-        status: tocFileMetadata.status,
-      });
-      return headContent ?? baseContent ?? "";
+      if (!tocFileMetadata || !prDetail || !repoRef || !selectedPr) return null;
+      
+      // Always try network first (to detect coming back online)
+      try {
+        const [headContent, baseContent] = await invoke<[string | null, string | null]>("cmd_get_file_contents", {
+          owner: repoRef.owner,
+          repo: repoRef.repo,
+          filePath: tocFileMetadata.path,
+          baseSha: prDetail.base_sha,
+          headSha: prDetail.head_sha,
+          status: tocFileMetadata.status,
+        });
+        
+        // Successful network request - mark online and cache
+        markOnline();
+        await offlineCache.cacheFileContent(
+          repoRef.owner,
+          repoRef.repo,
+          selectedPr,
+          tocFileMetadata.path,
+          prDetail.head_sha,
+          prDetail.base_sha,
+          headContent,
+          baseContent
+        );
+        
+        return headContent ?? baseContent ?? "";
+      } catch (error) {
+        // Check if it's a network error
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        const isNetworkError = 
+          errorMsg.includes('http error') ||
+          errorMsg.includes('error sending request') ||
+          errorMsg.includes('fetch') || 
+          errorMsg.includes('network') || 
+          errorMsg.includes('Failed to invoke') ||
+          errorMsg.includes('connection') ||
+          errorMsg.includes('timeout');
+        
+        if (isNetworkError) {
+          console.log('🌐 Network error detected for toc.yml:', errorMsg);
+          markOffline();
+          
+          // Try cache as fallback
+          const cached = await offlineCache.getCachedFileContent(
+            repoRef.owner,
+            repoRef.repo,
+            selectedPr,
+            tocFileMetadata.path,
+            prDetail.head_sha,
+            prDetail.base_sha
+          );
+          if (cached) {
+            console.log(`📦 Loaded toc.yml from offline cache`);
+            return cached.headContent ?? cached.baseContent ?? "";
+          }
+          // Return empty string if no cache (graceful degradation)
+          console.warn('No cached toc.yml available, file ordering will be default');
+          return "";
+        }
+        throw error;
+      }
     },
     enabled: Boolean(tocFileMetadata && prDetail && repoRef),
     staleTime: Infinity,
+    retry: (failureCount, error) => {
+      // Don't retry if offline and no cache available
+      if (!isOnline && error instanceof Error && error.message.includes('No cached data available')) {
+        return false;
+      }
+      return failureCount < 3;
+    },
+    retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 30000),
   });
 
   // Build a map of file paths to display names from toc.yml
@@ -1349,6 +1532,7 @@ function App() {
               return { headContent, baseContent };
             },
             staleTime: Infinity,
+            ...RETRY_CONFIG,
           });
           // Small delay between fetches to avoid overwhelming the backend
           await new Promise(resolve => setTimeout(resolve, 50));
@@ -1502,20 +1686,81 @@ function App() {
   const fileContentsQuery = useQuery({
     queryKey: ["file-contents", repoRef?.owner, repoRef?.repo, selectedFilePath, prDetail?.base_sha, prDetail?.head_sha],
     queryFn: async () => {
-      if (!selectedFileMetadata || !prDetail) return null;
-      const [headContent, baseContent] = await invoke<[string | null, string | null]>("cmd_get_file_contents", {
-        owner: repoRef?.owner,
-        repo: repoRef?.repo,
-        filePath: selectedFilePath,
-        baseSha: prDetail.base_sha,
-        headSha: prDetail.head_sha,
-        status: selectedFileMetadata.status,
-        previousFilename: selectedFileMetadata.previous_filename ?? null,
-      });
-      return { headContent, baseContent };
+      if (!selectedFileMetadata || !prDetail || !repoRef || !selectedPr) return null;
+      
+      // Always try network first (to detect coming back online)
+      try {
+        const [headContent, baseContent] = await invoke<[string | null, string | null]>("cmd_get_file_contents", {
+          owner: repoRef.owner,
+          repo: repoRef.repo,
+          filePath: selectedFilePath,
+          baseSha: prDetail.base_sha,
+          headSha: prDetail.head_sha,
+          status: selectedFileMetadata.status,
+          previousFilename: selectedFileMetadata.previous_filename ?? null,
+        });
+        
+        // Successful network request - mark online
+        markOnline();
+        
+        // Cache the result
+        await offlineCache.cacheFileContent(
+          repoRef.owner,
+          repoRef.repo,
+          selectedPr,
+          selectedFilePath!,
+          prDetail.head_sha,
+          prDetail.base_sha,
+          headContent,
+          baseContent
+        );
+        
+        return { headContent, baseContent };
+      } catch (error) {
+        // Check if it's a network error (Tauri invoke errors or HTTP errors)
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        const isNetworkError = 
+          errorMsg.includes('http error') ||
+          errorMsg.includes('error sending request') ||
+          errorMsg.includes('fetch') || 
+          errorMsg.includes('network') || 
+          errorMsg.includes('Failed to invoke') ||
+          errorMsg.includes('connection') ||
+          errorMsg.includes('timeout');
+        
+        if (isNetworkError) {
+          console.log('🌐 Network error detected:', errorMsg);
+          markOffline();
+          
+          // Try cache as fallback
+          const cached = await offlineCache.getCachedFileContent(
+            repoRef.owner,
+            repoRef.repo,
+            selectedPr,
+            selectedFilePath!,
+            prDetail.head_sha,
+            prDetail.base_sha
+          );
+          if (cached) {
+            console.log(`📦 Loaded file ${selectedFilePath} from offline cache (after network error)`);
+            return cached;
+          }
+          throw new Error('Network unavailable and no cached data. Data will load when connection is restored.');
+        }
+        throw error;
+      }
     },
     enabled: Boolean(selectedFileMetadata && prDetail && repoRef),
     staleTime: Infinity, // File contents don't change for a given SHA
+    retry: (failureCount, error) => {
+      // Don't retry if offline and no cache available
+      if (!isOnline && error instanceof Error && error.message.includes('No cached data available')) {
+        return false;
+      }
+      // Otherwise use normal retry logic
+      return failureCount < 3;
+    },
+    retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 30000),
   });
 
   const selectedFile = useMemo(() => {
@@ -3226,7 +3471,19 @@ function App() {
             {isSidebarCollapsed ? ">" : "<"}
           </button>
           {!isSidebarCollapsed && (
-            <div className="user-menu" ref={userMenuRef}>
+            <>
+              {!isOnline && (
+                <div 
+                  className="network-status network-status--offline"
+                  title="Offline - using cached data"
+                >
+                  <svg className="network-status__icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <path fill="currentColor" d="M23.64 7c-.45-.34-4.93-4-11.64-4-1.5 0-2.89.19-4.15.48L18.18 13.8 23.64 7zm-6.6 8.22L3.27 1.44 2 2.72l2.05 2.06C1.91 5.76.59 6.82.36 7l11.63 14.49.01.01.01-.01 3.9-4.86 3.32 3.32 1.27-1.27-3.46-3.46z"/>
+                  </svg>
+                  <span className="network-status__text">Offline</span>
+                </div>
+              )}
+              <div className="user-menu" ref={userMenuRef}>
               <button
                 type="button"
                 className={`user-chip user-chip--button${isUserMenuOpen ? " user-chip--open" : ""}`}
@@ -3281,6 +3538,7 @@ function App() {
                 </div>
               )}
             </div>
+            </>
           )}
         </div>
         {!isSidebarCollapsed && (
@@ -3517,13 +3775,19 @@ function App() {
                                   Submit or delete the pending GitHub review to be able to add a comment to a new review.
                                 </div>
                               )}
+                              {!isOnline && (
+                                <div className="comment-panel__info-note comment-panel__info-note--warning">
+                                  ⚠️ Offline - Direct comments disabled. Use "Start review" to save comments locally.
+                                </div>
+                              )}
                               <button
                                 type="submit"
                                 className="comment-submit"
-                                disabled={submitFileCommentMutation.isPending}
+                                disabled={submitFileCommentMutation.isPending || !isOnline}
                                 onClick={() => {
                                   setFileCommentMode("single");
                                 }}
+                                title={!isOnline ? "Direct comments are disabled while offline" : ""}
                               >
                                 {submitFileCommentMutation.isPending ? "Sending…" : "Post comment"}
                               </button>
@@ -3819,6 +4083,8 @@ function App() {
                                       <button
                                         type="button"
                                         className="comment-submit"
+                                        disabled={!isOnline}
+                                        title={!isOnline ? "Direct comment replies are disabled while offline" : ""}
                                         onClick={async () => {
                                           if (!replyDraft.trim()) {
                                             setReplyError("Reply cannot be empty");
@@ -3874,6 +4140,11 @@ function App() {
                                       >
                                         Post comment
                                       </button>
+                                      {!isOnline && (
+                                        <div className="comment-panel__info-note comment-panel__info-note--warning">
+                                          ⚠️ Offline - Use "Add to review" to save replies locally
+                                        </div>
+                                      )}
                                       {pendingReview && !pendingReview.html_url ? (
                                         <button
                                           type="button"
@@ -4121,10 +4392,17 @@ function App() {
                             {inlineCommentError && (
                               <div className="comment-panel__error">{inlineCommentError}</div>
                             )}
+                            {!isOnline && (
+                              <div className="comment-panel__info-note comment-panel__info-note--warning">
+                                ⚠️ Offline - Direct comments disabled. Use "Add to review" to save comments locally.
+                              </div>
+                            )}
                             <div className="comment-panel__reply-actions">
                               <button
                                 type="button"
                                 className="comment-submit"
+                                disabled={!isOnline}
+                                title={!isOnline ? "Direct comments are disabled while offline" : ""}
                                 onClick={async () => {
                                   if (!inlineCommentDraft.trim()) {
                                     setInlineCommentError("Comment cannot be empty");
@@ -4822,11 +5100,17 @@ function App() {
                                     {commentError && (
                                       <span className="comment-status comment-status--error">{commentError}</span>
                                     )}
+                                    {!isOnline && (
+                                      <span className="comment-status comment-status--warning">
+                                        ⚠️ Offline - PR comments disabled
+                                      </span>
+                                    )}
                                   </div>
                                   <button
                                     type="submit"
                                     className="comment-submit"
-                                    disabled={submitCommentMutation.isPending}
+                                    disabled={submitCommentMutation.isPending || !isOnline}
+                                    title={!isOnline ? "PR comments are disabled while offline" : ""}
                                   >
                                     {submitCommentMutation.isPending ? "Posting…" : "Post comment"}
                                   </button>
@@ -5087,11 +5371,17 @@ function App() {
                         {commentError && (
                           <span className="comment-status comment-status--error">{commentError}</span>
                         )}
+                        {!isOnline && (
+                          <span className="comment-status comment-status--warning">
+                            ⚠️ Offline - PR comments disabled
+                          </span>
+                        )}
                       </div>
                       <button
                         type="submit"
                         className="comment-submit"
-                        disabled={submitCommentMutation.isPending}
+                        disabled={submitCommentMutation.isPending || !isOnline}
+                        title={!isOnline ? "PR comments are disabled while offline" : ""}
                       >
                         {submitCommentMutation.isPending ? "Sending…" : "Post comment"}
                       </button>
