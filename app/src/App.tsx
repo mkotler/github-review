@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import ReactMarkdown from "react-markdown";
@@ -251,14 +251,21 @@ mermaid.initialize({
 const MermaidCode = ({ children }: { children: string }) => {
   const ref = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);
+  const renderedContentRef = useRef<string>('');
 
   useEffect(() => {
+    // Skip if we've already rendered this exact content
+    if (renderedContentRef.current === children) {
+      return;
+    }
+    
     if (ref.current && typeof children === 'string') {
       const id = `mermaid-${Math.random().toString(36).substr(2, 9)}`;
       mermaid.render(id, children)
         .then(({ svg }) => {
           if (ref.current) {
             ref.current.innerHTML = svg;
+            renderedContentRef.current = children;
           }
         })
         .catch((err) => {
@@ -691,6 +698,62 @@ function App() {
 
   const { refetch: refetchPullDetail } = pullDetailQuery;
   const prDetail = pullDetailQuery.data;
+
+  // Memoize ReactMarkdown components to prevent Mermaid from re-rendering
+  const markdownComponents = useMemo(() => ({
+    h1: ({children, ...props}: any) => {
+      const text = String(children);
+      const id = text.toLowerCase().replace(/[–—]/g, '-').replace(/[^\w\s-]/g, '').replace(/\s+/g, '-').replace(/-{3,}/g, '--');
+      return <h1 id={id} {...props}>{children}</h1>;
+    },
+    h2: ({children, ...props}: any) => {
+      const text = String(children);
+      const id = text.toLowerCase().replace(/[–—]/g, '-').replace(/[^\w\s-]/g, '').replace(/\s+/g, '-').replace(/-{3,}/g, '--');
+      return <h2 id={id} {...props}>{children}</h2>;
+    },
+    h3: ({children, ...props}: any) => {
+      const text = String(children);
+      const id = text.toLowerCase().replace(/[–—]/g, '-').replace(/[^\w\s-]/g, '').replace(/\s+/g, '-').replace(/-{3,}/g, '--');
+      return <h3 id={id} {...props}>{children}</h3>;
+    },
+    h4: ({children, ...props}: any) => {
+      const text = String(children);
+      const id = text.toLowerCase().replace(/[–—]/g, '-').replace(/[^\w\s-]/g, '').replace(/\s+/g, '-').replace(/-{3,}/g, '--');
+      return <h4 id={id} {...props}>{children}</h4>;
+    },
+    h5: ({children, ...props}: any) => {
+      const text = String(children);
+      const id = text.toLowerCase().replace(/[–—]/g, '-').replace(/[^\w\s-]/g, '').replace(/\s+/g, '-').replace(/-{3,}/g, '--');
+      return <h5 id={id} {...props}>{children}</h5>;
+    },
+    h6: ({children, ...props}: any) => {
+      const text = String(children);
+      const id = text.toLowerCase().replace(/[–—]/g, '-').replace(/[^\w\s-]/g, '').replace(/\s+/g, '-').replace(/-{3,}/g, '--');
+      return <h6 id={id} {...props}>{children}</h6>;
+    },
+    code: ({ className, children, ...props }: any) => {
+      const match = /language-(\w+)/.exec(className || '');
+      const language = match ? match[1] : null;
+      
+      if (language === 'mermaid') {
+        const mermaidContent = String(children).trim();
+        return (
+          <div 
+            onClick={() => {
+              setMediaViewerContent({ type: 'mermaid', content: mermaidContent });
+              setMaximizedPane('media');
+            }}
+            style={{ cursor: 'pointer' }}
+            title="Click to view fullscreen"
+          >
+            <MermaidCode>{mermaidContent}</MermaidCode>
+          </div>
+        );
+      }
+      
+      return <code className={className} {...props}>{children}</code>;
+    },
+  }), [setMediaViewerContent, setMaximizedPane]);
 
   const handleToggleRepoPanel = useCallback(() => {
     if (!repoRef) {
@@ -5049,6 +5112,10 @@ function App() {
                           scrollBeyondLastLine: false,
                           wordWrap: "on",
                           glyphMargin: true,
+                          unicodeHighlight: {
+                            ambiguousCharacters: false,
+                            invisibleCharacters: false,
+                          },
                         }}
                         onMount={(editor) => {
                           const modifiedEditor = editor.getModifiedEditor();
@@ -5101,6 +5168,10 @@ function App() {
                           scrollBeyondLastLine: false,
                           wordWrap: "on",
                           glyphMargin: true,
+                          unicodeHighlight: {
+                            ambiguousCharacters: false,
+                            invisibleCharacters: false,
+                          },
                         }}
                         onMount={(editor) => {
                           editorRef.current = editor;
@@ -5295,58 +5366,7 @@ function App() {
                           remarkPlugins={[remarkGfm, [remarkFrontmatter, { type: 'yaml', marker: '-' }]]}
                           rehypePlugins={[rehypeRaw, rehypeSanitize]}
                           components={{
-                            h1: ({children, ...props}) => {
-                              const text = String(children);
-                              const id = text.toLowerCase().replace(/[–—]/g, '-').replace(/[^\w\s-]/g, '').replace(/\s+/g, '-').replace(/-{3,}/g, '--');
-                              return <h1 id={id} {...props}>{children}</h1>;
-                            },
-                            h2: ({children, ...props}) => {
-                              const text = String(children);
-                              const id = text.toLowerCase().replace(/[–—]/g, '-').replace(/[^\w\s-]/g, '').replace(/\s+/g, '-').replace(/-{3,}/g, '--');
-                              return <h2 id={id} {...props}>{children}</h2>;
-                            },
-                            h3: ({children, ...props}) => {
-                              const text = String(children);
-                              const id = text.toLowerCase().replace(/[–—]/g, '-').replace(/[^\w\s-]/g, '').replace(/\s+/g, '-').replace(/-{3,}/g, '--');
-                              return <h3 id={id} {...props}>{children}</h3>;
-                            },
-                            h4: ({children, ...props}) => {
-                              const text = String(children);
-                              const id = text.toLowerCase().replace(/[–—]/g, '-').replace(/[^\w\s-]/g, '').replace(/\s+/g, '-').replace(/-{3,}/g, '--');
-                              return <h4 id={id} {...props}>{children}</h4>;
-                            },
-                            h5: ({children, ...props}) => {
-                              const text = String(children);
-                              const id = text.toLowerCase().replace(/[–—]/g, '-').replace(/[^\w\s-]/g, '').replace(/\s+/g, '-').replace(/-{3,}/g, '--');
-                              return <h5 id={id} {...props}>{children}</h5>;
-                            },
-                            h6: ({children, ...props}) => {
-                              const text = String(children);
-                              const id = text.toLowerCase().replace(/[–—]/g, '-').replace(/[^\w\s-]/g, '').replace(/\s+/g, '-').replace(/-{3,}/g, '--');
-                              return <h6 id={id} {...props}>{children}</h6>;
-                            },
-                            code: ({ className, children, ...props }) => {
-                              const match = /language-(\w+)/.exec(className || '');
-                              const language = match ? match[1] : null;
-                              
-                              if (language === 'mermaid') {
-                                const mermaidContent = String(children).trim();
-                                return (
-                                  <div 
-                                    onClick={() => {
-                                      setMediaViewerContent({ type: 'mermaid', content: mermaidContent });
-                                      setMaximizedPane('media');
-                                    }}
-                                    style={{ cursor: 'pointer' }}
-                                    title="Click to view fullscreen"
-                                  >
-                                    <MermaidCode>{mermaidContent}</MermaidCode>
-                                  </div>
-                                );
-                              }
-                              
-                              return <code className={className} {...props}>{children}</code>;
-                            },
+                            ...markdownComponents,
                             a: ({href, children, ...props}) => {
                               // Handle link clicks
                               const handleClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
