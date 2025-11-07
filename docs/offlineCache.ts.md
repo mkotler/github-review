@@ -359,6 +359,44 @@ All functions follow consistent error handling:
 - **Safari:** Full support (iOS 10+, macOS 10.12+)
 - **Tauri WebView:** Guaranteed support (uses platform WebView)
 
+## Security Considerations
+
+### Offline Authentication
+
+The application handles authentication securely in offline mode:
+
+**Token Storage:**
+- GitHub OAuth token stored in system keyring (secure OS-level storage)
+- Last successful login username cached in keyring for offline identification
+- Tokens never exposed to JavaScript or stored in browser storage
+
+**Offline Authentication Flow:**
+1. App starts → Attempts to verify token with GitHub API
+2. If network available → Verifies token, caches username, returns `is_offline: false`
+3. If network fails → Uses cached username, assumes authenticated, returns `is_offline: true`
+4. If token explicitly unauthorized (401) → Clears token and cached username
+
+**Reconnection Detection:**
+- Browser 'online' event → Auto-refetch authentication (React Query `refetchOnReconnect`)
+- Successful query after offline → Effect detects state change and triggers auth refetch
+- Window focus → Auto-refetch authentication (React Query `refetchOnWindowFocus`)
+- Frontend checks `is_offline` flag to determine if auth is cached or verified
+
+**Security Properties:**
+- Token remains in secure keyring even offline
+- Cached username used only for UI display (not for authorization)
+- Network errors don't trigger logout (preserves workflow)
+- Explicit 401 responses properly clear credentials
+- All API calls still use real token from keyring
+
+**Attack Resistance:**
+- Attacker cannot forge authentication by manipulating cache
+- Token never leaves secure storage
+- Cache only affects UI, not authorization
+- Logout properly clears both token and cached username
+
+This approach ensures the app remains usable offline while maintaining security guarantees equivalent to online operation.
+
 ## Constants
 
 - `DB_NAME` - `'github-review-cache'`

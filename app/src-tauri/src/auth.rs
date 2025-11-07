@@ -15,44 +15,112 @@ use crate::github::{
     submit_pending_review, CommentMode,
 };
 use crate::models::{AuthStatus, PullRequestDetail, PullRequestReview, PullRequestSummary};
-use crate::storage::{delete_token, read_token, store_token};
+use crate::storage::{delete_token, read_token, store_token, store_last_login, read_last_login, delete_last_login};
 
 const AUTHORIZE_URL: &str = "https://github.com/login/oauth/authorize";
 const TOKEN_URL: &str = "https://github.com/login/oauth/access_token";
 const SCOPES: &str = "repo pull_request:write";
 const OAUTH_TIMEOUT: Duration = Duration::from_secs(180);
 
+/// Helper function to detect network-related errors
+fn is_network_error(err: &AppError) -> bool {
+    match err {
+        AppError::Http(e) => {
+            // Check for connection errors, timeouts, DNS failures, etc.
+            // is_connect: connection refused, connection reset
+            // is_timeout: request timeout
+            // is_builder: URL/request construction errors (shouldn't happen but include for safety)
+            // Check if there's no status code (connection never established)
+            e.is_timeout() || e.is_connect() || e.is_builder() || e.status().is_none()
+        }
+        AppError::Timeout => true,
+        _ => false,
+    }
+}
+
 pub async fn check_auth_status() -> AppResult<AuthStatus> {
     tracing::info!("checking auth status");
     if let Some(token) = read_token()? {
         match fetch_authenticated_user(&token).await {
-            Ok(user) => Ok(AuthStatus {
-                is_authenticated: true,
-                login: Some(user.login),
-                avatar_url: user.avatar_url,
-            })
-            .map(|status| {
-                tracing::info!(user = status.login.as_deref().unwrap_or("unknown"), "auth status resolved");
-                status
-            }),
+            Ok(user) => {
+                // Store login for offline use
+                store_last_login(&user.login).ok();
+                
+                Ok(AuthStatus {
+                    is_authenticated: true,
+                    login: Some(user.login),
+                    avatar_url: user.avatar_url,
+                    is_offline: false,
+                })
+                .map(|status| {
+                    tracing::info!(user = status.login.as_deref().unwrap_or("unknown"), "auth status resolved");
+                    status
+                })
+            }
             Err(err) => match err {
                 AppError::Http(http_err) => {
                     if http_err.status() == Some(StatusCode::UNAUTHORIZED) {
+                        // Token explicitly rejected - clear credentials
                         delete_token().ok();
+                        delete_last_login().ok();
                         Ok(AuthStatus {
                             is_authenticated: false,
                             login: None,
                             avatar_url: None,
+                            is_offline: false,
                         })
                         .map(|status| {
                             tracing::info!("auth status resolved after unauthorized");
                             status
                         })
+                    } else if let Some(last_login) = read_last_login().ok().flatten() {
+                        // Network error but we have cached login - assume offline mode
+                        tracing::info!("http error during auth check (status: {:?}), using cached login for offline mode", http_err.status());
+                        Ok(AuthStatus {
+                            is_authenticated: true,
+                            login: Some(last_login),
+                            avatar_url: None,
+                            is_offline: true,
+                        })
                     } else {
+                        // Network error and no cached login - propagate error
+                        tracing::warn!("http error during auth check with no cached login");
                         Err(AppError::Http(http_err))
                     }
                 }
-                other => Err(other),
+                // Network error - treat as offline but still authenticated
+                other if is_network_error(&other) => {
+                    tracing::info!("network error during auth check, assuming offline mode");
+                    let last_login = read_last_login().ok().flatten();
+                    Ok(AuthStatus {
+                        is_authenticated: true,
+                        login: last_login,
+                        avatar_url: None,
+                        is_offline: true,
+                    })
+                    .map(|status| {
+                        tracing::info!(
+                            user = status.login.as_deref().unwrap_or("unknown"),
+                            "auth status resolved in offline mode"
+                        );
+                        status
+                    })
+                }
+                other => {
+                    // Other errors - if we have cached login, use it; otherwise propagate
+                    if let Some(last_login) = read_last_login().ok().flatten() {
+                        tracing::info!("error during auth check, using cached login for offline mode");
+                        Ok(AuthStatus {
+                            is_authenticated: true,
+                            login: Some(last_login),
+                            avatar_url: None,
+                            is_offline: true,
+                        })
+                    } else {
+                        tracing::warn!("error during auth check with no cached login");
+                        Err(other)
+                    }
+                }
             },
         }
     } else {
@@ -60,6 +128,7 @@ pub async fn check_auth_status() -> AppResult<AuthStatus> {
             is_authenticated: false,
             login: None,
             avatar_url: None,
+            is_offline: false,
         })
         .map(|status| {
             tracing::info!("auth status resolved without token");
@@ -69,7 +138,9 @@ pub async fn check_auth_status() -> AppResult<AuthStatus> {
 }
 
 pub async fn logout() -> AppResult<()> {
-    delete_token()
+    delete_token()?;
+    delete_last_login().ok(); // Best effort - don't fail logout if this fails
+    Ok(())
 }
 
 pub async fn start_oauth_flow(_app: &tauri::AppHandle) -> AppResult<AuthStatus> {
@@ -116,11 +187,15 @@ pub async fn start_oauth_flow(_app: &tauri::AppHandle) -> AppResult<AuthStatus> 
 
     store_token(&token)?;
     let user = fetch_authenticated_user(&token).await?;
+    
+    // Store login for offline use
+    store_last_login(&user.login).ok();
 
     Ok(AuthStatus {
         is_authenticated: true,
-        login: Some(user.login),
+        login: Some(user.login.clone()),
         avatar_url: user.avatar_url,
+        is_offline: false,
     })
 }
 

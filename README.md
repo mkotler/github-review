@@ -155,6 +155,18 @@ The application provides comprehensive offline capabilities for working in envir
 - Cache includes PR details, file contents (both head and base versions), and TOC metadata
 - 7-day cache expiration with automatic cleanup on application startup
 
+**Secure Offline Authentication:**
+- OAuth token remains in system keyring (secure OS-level storage)
+- Last successful login cached for offline identification
+- Network errors don't trigger logout (preserves workflow)
+- Automatic re-authentication when network returns via multiple mechanisms:
+  - Browser reconnection event detection
+  - Successful query detection
+  - Window focus re-validation
+- `is_offline` flag in auth status indicates cached authentication
+- Token validation happens on reconnection
+- All API calls use real token even when offline indicators show
+
 **Network Detection:**
 - Detects both interface-level disconnections (WiFi off) and HTTP-level failures (DNS errors, server downtime)
 - Visual offline indicator (red WiFi icon) appears in sidebar when offline

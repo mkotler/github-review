@@ -16,6 +16,7 @@ type AuthStatus = {
   is_authenticated: boolean;
   login?: string | null;
   avatar_url?: string | null;
+  is_offline?: boolean; // true if authenticated using cached data without network verification
 };
 
 type PullRequestSummary = {
@@ -516,8 +517,32 @@ function App() {
 
   const authQuery = useQuery({
     queryKey: AUTH_QUERY_KEY,
-    queryFn: () => invoke<AuthStatus>("cmd_check_auth_status"),
+    queryFn: async () => {
+      const status = await invoke<AuthStatus>("cmd_check_auth_status");
+      
+      // Update network status based on authentication result
+      if (status.is_offline) {
+        markOffline();
+      } else if (status.is_authenticated) {
+        markOnline();
+      }
+      
+      return status;
+    },
+    retry: 3, // Retry up to 3 times for transient network errors
+    retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 5000), // Exponential backoff, max 5s
+    staleTime: 5 * 60 * 1000, // Consider auth status fresh for 5 minutes
+    refetchOnWindowFocus: true, // Re-check auth when window regains focus
+    refetchOnReconnect: true, // Re-check auth when browser detects network reconnection
   });
+
+  // Re-validate authentication when coming back online
+  useEffect(() => {
+    if (isOnline && authQuery.data?.is_offline) {
+      console.log('🔄 Network back online, re-validating authentication...');
+      authQuery.refetch();
+    }
+  }, [isOnline, authQuery.data?.is_offline]);
 
   const loginMutation = useMutation({
     mutationFn: async () => {
@@ -538,6 +563,7 @@ function App() {
         is_authenticated: false,
         login: null,
         avatar_url: null,
+        is_offline: false,
       });
       queryClient.removeQueries({ queryKey: ["pull-requests"] });
       queryClient.removeQueries({ queryKey: ["pull-request"] });

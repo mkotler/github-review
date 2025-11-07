@@ -17,6 +17,7 @@ pub struct AuthStatus {
     pub is_authenticated: bool,
     pub login: Option<String>,
     pub avatar_url: Option<String>,
+    pub is_offline: bool, // true if authenticated using cached data without network verification
 }
 
 #[derive(Debug, Serialize)]
