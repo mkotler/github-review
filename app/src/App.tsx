@@ -101,6 +101,8 @@ type PrUnderReview = {
   has_pending_review: boolean;
   viewed_count: number;
   total_count: number;
+  state?: string;
+  merged?: boolean;
 };
 
 const AUTH_QUERY_KEY = ["auth-status"] as const;
@@ -180,7 +182,7 @@ function AsyncImage({ owner, repo, reference, path, alt, onClick, ...props }: {
   reference: string; 
   path: string; 
   alt?: string;
-  onClick?: () => void;
+  onClick?: (e: React.MouseEvent<HTMLImageElement>) => void;
   [key: string]: any;
 }) {
   const [imageData, setImageData] = useState<string | null>(null);
@@ -293,27 +295,49 @@ const MermaidCode = ({ children }: { children: string }) => {
 };
 
 // Helper component for comment thread items with collapse functionality
+interface CommentThreadItemProps {
+  thread: { parent: PullRequestComment; replies: PullRequestComment[] };
+  collapsedComments: Set<number>;
+  setCollapsedComments: React.Dispatch<React.SetStateAction<Set<number>>>;
+  editorRef: React.RefObject<any>;
+  pendingReview: PullRequestReview | null;
+  setEditingCommentId: React.Dispatch<React.SetStateAction<number | null>>;
+  setEditingComment: React.Dispatch<React.SetStateAction<PullRequestComment | null>>;
+  setFileCommentDraft: React.Dispatch<React.SetStateAction<string>>;
+  setFileCommentLine: React.Dispatch<React.SetStateAction<string>>;
+  setFileCommentSide: React.Dispatch<React.SetStateAction<"RIGHT" | "LEFT">>;
+  setFileCommentIsFileLevel: React.Dispatch<React.SetStateAction<boolean>>;
+  setFileCommentError: React.Dispatch<React.SetStateAction<string | null>>;
+  setFileCommentSuccess: React.Dispatch<React.SetStateAction<boolean>>;
+  setIsFileCommentComposerVisible: React.Dispatch<React.SetStateAction<boolean>>;
+  setReplyingToCommentId: React.Dispatch<React.SetStateAction<number | null>>;
+  setReplyDraft: React.Dispatch<React.SetStateAction<string>>;
+  setReplyError: React.Dispatch<React.SetStateAction<string | null>>;
+  setReplySuccess: React.Dispatch<React.SetStateAction<boolean>>;
+  children: (allCommentsInThread: PullRequestComment[], isCollapsed: boolean, parentComment: PullRequestComment) => React.ReactNode;
+}
+
 const CommentThreadItem = ({ 
   thread, 
   collapsedComments, 
   setCollapsedComments,
   editorRef,
-  pendingReview,
-  setEditingCommentId,
-  setEditingComment,
-  setFileCommentDraft,
-  setFileCommentLine,
-  setFileCommentSide,
-  setFileCommentIsFileLevel,
-  setFileCommentError,
-  setFileCommentSuccess,
-  setIsFileCommentComposerVisible,
-  setReplyingToCommentId,
-  setReplyDraft,
-  setReplyError,
-  setReplySuccess,
+  pendingReview: _pendingReview,
+  setEditingCommentId: _setEditingCommentId,
+  setEditingComment: _setEditingComment,
+  setFileCommentDraft: _setFileCommentDraft,
+  setFileCommentLine: _setFileCommentLine,
+  setFileCommentSide: _setFileCommentSide,
+  setFileCommentIsFileLevel: _setFileCommentIsFileLevel,
+  setFileCommentError: _setFileCommentError,
+  setFileCommentSuccess: _setFileCommentSuccess,
+  setIsFileCommentComposerVisible: _setIsFileCommentComposerVisible,
+  setReplyingToCommentId: _setReplyingToCommentId,
+  setReplyDraft: _setReplyDraft,
+  setReplyError: _setReplyError,
+  setReplySuccess: _setReplySuccess,
   children
-}: any) => {
+}: CommentThreadItemProps) => {
   const allCommentsInThread = [thread.parent, ...thread.replies];
   const parentComment = thread.parent;
   
@@ -428,20 +452,17 @@ function App() {
   const [fileCommentSuccess, setFileCommentSuccess] = useState(false);
   const [replyingToCommentId, setReplyingToCommentId] = useState<number | null>(null);
   const [replyDraft, setReplyDraft] = useState("");
-  const [replyMode, setReplyMode] = useState<"single" | "review">("single");
   const [replyError, setReplyError] = useState<string | null>(null);
   const [replySuccess, setReplySuccess] = useState(false);
   const [isAddingInlineComment, setIsAddingInlineComment] = useState(false);
   const [inlineCommentDraft, setInlineCommentDraft] = useState("");
   const [inlineCommentLine, setInlineCommentLine] = useState("");
   const [inlineCommentError, setInlineCommentError] = useState<string | null>(null);
-  const [inlineCommentSuccess, setInlineCommentSuccess] = useState(false);
   const [draftsByFile, setDraftsByFile] = useState<Record<string, { reply?: Record<number, string>, inline?: string }>>({})
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isRepoPanelCollapsed, setIsRepoPanelCollapsed] = useState(false);
   const [isPrPanelCollapsed, setIsPrPanelCollapsed] = useState(false);
   const [isInlineCommentOpen, setIsInlineCommentOpen] = useState(false);
-  const [hasManuallyClosedCommentPanel, setHasManuallyClosedCommentPanel] = useState(false);
   const [isGeneralCommentOpen, setIsGeneralCommentOpen] = useState(false);
   const [collapsedComments, setCollapsedComments] = useState<Set<number>>(new Set());
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
@@ -994,12 +1015,12 @@ function App() {
   // }, [comments, prDetail]);
 
   // Filter to get only PR-level (issue) comments, not file review comments
-  const prLevelComments = useMemo(() => comments.filter(c => !c.is_review_comment), [comments]);
+  const prLevelComments = useMemo(() => comments.filter((c: PullRequestComment) => !c.is_review_comment), [comments]);
 
   const reviews = useMemo(() => prDetail?.reviews ?? [], [prDetail?.reviews]);
   const pendingReviewFromServer = useMemo(() => {
     const review = reviews.find(
-      (item) => item.is_mine && item.state.toUpperCase() === "PENDING"
+      (item: PullRequestReview) => item.is_mine && item.state.toUpperCase() === "PENDING"
     );
     return review ?? null;
   }, [reviews]);
@@ -1013,11 +1034,11 @@ function App() {
     }
     // Skip validation for local reviews (negative IDs or missing from GitHub reviews list)
     // Local reviews won't be in the reviews array until they're submitted to GitHub
-    const isLocalReview = pendingReviewOverride.id < 0 || !reviews.some(r => r.id === pendingReviewOverride.id);
+    const isLocalReview = pendingReviewOverride.id < 0 || !reviews.some((r: PullRequestReview) => r.id === pendingReviewOverride.id);
     if (isLocalReview) {
       return;
     }
-    const matchingReview = reviews.find((item) => item.id === pendingReviewOverride.id);
+    const matchingReview = reviews.find((item: PullRequestReview) => item.id === pendingReviewOverride.id);
     if (!matchingReview || matchingReview.state.toUpperCase() !== "PENDING") {
       setPendingReviewOverride(null);
     }
@@ -1029,7 +1050,7 @@ function App() {
 
   // Reset manual close flag when PR changes to allow auto-open for new PR
   useEffect(() => {
-    setHasManuallyClosedCommentPanel(false);
+    // State reset handled by PR change
   }, [selectedPr]);
 
   // Check for existing local review when PR loads
@@ -1222,8 +1243,8 @@ function App() {
     if (pendingReview) {
       // Include ALL published comments + pending review comments (GitHub or local)
       // Published comments don't have review_id matching pending review
-      const publishedComments = comments.filter((comment) => !comment.is_draft);
-      const pendingGitHubComments = comments.filter((comment) => comment.review_id === pendingReview.id && comment.is_draft);
+      const publishedComments = comments.filter((comment: PullRequestComment) => !comment.is_draft);
+      const pendingGitHubComments = comments.filter((comment: PullRequestComment) => comment.review_id === pendingReview.id && comment.is_draft);
       const merged = [...publishedComments, ...pendingGitHubComments, ...localComments];
       return merged;
     }
@@ -1276,7 +1297,7 @@ function App() {
 
   // Find toc.yml file if it exists
   const tocFileMetadata = useMemo(() => {
-    return files.find((file) => file.path.toLowerCase().endsWith("toc.yml"));
+    return files.find((file: PullRequestFile) => file.path.toLowerCase().endsWith("toc.yml"));
   }, [files]);
 
   // Load toc.yml content if it exists
@@ -1653,7 +1674,7 @@ function App() {
 
         if (localCommentData.length > 0) {
           // Create or find a local review object
-          let localReview = reviews.find(r => r.id === prDetail.number);
+          let localReview = reviews.find((r: PullRequestReview) => r.id === prDetail.number);
           if (!localReview) {
             // Create a fake review object for local comments
             localReview = {
@@ -1699,7 +1720,6 @@ function App() {
 
   const closeInlineComment = useCallback(() => {
     setIsInlineCommentOpen(false);
-    setHasManuallyClosedCommentPanel(true);
     setFileCommentError(null);
     setFileCommentSuccess(false);
     setIsFileCommentComposerVisible(false);
@@ -1753,7 +1773,7 @@ function App() {
 
   const selectedFileMetadata = useMemo(() => {
     if (!prDetail || !selectedFilePath) return null;
-    return prDetail.files.find((file) => file.path === selectedFilePath) ?? null;
+    return prDetail.files.find((file: PullRequestFile) => file.path === selectedFilePath) ?? null;
   }, [prDetail, selectedFilePath]);
 
   // Fetch file contents on demand when a file is selected
@@ -1850,10 +1870,10 @@ function App() {
   const fileComments = useMemo(() => {
     let filtered = !selectedFilePath 
       ? reviewAwareComments 
-      : reviewAwareComments.filter((comment) => comment.path === selectedFilePath);
+      : reviewAwareComments.filter((comment: PullRequestComment) => comment.path === selectedFilePath);
     
     // Sort by line number (comments without line numbers go to the end)
-    return filtered.sort((a, b) => {
+    return filtered.sort((a: PullRequestComment, b: PullRequestComment) => {
       if (a.line === null && b.line === null) return 0;
       if (a.line === null) return 1;
       if (b.line === null) return -1;
@@ -1867,7 +1887,7 @@ function App() {
     const replyMap = new Map<number, PullRequestComment[]>();
     
     // Group replies by parent comment ID
-    fileComments.forEach(comment => {
+    fileComments.forEach((comment: PullRequestComment) => {
       if (comment.in_reply_to_id) {
         const replies = replyMap.get(comment.in_reply_to_id) || [];
         replies.push(comment);
@@ -1876,7 +1896,7 @@ function App() {
     });
     
     // Build threads with top-level comments as parents
-    fileComments.forEach(comment => {
+    fileComments.forEach((comment: PullRequestComment) => {
       if (!comment.in_reply_to_id) {
         threads.push({
           parent: comment,
@@ -1888,7 +1908,6 @@ function App() {
     return threads;
   }, [fileComments]);
 
-  const hasAnyFileComments = fileComments.length > 0;
   const shouldShowFileCommentComposer = isFileCommentComposerVisible;
   const formattedRepo = repoRef ? `${repoRef.owner}/${repoRef.repo}` : "";
 
@@ -1905,21 +1924,24 @@ function App() {
           for (const [filePath, fileDraft] of Object.entries(loadedDrafts)) {
             const cleaned: { reply?: Record<number, string>, inline?: string } = {};
             
-            // Keep inline draft only if non-empty
-            if (fileDraft.inline && fileDraft.inline.trim()) {
-              cleaned.inline = fileDraft.inline;
-            }
-            
-            // Keep reply drafts only if non-empty
-            if (fileDraft.reply) {
-              const nonEmptyReplies: Record<number, string> = {};
-              for (const [commentId, replyText] of Object.entries(fileDraft.reply)) {
-                if (replyText && replyText.trim()) {
-                  nonEmptyReplies[Number(commentId)] = replyText;
-                }
+            // Type guard for fileDraft
+            if (fileDraft && typeof fileDraft === 'object') {
+              // Keep inline draft only if non-empty
+              if ('inline' in fileDraft && typeof fileDraft.inline === 'string' && fileDraft.inline.trim()) {
+                cleaned.inline = fileDraft.inline;
               }
-              if (Object.keys(nonEmptyReplies).length > 0) {
-                cleaned.reply = nonEmptyReplies;
+              
+              // Keep reply drafts only if non-empty
+              if ('reply' in fileDraft && fileDraft.reply && typeof fileDraft.reply === 'object') {
+                const nonEmptyReplies: Record<number, string> = {};
+                for (const [commentId, replyText] of Object.entries(fileDraft.reply)) {
+                  if (replyText && typeof replyText === 'string' && replyText.trim()) {
+                    nonEmptyReplies[Number(commentId)] = replyText;
+                  }
+                }
+                if (Object.keys(nonEmptyReplies).length > 0) {
+                  cleaned.reply = nonEmptyReplies;
+                }
               }
             }
             
@@ -2341,8 +2363,8 @@ function App() {
     
     // Add PRs with pending reviews from MRU queries (both open and closed)
     [...mruOpenPrsQueries, ...mruClosedPrsQueries].forEach(query => {
-      if (query.data) {
-        query.data.forEach(pr => {
+      if (query.data && Array.isArray(query.data)) {
+        query.data.forEach((pr: PrUnderReview) => {
           const key = `${pr.owner}/${pr.repo}#${pr.number}`;
           if (!prMap.has(key)) {
             prMap.set(key, pr);
@@ -2605,7 +2627,7 @@ function App() {
   const markAllFilesAsViewed = useCallback(() => {
     if (!repoRef || !selectedPr || !files) return;
     const prKey = `${repoRef.owner}/${repoRef.repo}#${selectedPr}`;
-    const allFilePaths = files.map(f => f.path);
+    const allFilePaths = files.map((f: PullRequestFile) => f.path);
     setViewedFiles(prev => ({
       ...prev,
       [prKey]: allFilePaths
@@ -2614,12 +2636,12 @@ function App() {
 
   // Get comment count for a file
   const getFileCommentCount = useCallback((filePath: string): number => {
-    return reviewAwareComments.filter(c => c.path === filePath).length;
+    return reviewAwareComments.filter((c: PullRequestComment) => c.path === filePath).length;
   }, [reviewAwareComments]);
 
   // Check if a file has any pending comments (draft or pending GitHub review)
   const fileHasPendingComments = useCallback((filePath: string): boolean => {
-    return reviewAwareComments.some(c => 
+    return reviewAwareComments.some((c: PullRequestComment) => 
       c.path === filePath && 
       (c.is_draft || (c.review_id === pendingReview?.id && pendingReview?.html_url))
     );
@@ -2828,7 +2850,7 @@ function App() {
       // GitHub reviews will be in the reviews array from the server with PENDING state
       // Local reviews use PR number as ID and won't be in the server reviews array
       const isGithubPendingReview = pendingReview && 
-        reviews.some(r => r.id === pendingReview.id && r.state === "PENDING" && r.is_mine);
+        reviews.some((r: PullRequestReview) => r.id === pendingReview.id && r.state === "PENDING" && r.is_mine);
       
       if (isGithubPendingReview) {
         // Submit the GitHub pending review
@@ -3071,7 +3093,6 @@ function App() {
     const draft = selectedFilePath ? draftsByFile[selectedFilePath]?.inline || "" : "";
     setInlineCommentDraft(draft);
     setInlineCommentError(null);
-    setInlineCommentSuccess(false);
     // Scroll to bottom after a brief delay to allow render
     setTimeout(() => {
       if (commentPanelBodyRef.current) {
@@ -3160,11 +3181,9 @@ function App() {
 
     // Validate line number if not file-level
     let parsedLine: number | null = null;
-    let isFileLevelComment = fileCommentIsFileLevel;
     
     // If no line number provided, treat as file-level comment
     if (!fileCommentLine || fileCommentLine.trim() === "") {
-      isFileLevelComment = true;
       parsedLine = null;
     } else if (!fileCommentIsFileLevel) {
       // Line number provided - validate it
@@ -3301,7 +3320,7 @@ function App() {
       console.log("Showing local review with", localComments.length, "comments");
       // Local comments are already loaded, just need to show them
       // Find or create a local pending review object
-      let localReview = reviews.find(r => r.id === prDetail.number);
+      let localReview = reviews.find((r: PullRequestReview) => r.id === prDetail.number);
       if (!localReview) {
         // Create a fake review object for local comments
         localReview = {
@@ -3339,7 +3358,7 @@ function App() {
     
     // Check if this is a GitHub review (exists in server reviews array) or local review
     // Use same logic as submitReviewMutation for consistency
-    const isGithubReview = reviews.some(r => r.id === pendingReview.id && r.state === "PENDING" && r.is_mine);
+    const isGithubReview = reviews.some((r: PullRequestReview) => r.id === pendingReview.id && r.state === "PENDING" && r.is_mine);
     
     if (isGithubReview) {
       // GitHub review - use the delete review mutation
@@ -3505,7 +3524,6 @@ function App() {
       setInlineCommentLine(lineNumberStr);
       setInlineCommentDraft("");
       setInlineCommentError(null);
-      setInlineCommentSuccess(false);
       setIsInlineCommentOpen(true);
       // Scroll to bottom after a brief delay to allow render
       setTimeout(() => {
@@ -4030,14 +4048,13 @@ function App() {
                               setReplyError={setReplyError}
                               setReplySuccess={setReplySuccess}
                             >
-                              {(allCommentsInThread: any, isCollapsed: boolean, parentComment: any) => (
+                              {(allCommentsInThread: PullRequestComment[], _isCollapsed: boolean, parentComment: PullRequestComment) => (
                                 <>
                                   {/* Render all comments in thread */}
                                   {allCommentsInThread.map((comment: any, index: number) => {
                                     const formattedTimestamp = new Date(comment.created_at).toLocaleString();
                                     const isPendingGitHubReviewComment = comment.review_id === pendingReview?.id && pendingReview?.html_url;
                                     const isPendingLocalReviewComment = comment.is_draft && !pendingReview?.html_url;
-                                    const isLastCommentInThread = index === allCommentsInThread.length - 1;
                                     
                                     // Edit button rules:
                                     // - Show for pending local review comments (draft, no GitHub review)
@@ -4185,17 +4202,27 @@ function App() {
                                       onChange={(e) => {
                                         const newValue = e.target.value;
                                         setReplyDraft(newValue);
-                                        if (selectedFilePath) {
+                                        if (selectedFilePath && newValue) {
                                           setDraftsByFile(prev => ({
                                             ...prev,
                                             [selectedFilePath]: {
                                               ...prev[selectedFilePath],
                                               reply: {
                                                 ...(prev[selectedFilePath]?.reply || {}),
-                                                [parentComment.id]: newValue || undefined
+                                                [parentComment.id]: newValue
                                               }
                                             }
                                           }));
+                                        } else if (selectedFilePath) {
+                                          setDraftsByFile(prev => {
+                                            const updated = { ...prev };
+                                            if (updated[selectedFilePath]?.reply) {
+                                              const newReply = { ...updated[selectedFilePath].reply };
+                                              delete newReply[parentComment.id];
+                                              updated[selectedFilePath] = { ...updated[selectedFilePath], reply: newReply };
+                                            }
+                                            return updated;
+                                          });
                                         }
                                       }}
                                       placeholder="Write a reply..."
@@ -4466,7 +4493,7 @@ function App() {
                                     setIsAddingInlineComment(false);
                                     setInlineCommentDraft("");
                                     setInlineCommentError(null);
-                                    setInlineCommentSuccess(false);
+                                    setFileCommentSuccess(false);
                                     // Clear the draft from storage
                                     if (selectedFilePath) {
                                       setDraftsByFile(prev => {
@@ -5261,7 +5288,7 @@ function App() {
                                 </div>
                               ) : (
                                 <div className="pr-comments-list">
-                                  {prLevelComments.map((comment) => (
+                                  {prLevelComments.map((comment: PullRequestComment) => (
                                     <div key={comment.id} className="pr-comment">
                                       <div className="pr-comment__header">
                                         <span className="pr-comment__author">{comment.author}</span>
@@ -5859,7 +5886,7 @@ function App() {
                                   }
                                   
                                   // Check if this file exists in the PR
-                                  const targetFile = prDetail.files.find(f => f.path === resolvedPath);
+                                  const targetFile = prDetail.files.find((f: PullRequestFile) => f.path === resolvedPath);
                                   if (targetFile) {
                                     setSelectedFilePath(resolvedPath);
                                   }
@@ -5929,7 +5956,7 @@ function App() {
                                 reference={prDetail.head_sha} 
                                 path={resolvedPath} 
                                 alt={alt} 
-                                onClick={async () => {
+                                onClick={async (_e: React.MouseEvent<HTMLImageElement>) => {
                                   try {
                                     const base64Data = await invoke<string>("cmd_fetch_file_content", {
                                       owner: repoRef.owner,
