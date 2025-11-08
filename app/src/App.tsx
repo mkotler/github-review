@@ -808,6 +808,9 @@ function App() {
     },
     enabled:
       Boolean(repoRef && selectedPr && authQuery.data?.is_authenticated && authQuery.data?.login),
+    staleTime: 0, // Always consider data stale to force refetch
+    refetchOnMount: true, // Refetch when component mounts
+    refetchOnWindowFocus: true, // Refetch when window regains focus
     retry: (failureCount, error) => {
       // Don't retry if offline and no cache available
       if (!isOnline && error instanceof Error && error.message.includes('No cached data available')) {
@@ -821,6 +824,22 @@ function App() {
 
   const { refetch: refetchPullDetail } = pullDetailQuery;
   const prDetail = pullDetailQuery.data;
+
+  // Force fresh data when PR selection changes
+  useEffect(() => {
+    if (repoRef && selectedPr) {
+      // Remove query when online to force fresh fetch, invalidate when offline to preserve cached data
+      if (isOnline) {
+        queryClient.removeQueries({ 
+          queryKey: ["pull-request", repoRef.owner, repoRef.repo, selectedPr, authQuery.data?.login]
+        });
+      } else {
+        queryClient.invalidateQueries({ 
+          queryKey: ["pull-request", repoRef.owner, repoRef.repo, selectedPr, authQuery.data?.login]
+        });
+      }
+    }
+  }, [repoRef?.owner, repoRef?.repo, selectedPr, authQuery.data?.login, isOnline, queryClient]);
 
   // Auto-cache all files when PR opens (if online)
   useEffect(() => {
@@ -932,10 +951,23 @@ function App() {
     setIsPrPanelCollapsed((prev) => !prev);
   }, []);
 
-  const handleRefreshPulls = useCallback(() => {
+  const handleRefreshPulls = useCallback(async () => {
+    if (repoRef && selectedPr) {
+      // Remove query when online to force fresh fetch, invalidate when offline to preserve cached data
+      if (isOnline) {
+        queryClient.removeQueries({ 
+          queryKey: ["pull-request", repoRef.owner, repoRef.repo, selectedPr, authQuery.data?.login]
+        });
+      } else {
+        queryClient.invalidateQueries({ 
+          queryKey: ["pull-request", repoRef.owner, repoRef.repo, selectedPr, authQuery.data?.login]
+        });
+      }
+    }
+    
     void refetchPulls();
     void refetchPullDetail();
-  }, [refetchPullDetail, refetchPulls]);
+  }, [repoRef, selectedPr, authQuery.data?.login, refetchPullDetail, refetchPulls, queryClient, isOnline]);
 
   const handleResizeStart = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -2626,7 +2658,7 @@ function App() {
         body,
       });
     },
-    onSuccess: () => {
+    onSuccess: async () => {
       setCommentDraft("");
       setCommentError(null);
       setCommentSuccess(true);
@@ -2634,6 +2666,14 @@ function App() {
       if (isPrCommentComposerOpen) {
         setIsPrCommentComposerOpen(false);
       }
+      
+      // Clear IndexedDB cache and invalidate queries
+      if (repoRef && prDetail) {
+        await offlineCache.clearPRCache(repoRef.owner, repoRef.repo, prDetail.number);
+      }
+      await queryClient.invalidateQueries({ 
+        queryKey: ["pull-request", repoRef?.owner, repoRef?.repo, selectedPr, authQuery.data?.login]
+      });
       void refetchPullDetail();
     },
     onError: (error: unknown) => {
@@ -2694,7 +2734,7 @@ function App() {
         });
       }
     },
-    onSuccess: () => {
+    onSuccess: async () => {
       setFileCommentDraft("");
       setFileCommentLine("");
       setFileCommentError(null);
@@ -2703,6 +2743,16 @@ function App() {
       setFileCommentMode(pendingReview ? "review" : "single");
       setFileCommentSide("RIGHT");
       setIsFileCommentComposerVisible(false);
+      
+      // Clear IndexedDB cache for this PR to force fresh fetch
+      if (repoRef && prDetail) {
+        await offlineCache.clearPRCache(repoRef.owner, repoRef.repo, prDetail.number);
+      }
+      
+      // Invalidate and refetch to get updated comments
+      await queryClient.invalidateQueries({ 
+        queryKey: ["pull-request", repoRef?.owner, repoRef?.repo, selectedPr, authQuery.data?.login]
+      });
       void refetchPullDetail();
       void loadLocalComments(); // Reload local comments
     },
@@ -2801,12 +2851,18 @@ function App() {
         });
       }
     },
-    onSuccess: () => {
+    onSuccess: async () => {
       setPendingReviewOverride(null);
       setLocalComments([]);
       setFileCommentError(null);
       setFileCommentSuccess(true);
       setSubmissionProgress(null);
+      
+      // Remove query to force fresh fetch (we must be online to submit)
+      queryClient.removeQueries({ 
+        queryKey: ["pull-request", repoRef?.owner, repoRef?.repo, selectedPr, authQuery.data?.login]
+      });
+      
       void refetchPullDetail();
       void prsUnderReviewQuery.refetch();
     },
@@ -2832,10 +2888,21 @@ function App() {
         reviewId,
       });
     },
-    onSuccess: () => {
+    onSuccess: async () => {
       setPendingReviewOverride(null);
       setLocalComments([]);
       setFileCommentError(null);
+      
+      // Clear IndexedDB cache for this PR to force fresh fetch
+      if (repoRef && prDetail) {
+        await offlineCache.clearPRCache(repoRef.owner, repoRef.repo, prDetail.number);
+        console.log(`🗑️ Cleared cache for PR #${prDetail.number}`);
+      }
+      
+      // Invalidate and refetch PR detail
+      await queryClient.invalidateQueries({ 
+        queryKey: ["pull-request", repoRef?.owner, repoRef?.repo, selectedPr, authQuery.data?.login]
+      });
       void refetchPullDetail();
       void prsUnderReviewQuery.refetch();
       // Only close the comment panel if there are no remaining comments
@@ -2877,7 +2944,7 @@ function App() {
         console.log("GitHub comment updated successfully");
       }
     },
-    onSuccess: () => {
+    onSuccess: async () => {
       console.log("Update comment success");
       setFileCommentDraft("");
       setFileCommentError(null);
@@ -2885,6 +2952,14 @@ function App() {
       setEditingCommentId(null);
       setEditingComment(null);
       setIsFileCommentComposerVisible(false);
+      
+      // Clear IndexedDB cache and invalidate queries to get updated comment
+      if (repoRef && prDetail) {
+        await offlineCache.clearPRCache(repoRef.owner, repoRef.repo, prDetail.number);
+      }
+      await queryClient.invalidateQueries({ 
+        queryKey: ["pull-request", repoRef?.owner, repoRef?.repo, selectedPr, authQuery.data?.login]
+      });
       
       // Reload appropriate data based on comment type
       if (editingComment?.url === "#" || !editingComment?.url) {
@@ -2933,6 +3008,14 @@ function App() {
       setEditingCommentId(null);
       setEditingComment(null);
       setIsFileCommentComposerVisible(false);
+      
+      // Clear IndexedDB cache and invalidate queries
+      if (repoRef && prDetail) {
+        await offlineCache.clearPRCache(repoRef.owner, repoRef.repo, prDetail.number);
+      }
+      await queryClient.invalidateQueries({ 
+        queryKey: ["pull-request", repoRef?.owner, repoRef?.repo, selectedPr, authQuery.data?.login]
+      });
       
       // Reload appropriate data based on comment type
       if (editingComment?.url === "#" || !editingComment?.url) {

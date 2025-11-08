@@ -314,24 +314,39 @@ pub async fn get_pull_request(
     let pr = ensure_success(pr, &format!("get pull request {owner}/{repo}#{number}")).await?;
     let pr = pr.json::<GitHubPullRequest>().await?;
 
-    let files_response = client
-        .get(format!(
-            "{API_BASE}/repos/{owner}/{repo}/pulls/{number}/files"
-        ))
-        .query(&[("per_page", "100")])
-        .send()
+    // Fetch all files with pagination
+    let mut all_files = Vec::new();
+    let mut page = 1;
+    
+    loop {
+        let files_response = client
+            .get(format!(
+                "{API_BASE}/repos/{owner}/{repo}/pulls/{number}/files"
+            ))
+            .query(&[("per_page", "100"), ("page", &page.to_string())])
+            .send()
+            .await?;
+
+        let files_response = ensure_success(
+            files_response,
+            &format!("list pull request files {owner}/{repo}#{number} (page {})", page),
+        )
         .await?;
 
-    let files_response = ensure_success(
-        files_response,
-        &format!("list pull request files {owner}/{repo}#{number}"),
-    )
-    .await?;
-
-    let files = files_response.json::<Vec<GitHubPullRequestFile>>().await?;
+        let files = files_response.json::<Vec<GitHubPullRequestFile>>().await?;
+        let count = files.len();
+        all_files.extend(files);
+        
+        // If we got less than 100, we've reached the last page
+        if count < 100 {
+            break;
+        }
+        
+        page += 1;
+    }
 
     // Return all files (frontend will filter if needed)
-    let non_removed: Vec<_> = files
+    let non_removed: Vec<_> = all_files
         .into_iter()
         .filter(|file| file.status != "removed")
         .collect();
@@ -728,22 +743,37 @@ async fn fetch_review_comments(
     repo: &str,
     number: u64,
 ) -> AppResult<Vec<GitHubReviewComment>> {
-    let response = client
-        .get(format!(
-            "{API_BASE}/repos/{owner}/{repo}/pulls/{number}/comments"
-        ))
-        .query(&[("per_page", "100")])
-        .send()
+    let mut all_comments = Vec::new();
+    let mut page = 1;
+    
+    loop {
+        let response = client
+            .get(format!(
+                "{API_BASE}/repos/{owner}/{repo}/pulls/{number}/comments"
+            ))
+            .query(&[("per_page", "100"), ("page", &page.to_string())])
+            .send()
+            .await?;
+
+        let response = ensure_success(
+            response,
+            &format!("list review comments for {owner}/{repo}#{number} (page {})", page),
+        )
         .await?;
 
-    let response = ensure_success(
-        response,
-        &format!("list review comments for {owner}/{repo}#{number}"),
-    )
-    .await?;
-
-    let comments = response.json::<Vec<GitHubReviewComment>>().await?;
-    Ok(comments)
+        let comments = response.json::<Vec<GitHubReviewComment>>().await?;
+        let count = comments.len();
+        all_comments.extend(comments);
+        
+        // If we got less than 100, we've reached the last page
+        if count < 100 {
+            break;
+        }
+        
+        page += 1;
+    }
+    
+    Ok(all_comments)
 }
 
 pub async fn get_pending_review_comments(
@@ -757,26 +787,40 @@ pub async fn get_pending_review_comments(
     let client = build_client(token)?;
     let comments = fetch_pending_review_comments(&client, owner, repo, number, review_id).await?;
     
-    // Fetch PR files to get patches for position-to-line conversion
-    let files_response = client
-        .get(format!(
-            "{API_BASE}/repos/{owner}/{repo}/pulls/{number}/files"
-        ))
-        .query(&[("per_page", "100")])
-        .send()
+    // Fetch all PR files with pagination to get patches for position-to-line conversion
+    let mut all_files = Vec::new();
+    let mut page = 1;
+    
+    loop {
+        let files_response = client
+            .get(format!(
+                "{API_BASE}/repos/{owner}/{repo}/pulls/{number}/files"
+            ))
+            .query(&[("per_page", "100"), ("page", &page.to_string())])
+            .send()
+            .await?;
+
+        let files_response = ensure_success(
+            files_response,
+            &format!("list pull request files {owner}/{repo}#{number} (page {})", page),
+        )
         .await?;
 
-    let files_response = ensure_success(
-        files_response,
-        &format!("list pull request files {owner}/{repo}#{number}"),
-    )
-    .await?;
-
-    let files = files_response.json::<Vec<GitHubPullRequestFile>>().await?;
+        let files = files_response.json::<Vec<GitHubPullRequestFile>>().await?;
+        let count = files.len();
+        all_files.extend(files);
+        
+        // If we got less than 100, we've reached the last page
+        if count < 100 {
+            break;
+        }
+        
+        page += 1;
+    }
     
     // Build a map of file path to patch
     let mut patches: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    for file in files {
+    for file in all_files {
         if let Some(patch) = file.patch {
             patches.insert(file.filename, patch);
         }
@@ -811,22 +855,37 @@ async fn fetch_pending_review_comments(
     number: u64,
     review_id: u64,
 ) -> AppResult<Vec<GitHubReviewComment>> {
-    let response = client
-        .get(format!(
-            "{API_BASE}/repos/{owner}/{repo}/pulls/{number}/reviews/{review_id}/comments"
-        ))
-        .query(&[("per_page", "100")])
-        .send()
+    let mut all_comments = Vec::new();
+    let mut page = 1;
+    
+    loop {
+        let response = client
+            .get(format!(
+                "{API_BASE}/repos/{owner}/{repo}/pulls/{number}/reviews/{review_id}/comments"
+            ))
+            .query(&[("per_page", "100"), ("page", &page.to_string())])
+            .send()
+            .await?;
+
+        let response = ensure_success(
+            response,
+            &format!("list pending review comments for {owner}/{repo}#{number} review {review_id} (page {})", page),
+        )
         .await?;
 
-    let response = ensure_success(
-        response,
-        &format!("list pending review comments for {owner}/{repo}#{number} review {review_id}"),
-    )
-    .await?;
-
-    let comments = response.json::<Vec<GitHubReviewComment>>().await?;
-    Ok(comments)
+        let comments = response.json::<Vec<GitHubReviewComment>>().await?;
+        let count = comments.len();
+        all_comments.extend(comments);
+        
+        // If we got less than 100, we've reached the last page
+        if count < 100 {
+            break;
+        }
+        
+        page += 1;
+    }
+    
+    Ok(all_comments)
 }
 
 async fn fetch_issue_comments(
@@ -835,21 +894,37 @@ async fn fetch_issue_comments(
     repo: &str,
     number: u64,
 ) -> AppResult<Vec<GitHubIssueComment>> {
-    let response = client
-        .get(format!(
-            "{API_BASE}/repos/{owner}/{repo}/issues/{number}/comments"
-        ))
-        .query(&[("per_page", "100")])
-        .send()
+    let mut all_comments = Vec::new();
+    let mut page = 1;
+    
+    loop {
+        let response = client
+            .get(format!(
+                "{API_BASE}/repos/{owner}/{repo}/issues/{number}/comments"
+            ))
+            .query(&[("per_page", "100"), ("page", &page.to_string())])
+            .send()
+            .await?;
+
+        let response = ensure_success(
+            response,
+            &format!("list issue comments for {owner}/{repo}#{number} (page {})", page),
+        )
         .await?;
 
-    let response = ensure_success(
-        response,
-        &format!("list issue comments for {owner}/{repo}#{number}"),
-    )
-    .await?;
-
-    Ok(response.json::<Vec<GitHubIssueComment>>().await?)
+        let comments = response.json::<Vec<GitHubIssueComment>>().await?;
+        let count = comments.len();
+        all_comments.extend(comments);
+        
+        // If we got less than 100, we've reached the last page
+        if count < 100 {
+            break;
+        }
+        
+        page += 1;
+    }
+    
+    Ok(all_comments)
 }
 
 /// Update a review comment on a pull request
@@ -914,21 +989,37 @@ async fn fetch_pull_request_reviews(
     repo: &str,
     number: u64,
 ) -> AppResult<Vec<GitHubPullRequestReview>> {
-    let response = client
-        .get(format!(
-            "{API_BASE}/repos/{owner}/{repo}/pulls/{number}/reviews"
-        ))
-        .query(&[("per_page", "100")])
-        .send()
+    let mut all_reviews = Vec::new();
+    let mut page = 1;
+    
+    loop {
+        let response = client
+            .get(format!(
+                "{API_BASE}/repos/{owner}/{repo}/pulls/{number}/reviews"
+            ))
+            .query(&[("per_page", "100"), ("page", &page.to_string())])
+            .send()
+            .await?;
+
+        let response = ensure_success(
+            response,
+            &format!("list pull request reviews for {owner}/{repo}#{number} (page {})", page),
+        )
         .await?;
 
-    let response = ensure_success(
-        response,
-        &format!("list pull request reviews for {owner}/{repo}#{number}"),
-    )
-    .await?;
-
-    Ok(response.json::<Vec<GitHubPullRequestReview>>().await?)
+        let reviews = response.json::<Vec<GitHubPullRequestReview>>().await?;
+        let count = reviews.len();
+        all_reviews.extend(reviews);
+        
+        // If we got less than 100, we've reached the last page
+        if count < 100 {
+            break;
+        }
+        
+        page += 1;
+    }
+    
+    Ok(all_reviews)
 }
 
 fn build_comments(
