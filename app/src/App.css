@@ -1461,6 +1461,11 @@ select {
   letter-spacing: 0.04em;
 }
 
+.comment-panel__item-badge--outdated {
+  background: rgba(180, 180, 190, 0.18);
+  color: #b4b4be;
+}
+
 .comment-panel__item-body {
   display: flex;
   align-items: flex-start;

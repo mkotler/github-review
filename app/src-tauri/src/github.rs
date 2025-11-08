@@ -375,7 +375,7 @@ pub async fn get_pull_request(
     let issue_comments = fetch_issue_comments(&client, owner, repo, number).await?;
     let reviews = fetch_pull_request_reviews(&client, owner, repo, number).await?;
 
-    let comments = build_comments(current_login, &review_comments, &issue_comments);
+    let comments = build_comments(current_login, &review_comments, &issue_comments, &head_sha);
     let mapped_reviews = build_reviews(current_login, &reviews);
     let my_comments = comments
         .iter()
@@ -785,6 +785,22 @@ pub async fn get_pending_review_comments(
     current_login: Option<&str>,
 ) -> AppResult<Vec<PullRequestComment>> {
     let client = build_client(token)?;
+    
+    // Fetch PR to get head SHA
+    let pr_response = client
+        .get(format!("{API_BASE}/repos/{owner}/{repo}/pulls/{number}"))
+        .send()
+        .await?;
+    
+    let pr_response = ensure_success(
+        pr_response,
+        &format!("fetch pull request {owner}/{repo}#{number}"),
+    )
+    .await?;
+    
+    let pr = pr_response.json::<GitHubPullRequest>().await?;
+    let head_sha = pr.head.sha;
+    
     let comments = fetch_pending_review_comments(&client, owner, repo, number, review_id).await?;
     
     // Fetch all PR files with pagination to get patches for position-to-line conversion
@@ -841,7 +857,7 @@ pub async fn get_pending_review_comments(
             // Get the patch for this file
             let patch = patches.get(&comment.path);
             
-            map_review_comment(comment, is_mine, patch)
+            map_review_comment(comment, is_mine, patch, &head_sha)
         })
         .collect();
     
@@ -1026,6 +1042,7 @@ fn build_comments(
     current_login: Option<&str>,
     review_comments: &[GitHubReviewComment],
     issue_comments: &[GitHubIssueComment],
+    pr_head_sha: &str,
 ) -> Vec<PullRequestComment> {
     let normalized_login = current_login
         .filter(|login| !login.is_empty())
@@ -1039,7 +1056,7 @@ fn build_comments(
             .map(|login| comment.user.login.eq_ignore_ascii_case(login))
             .unwrap_or(false);
         // No patch needed for submitted comments - they already have line numbers
-        collected.push(map_review_comment(comment, is_mine, None));
+        collected.push(map_review_comment(comment, is_mine, None, pr_head_sha));
     }
 
     for comment in issue_comments {
@@ -1089,7 +1106,7 @@ fn map_review(
     }
 }
 
-fn map_review_comment(comment: &GitHubReviewComment, is_mine: bool, patch: Option<&String>) -> PullRequestComment {
+fn map_review_comment(comment: &GitHubReviewComment, is_mine: bool, patch: Option<&String>, pr_head_sha: &str) -> PullRequestComment {
     // Check if this is a file-level comment
     let is_file_level = comment.subject_type.as_deref() == Some("file");
     
@@ -1110,6 +1127,16 @@ fn map_review_comment(comment: &GitHubReviewComment, is_mine: bool, patch: Optio
         }
     }
     
+    // Determine if comment is outdated by checking if it references an older commit
+    let is_outdated = comment.outdated.or_else(|| {
+        if let Some(commit_id) = &comment.commit_id {
+            if commit_id != pr_head_sha {
+                return Some(true);
+            }
+        }
+        None
+    });
+    
     PullRequestComment {
         id: comment.id,
         body: comment.body.clone(),
@@ -1129,6 +1156,7 @@ fn map_review_comment(comment: &GitHubReviewComment, is_mine: bool, patch: Optio
         is_mine,
         review_id: comment.pull_request_review_id,
         in_reply_to_id: comment.in_reply_to_id,
+        outdated: is_outdated,
     }
 }
 
@@ -1229,6 +1257,7 @@ fn map_issue_comment(comment: &GitHubIssueComment, is_mine: bool) -> PullRequest
         is_mine,
         review_id: None,
         in_reply_to_id: None,
+        outdated: None,
     }
 }
 
@@ -1349,6 +1378,10 @@ struct GitHubReviewComment {
     pub pull_request_review_id: Option<u64>,
     #[serde(default)]
     pub in_reply_to_id: Option<u64>,
+    #[serde(default)]
+    pub outdated: Option<bool>,
+    #[serde(default)]
+    pub commit_id: Option<String>,
     #[allow(dead_code)]
     pub subject_type: Option<String>, // "line" or "file" - reserved for future use
 }

@@ -78,6 +78,7 @@ pub struct PullRequestComment {
     pub is_mine: bool,
     pub review_id: Option<u64>,
     pub in_reply_to_id: Option<u64>,
+    pub outdated: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Clone)]

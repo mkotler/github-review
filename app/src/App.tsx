@@ -79,6 +79,7 @@ type PullRequestComment = {
   is_mine: boolean;
   review_id?: number | null;
   in_reply_to_id?: number | null;
+  outdated?: boolean | null;
 };
 
 type PullRequestReview = {
@@ -4077,6 +4078,9 @@ function App() {
                                             <span className="comment-panel__item-author">{comment.author}</span>
                                             {(comment.is_draft || isPendingGitHubReviewComment) && (
                                               <span className="comment-panel__item-badge">Pending</span>
+                                            )}
+                                            {comment.outdated && (
+                                              <span className="comment-panel__item-badge comment-panel__item-badge--outdated">Outdated</span>
                                             )}
                                           </div>
                                           <div className="comment-panel__thread-comment-actions">
