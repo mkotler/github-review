@@ -5705,6 +5705,89 @@ function App() {
                             if (lineNumber && isGlyphMargin && handleGlyphClickRef.current) {
                               handleGlyphClickRef.current(lineNumber);
                             }
+                            
+                            // Handle ctrl+click / cmd+click on links
+                            if ((e.event.ctrlKey || e.event.metaKey) && e.target.position) {
+                              const model = editor.getModel();
+                              if (!model) return;
+                              
+                              const position = e.target.position;
+                              const lineContent = model.getLineContent(position.lineNumber);
+                              const column = position.column;
+                              
+                              // Find link at cursor position using regex
+                              const urlRegex = /(https?:\/\/[^\s)]+)|(\.?\.?\/[^\s)]+)|([\w.-]+\.md)/g;
+                              let match;
+                              let clickedUrl: string | null = null;
+                              
+                              while ((match = urlRegex.exec(lineContent)) !== null) {
+                                const matchStart = match.index + 1; // Monaco columns are 1-indexed
+                                const matchEnd = matchStart + match[0].length;
+                                
+                                if (column >= matchStart && column <= matchEnd) {
+                                  clickedUrl = match[0];
+                                  break;
+                                }
+                              }
+                              
+                              if (clickedUrl && prDetail && selectedFile) {
+                                // Handle anchor links
+                                if (clickedUrl.startsWith('#')) {
+                                  const targetId = clickedUrl.substring(1);
+                                  const targetElement = previewViewerRef.current?.querySelector(`#${CSS.escape(targetId)}`);
+                                  if (targetElement && previewViewerRef.current) {
+                                    const previewPane = previewViewerRef.current;
+                                    const targetRect = targetElement.getBoundingClientRect();
+                                    const paneRect = previewPane.getBoundingClientRect();
+                                    const scrollOffset = targetRect.top - paneRect.top + previewPane.scrollTop;
+                                    previewPane.scrollTo({ top: scrollOffset, behavior: 'smooth' });
+                                  }
+                                  return;
+                                }
+                                
+                                // Handle external URLs
+                                if (clickedUrl.startsWith('http://') || clickedUrl.startsWith('https://')) {
+                                  void invoke('cmd_open_url', { url: clickedUrl });
+                                  return;
+                                }
+                                
+                                // Handle relative file paths
+                                let resolvedPath = clickedUrl;
+                                
+                                // Remove anchor/hash from path
+                                const hashIndex = resolvedPath.indexOf('#');
+                                if (hashIndex !== -1) {
+                                  resolvedPath = resolvedPath.substring(0, hashIndex);
+                                }
+                                
+                                if (resolvedPath.startsWith('./') || resolvedPath.startsWith('../') || !resolvedPath.startsWith('/')) {
+                                  // Relative path - resolve based on current file location
+                                  const filePath = selectedFile.path || '';
+                                  const fileDir = filePath.substring(0, filePath.lastIndexOf('/'));
+                                  const parts = fileDir.split('/').filter(Boolean);
+                                  
+                                  const pathParts = resolvedPath.split('/');
+                                  for (const part of pathParts) {
+                                    if (part === '..') {
+                                      parts.pop();
+                                    } else if (part !== '.' && part !== '') {
+                                      parts.push(part);
+                                    }
+                                  }
+                                  
+                                  resolvedPath = parts.join('/');
+                                } else {
+                                  // Absolute path - remove leading slash
+                                  resolvedPath = resolvedPath.substring(1);
+                                }
+                                
+                                // Check if this file exists in the PR
+                                const targetFile = prDetail.files.find((f: PullRequestFile) => f.path === resolvedPath);
+                                if (targetFile) {
+                                  setSelectedFilePath(resolvedPath);
+                                }
+                              }
+                            }
                           });
                         }}
                       />
