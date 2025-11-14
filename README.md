@@ -192,8 +192,43 @@ For technical details, see [offlineCache.ts documentation](docs/offlineCache.ts.
 
 ### Build for Production
 
+To create a production-ready installer and executable for DocReviewer:
+
 ```bash
+# From the app directory
+npm ci
 npm run tauri build
+```
+
+This will:
+- Build the React frontend with Vite (optimized for production)
+- Compile the Rust backend in release mode
+- Bundle everything into platform-native installers (MSI and NSIS for Windows)
+
+**Output Artifacts:**
+- Executable: `src-tauri/target/release/docreviewer.exe`
+- MSI installer: `src-tauri/target/release/bundle/msi/DocReviewer_<version>_x64_en-US.msi`
+- NSIS installer: `src-tauri/target/release/bundle/nsis/DocReviewer_<version>_x64-setup.exe`
+
+You can distribute the MSI or NSIS installer to users, or run the `.exe` directly for portable use.
+
+#### Versioning
+To update the app version shown in the installer and executable:
+- Edit the `"version"` field in both `package.json` and `src-tauri/tauri.conf.json`
+- Rebuild with `npm run tauri build`
+
+#### Optional: Code Signing
+For Windows SmartScreen compatibility, sign the output binaries using your code signing certificate and `signtool`:
+```bash
+signtool sign /tr http://timestamp.digicert.com /td SHA256 /fd SHA256 /a path\to\docreviewer.exe
+signtool sign /tr http://timestamp.digicert.com /td SHA256 /fd SHA256 /a path\to\DocReviewer_<version>_x64-setup.exe
+```
+
+#### Troubleshooting
+- If the build fails on `webview2-com`, install the [WebView2 Evergreen Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/).
+- If the frontend does not load, confirm that the Vite build output is present at `app/dist` and that `tauri.conf.json` points to the correct `frontendDist`.
+
+For more details, see the [Tauri production build guide](https://tauri.app/v1/guides/distribution/).
 ```
 
 The executable will be in `src-tauri/target/release/`.

@@ -1426,15 +1426,15 @@ pub async fn create_review_with_comments(
     let mut failed = 0;
     let mut errors = Vec::new();
     let mut succeeded_ids = Vec::new();
-    
+    let mut wait_time_ms: u64 = 0;
+
     // Submit each comment individually, continuing even if some fail
     for (index, comment) in comments.iter().enumerate() {
         let mut comment_obj = Map::new();
         comment_obj.insert("body".into(), Value::String(comment.body.clone()));
         comment_obj.insert("commit_id".into(), Value::String(commit_id.to_string()));
         comment_obj.insert("path".into(), Value::String(comment.file_path.clone()));
-        
-        // For file-level comments (line_number = 0), use subject_type instead of line
+
         if comment.line_number == 0 {
             comment_obj.insert("subject_type".into(), Value::String("file".to_string()));
             warn!("Posting file-level comment to {}: {}", comment.file_path, comment.body);
@@ -1443,45 +1443,166 @@ pub async fn create_review_with_comments(
             comment_obj.insert("side".into(), Value::String(comment.side.clone()));
             warn!("Posting comment to {}:{}: {}", comment.file_path, comment.line_number, comment.body);
         }
-        
+
+        let comment_payload = Value::Object(comment_obj);
+
         // Emit progress event
         let _ = app.emit("comment-submit-progress", serde_json::json!({
             "current": index + 1,
             "total": total,
             "file": comment.file_path,
         }));
-        
-        // Add delay between comments to avoid "was submitted too quickly" error
-        // Skip delay for the first comment (index 0)
-        if index > 0 {
-            tokio::time::sleep(tokio::time::Duration::from_millis(600)).await;
+
+        // Respect any wait time determined from previous API response
+        if wait_time_ms > 0 {
+            if wait_time_ms > 1000 {
+                warn!("Pausing for {}ms due to rate limit", wait_time_ms);
+                let _ = app.emit("comment-submit-progress", serde_json::json!({
+                    "current": index + 1,
+                    "total": total,
+                    "file": comment.file_path,
+                    "waitTimeMs": wait_time_ms,
+                }));
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(wait_time_ms)).await;
         }
-        
-        match client
+
+        let mut response = match client
             .post(format!("{API_BASE}/repos/{owner}/{repo}/pulls/{number}/comments"))
-            .json(&Value::Object(comment_obj))
+            .json(&comment_payload)
             .send()
-            .await
-        {
-            Ok(response) => {
-                match ensure_success(
-                    response,
-                    &format!("add comment to {owner}/{repo}#{number}"),
-                )
-                .await
+            .await {
+            Ok(resp) => resp,
+            Err(e) => {
+                failed += 1;
+                let error_msg = format!("Failed to post comment to {}:{} - {}", comment.file_path, comment.line_number, e);
+                warn!("✗ {}", error_msg);
+                errors.push(error_msg);
+                continue;
+            }
+        };
+
+        let mut cloned_headers = response.headers().clone();
+
+        if response.status() == reqwest::StatusCode::FORBIDDEN {
+            let body = response.text().await.unwrap_or_default();
+            let retry_after_header = cloned_headers
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<u64>().ok());
+
+            if body.to_lowercase().contains("rate limit") {
+                warn!("GitHub rate limit exceeded (403 Forbidden). Body: {}", body);
+
+                let mut pause_ms = if let Some(secs) = retry_after_header {
+                    warn!("Pausing for Retry-After header: waiting {} seconds", secs);
+                    secs * 1000
+                } else if let Some(reset) = cloned_headers
+                    .get("x-ratelimit-reset")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| s.parse::<u64>().ok())
                 {
-                    Ok(_) => {
-                        succeeded += 1;
-                        succeeded_ids.push(comment.id);
-                        warn!("✓ Comment posted successfully");
-                    }
+                    let now = chrono::Utc::now().timestamp() as u64;
+                    let wait_secs = reset.saturating_sub(now);
+                    warn!("Pausing for X-RateLimit-Reset after 403: waiting {} seconds until {}", wait_secs, reset);
+                    wait_secs * 1000
+                } else {
+                    warn!("No Retry-After or Reset header found on 403; defaulting to 60s pause");
+                    60_000
+                };
+
+                if pause_ms == 0 {
+                    pause_ms = 1000;
+                }
+
+                tokio::time::sleep(tokio::time::Duration::from_millis(pause_ms)).await;
+
+                response = match client
+                    .post(format!("{API_BASE}/repos/{owner}/{repo}/pulls/{number}/comments"))
+                    .json(&comment_payload)
+                    .send()
+                    .await {
+                    Ok(resp) => resp,
                     Err(e) => {
                         failed += 1;
-                        let error_msg = format!("Failed to post comment to {}:{} - {}", comment.file_path, comment.line_number, e);
+                        let error_msg = format!("Failed to post comment to {}:{} after rate limit wait - {}", comment.file_path, comment.line_number, e);
                         warn!("✗ {}", error_msg);
                         errors.push(error_msg);
+                        continue;
                     }
+                };
+
+                cloned_headers = response.headers().clone();
+            } else {
+                failed += 1;
+                let error_msg = format!(
+                    "Forbidden when posting comment to {}:{} - body: {}",
+                    comment.file_path,
+                    comment.line_number,
+                    body
+                );
+                warn!("✗ {}", error_msg);
+                errors.push(error_msg);
+                continue;
+            }
+        }
+
+        let limit = cloned_headers
+            .get("x-ratelimit-limit")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(5000);
+        let remaining = cloned_headers
+            .get("x-ratelimit-remaining")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(limit);
+        let reset = cloned_headers
+            .get("x-ratelimit-reset")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse::<u64>().ok());
+        let retry_after = cloned_headers
+            .get("retry-after")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse::<u64>().ok());
+
+        if remaining <= 10 {
+            warn!("Rate limit approaching: {} remaining of {} (reset at {:?})", remaining, limit, reset);
+        }
+
+        if remaining <= 2 {
+            warn!("Starting exponential backoff: {} remaining", remaining);
+            if remaining == 0 {
+                if let Some(secs) = retry_after {
+                    wait_time_ms = secs * 1000;
+                    warn!("Pausing for Retry-After: waiting {} seconds", secs);
+                } else if let Some(wait_until) = reset {
+                    let now = chrono::Utc::now().timestamp() as u64;
+                    let wait_secs = wait_until.saturating_sub(now);
+                    wait_time_ms = wait_secs * 1000;
+                    warn!("Pausing for X-RateLimit-Reset: waiting {} seconds until {}", wait_secs, wait_until);
+                } else {
+                    wait_time_ms = 60_000;
+                    warn!("No Retry-After or Reset header found; defaulting to 60s pause");
                 }
+            } else {
+                wait_time_ms = 1000 * (3 - remaining) as u64;
+                warn!("Exponential backoff: waiting {}ms", wait_time_ms);
+            }
+        } else {
+            wait_time_ms = 0;
+        }
+
+        match ensure_success(
+            response,
+            &format!("add comment to {owner}/{repo}#{number}"),
+        )
+        .await
+        {
+            Ok(_) => {
+                succeeded += 1;
+                succeeded_ids.push(comment.id);
+                warn!("✓ Comment posted successfully");
             }
             Err(e) => {
                 failed += 1;
