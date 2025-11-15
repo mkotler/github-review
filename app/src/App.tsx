@@ -451,6 +451,7 @@ function App() {
   const [fileCommentIsFileLevel, setFileCommentIsFileLevel] = useState(false);
   const [fileCommentError, setFileCommentError] = useState<string | null>(null);
   const [fileCommentSuccess, setFileCommentSuccess] = useState(false);
+  const [fileCommentSubmittingMode, setFileCommentSubmittingMode] = useState<"single" | "review" | null>(null);
   const [replyingToCommentId, setReplyingToCommentId] = useState<number | null>(null);
   const [replyDraft, setReplyDraft] = useState("");
   const [replyError, setReplyError] = useState<string | null>(null);
@@ -2863,6 +2864,9 @@ function App() {
         });
       }
     },
+    onMutate: async ({ mode }) => {
+      setFileCommentSubmittingMode(mode);
+    },
     onSuccess: async () => {
       setFileCommentDraft("");
       setFileCommentLine("");
@@ -2884,6 +2888,9 @@ function App() {
       });
       void refetchPullDetail();
       void loadLocalComments(); // Reload local comments
+    },
+    onSettled: () => {
+      setFileCommentSubmittingMode(null);
     },
     onError: (error: unknown) => {
       const message = error instanceof Error ? error.message : "Failed to submit comment.";
@@ -4111,7 +4118,7 @@ function App() {
                                 ref={fileCommentPostButtonRef}
                                 title={!isOnline ? "Direct comments are disabled while offline" : ""}
                               >
-                                {submitFileCommentMutation.isPending ? "Sending…" : "Post comment"}
+                                {submitFileCommentMutation.isPending && fileCommentSubmittingMode === "single" ? "Sending…" : "Post comment"}
                               </button>
                               {effectiveFileCommentMode === "review" ? (
                                 pendingReview ? (
@@ -4123,7 +4130,7 @@ function App() {
                                       data-submit-mode="review"
                                       ref={fileCommentReviewButtonRef}
                                     >
-                                      {submitFileCommentMutation.isPending ? "Saving…" : "Add to review"}
+                                      {submitFileCommentMutation.isPending && fileCommentSubmittingMode === "review" ? "Saving…" : "Add to review"}
                                     </button>
                                   ) : null
                                 ) : (
