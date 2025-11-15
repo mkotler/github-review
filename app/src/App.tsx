@@ -520,6 +520,8 @@ function App() {
   const inlineCommentReviewButtonRef = useRef<HTMLButtonElement | null>(null);
   const replyPostButtonRef = useRef<HTMLButtonElement | null>(null);
   const replyReviewButtonRef = useRef<HTMLButtonElement | null>(null);
+  const replyTextareaRefs = useRef<Record<number, HTMLTextAreaElement | null>>({});
+  const replyActionsRefs = useRef<Record<number, HTMLDivElement | null>>({});
   const prCommentFormRef = useRef<HTMLFormElement | null>(null);
   const generalCommentFormRef = useRef<HTMLFormElement | null>(null);
   const queryClient = useQueryClient();
@@ -530,6 +532,18 @@ function App() {
       fileCommentTextareaRef.current.focus();
     }
   }, [isFileCommentComposerVisible]);
+
+  useEffect(() => {
+    if (replyingToCommentId === null) {
+      return;
+    }
+    const replyTextarea = replyTextareaRefs.current[replyingToCommentId];
+    if (replyTextarea) {
+      replyTextarea.focus();
+      const endPosition = replyTextarea.value.length;
+      replyTextarea.setSelectionRange(endPosition, endPosition);
+    }
+  }, [replyingToCommentId]);
 
   useEffect(() => {
     if (!showCommentPanelMenu) {
@@ -4285,9 +4299,23 @@ function App() {
                                                   setReplySuccess(false);
                                                   // Scroll down just enough to show the reply form
                                                   setTimeout(() => {
-                                                    if (commentPanelBodyRef.current) {
-                                                      const currentScroll = commentPanelBodyRef.current.scrollTop;
-                                                      commentPanelBodyRef.current.scrollTop = currentScroll + 300;
+                                                    const panel = commentPanelBodyRef.current;
+                                                    const actions = replyActionsRefs.current[parentComment.id];
+                                                    if (!panel || !actions) {
+                                                      return;
+                                                    }
+
+                                                    const panelRect = panel.getBoundingClientRect();
+                                                    const actionsRect = actions.getBoundingClientRect();
+                                                    const bottomOverflow = actionsRect.bottom - panelRect.bottom;
+                                                    if (bottomOverflow > 0) {
+                                                      panel.scrollTop += bottomOverflow + 16;
+                                                      return;
+                                                    }
+
+                                                    const topOverflow = panelRect.top - actionsRect.top;
+                                                    if (topOverflow > 0) {
+                                                      panel.scrollTop -= topOverflow + 16;
                                                     }
                                                   }, 100);
                                                 }}
@@ -4366,6 +4394,13 @@ function App() {
                                       </div>
                                     </div>
                                     <textarea
+                                      ref={(element) => {
+                                        if (element) {
+                                          replyTextareaRefs.current[parentComment.id] = element;
+                                        } else {
+                                          delete replyTextareaRefs.current[parentComment.id];
+                                        }
+                                      }}
                                       value={replyDraft}
                                       onChange={(e) => {
                                         const newValue = e.target.value;
@@ -4412,7 +4447,16 @@ function App() {
                                     {replySuccess && (
                                       <div className="comment-panel__success">Reply posted!</div>
                                     )}
-                                    <div className="comment-panel__reply-actions">
+                                    <div
+                                      className="comment-panel__reply-actions"
+                                      ref={(element) => {
+                                        if (element) {
+                                          replyActionsRefs.current[parentComment.id] = element;
+                                        } else {
+                                          delete replyActionsRefs.current[parentComment.id];
+                                        }
+                                      }}
+                                    >
                                       <button
                                         type="button"
                                         className={`comment-submit${replyDefaultMode === "review" ? " comment-submit--secondary" : ""}`}
