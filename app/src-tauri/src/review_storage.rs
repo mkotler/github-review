@@ -713,20 +713,21 @@ impl ReviewStorage {
                 current_file = Some(comment.file_path.clone());
             }
             
-            let side_label = if comment.side.eq_ignore_ascii_case("LEFT") {
+            // File-level comments (line_number = 0) should show "Overall" instead of "Line 0"
+            let is_file_level = comment.line_number == 0;
+            let line_label = if is_file_level {
+                "Overall".to_string()
+            } else {
+                format!("Line {}", comment.line_number)
+            };
+
+            let side_label = if !is_file_level && comment.side.eq_ignore_ascii_case("LEFT") {
                 " (ORIGINAL)"
             } else {
                 ""
             };
             
             let deleted_prefix = if comment.deleted { "DELETED - " } else { "" };
-            
-            // File-level comments (line_number = 0) should show "Overall" instead of "Line 0"
-            let line_label = if comment.line_number == 0 {
-                "Overall".to_string()
-            } else {
-                format!("Line {}", comment.line_number)
-            };
             
             content.push_str(&format!(
                 "    {}{}{}: {}\n",

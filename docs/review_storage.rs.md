@@ -1,13 +1,13 @@
 # app/src-tauri/src/review_storage.rs
+```
+path/to/file1.md:
+    Line 10: This is a comment
+    Line 20: Another comment
+    DELETED - Line 30: This comment was deleted
 
-**Path:** `app/src-tauri/src/review_storage.rs`
-
-**Last Updated:** January 2025
-
-**Lines of Code:** 608
-
-## Capabilities Provided
-
+path/to/file2.yml:
+    Line 5 (ORIGINAL): Comment on original side
+```
 This module implements a comprehensive local storage system for draft pull request reviews using SQLite. It enables users to compose review comments locally with automatic crash recovery through persistent log files. The storage system maintains review metadata (commit ID, review body, creation time) and individual file comments with soft-delete support (comments are marked as deleted rather than removed). Log files are automatically generated in human-readable format for each review, serving as crash recovery backups that survive application crashes or unexpected shutdowns. The module provides thread-safe global storage access through a singleton pattern with `Mutex` protection for concurrent operations. Reviews can be completed (clearing from database), abandoned (marking log file), or deleted (preserving log file with metadata). This ensures users never lose work, even in failure scenarios.
 
 ## Data Structures
