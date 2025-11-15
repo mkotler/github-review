@@ -1711,8 +1711,9 @@ function App() {
     preloadNextFile();
   }, [visibleFiles, prDetail, repoRef, queryClient]);
 
-  const openInlineComment = useCallback(async () => {
-    if (!selectedFilePath) {
+  const openInlineComment = useCallback(async (filePath?: string) => {
+    const targetFilePath = filePath ?? selectedFilePath;
+    if (!targetFilePath) {
       return;
     }
     setIsSidebarCollapsed(false);
@@ -3177,12 +3178,19 @@ function App() {
     },
   });
 
-  const handleAddCommentClick = useCallback(() => {
+  const handleAddCommentClick = useCallback((filePath?: string) => {
+    const targetFilePath = filePath ?? selectedFilePath;
+    if (!targetFilePath) {
+      return;
+    }
+    if (selectedFilePath !== targetFilePath) {
+      setSelectedFilePath(targetFilePath);
+    }
     setEditingCommentId(null);
     setEditingComment(null);
     setIsAddingInlineComment(true);
     // Restore draft if exists
-    const draft = selectedFilePath ? draftsByFile[selectedFilePath]?.inline || "" : "";
+    const draft = draftsByFile[targetFilePath]?.inline || "";
     setInlineCommentDraft(draft);
     setInlineCommentError(null);
     // Scroll to bottom after a brief delay to allow render
@@ -4960,7 +4968,7 @@ function App() {
                               <button
                                 type="button"
                                 className="comment-panel__action-button"
-                                onClick={handleAddCommentClick}
+                                onClick={() => handleAddCommentClick()}
                                 disabled={startReviewMutation.isPending}
                               >
                                 Add comment
@@ -5553,21 +5561,52 @@ function App() {
                                   title={tooltip}
                                 >
                                   <span className="file-list__name">{displayName}</span>
-                                  {commentCount > 0 && (
-                                    <span 
-                                      className={`file-list__badge${fileHasPendingComments(file.path) ? ' file-list__badge--pending' : ''}${fileHasDraftsInProgress(file.path) ? ' file-list__badge--draft' : ''}`}
-                                      title={`${commentCount} comment${commentCount !== 1 ? 's' : ''}${fileHasDraftsInProgress(file.path) ? ' (comment in progress)' : ''}`}
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        if (selectedFilePath !== file.path) {
-                                          setSelectedFilePath(file.path);
-                                        }
-                                        setIsInlineCommentOpen(true);
-                                      }}
-                                    >
-                                      {commentCount}
-                                    </span>
-                                  )}
+                                  <span className="file-list__badge-wrapper">
+                                    {commentCount > 0 ? (
+                                      <span 
+                                        className={`file-list__badge${fileHasPendingComments(file.path) ? ' file-list__badge--pending' : ''}${fileHasDraftsInProgress(file.path) ? ' file-list__badge--draft' : ''}`}
+                                        title={`${commentCount} comment${commentCount !== 1 ? 's' : ''}${fileHasDraftsInProgress(file.path) ? ' (comment in progress)' : ''}`}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          if (selectedFilePath !== file.path) {
+                                            setSelectedFilePath(file.path);
+                                          }
+                                          setIsInlineCommentOpen(true);
+                                        }}
+                                      >
+                                        {commentCount}
+                                      </span>
+                                    ) : (
+                                      <span
+                                        role="button"
+                                        tabIndex={0}
+                                        className="file-list__badge file-list__badge--add"
+                                        aria-label={`Add comment to ${displayName}`}
+                                        title="Add file comment"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          if (selectedFilePath !== file.path) {
+                                            setSelectedFilePath(file.path);
+                                          }
+                                          void openInlineComment(file.path);
+                                          handleAddCommentClick(file.path);
+                                        }}
+                                        onKeyDown={(e) => {
+                                          if (e.key === "Enter" || e.key === " ") {
+                                            e.preventDefault();
+                                            e.stopPropagation();
+                                            if (selectedFilePath !== file.path) {
+                                              setSelectedFilePath(file.path);
+                                            }
+                                            void openInlineComment(file.path);
+                                            handleAddCommentClick(file.path);
+                                          }
+                                        }}
+                                      >
+                                        +
+                                      </span>
+                                    )}
+                                  </span>
                                 </button>
                               </li>
                             );

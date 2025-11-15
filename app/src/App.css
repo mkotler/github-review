@@ -1101,6 +1101,15 @@ select {
   transform: scale(1.05);
 }
 
+.file-list__badge-wrapper {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 20px;
+}
+
 .file-list__badge--pending:hover {
   background: rgba(255, 157, 160, 0.28);
   border-color: rgba(255, 157, 160, 0.6);
@@ -1109,6 +1118,21 @@ select {
 .file-list__badge--draft:hover {
   background: rgba(200, 160, 255, 0.28);
   border-color: rgba(200, 160, 255, 0.6);
+}
+
+.file-list__badge--add {
+  opacity: 0;
+  transform: scale(0.9);
+  pointer-events: none;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.file-list__badge-wrapper:hover .file-list__badge--add,
+.file-list__badge-wrapper:focus-within .file-list__badge--add,
+.file-list__badge--add:focus-visible {
+  opacity: 1;
+  transform: scale(1);
+  pointer-events: auto;
 }
 
 .workspace {
