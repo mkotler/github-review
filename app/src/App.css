@@ -27,6 +27,7 @@
   color: #e3e7ef;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+  --pane-zoom-scale: 1;
 }
 
 html,
@@ -2340,7 +2341,7 @@ select {
 .markdown-preview {
   padding: 18px 22px;
   overflow-y: auto;
-  font-size: 14px;
+  font-size: calc(14px * var(--pane-zoom-scale, 1));
   color: #24292f;
   line-height: 1.6;
   background: #ffffff;

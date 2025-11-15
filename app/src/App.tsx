@@ -114,6 +114,14 @@ const RETRY_CONFIG = {
   retryDelay: (attemptIndex: number) => Math.min(1000 * 2 ** attemptIndex, 30000),
 };
 
+const PANE_ZOOM_DEFAULT = 1;
+const PANE_ZOOM_MIN = 0.5;
+const PANE_ZOOM_MAX = 2;
+const PANE_ZOOM_STEP = 0.1;
+const BASE_EDITOR_FONT_SIZE = 14;
+
+const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+
 // Global error handlers to catch crashes
 if (typeof window !== "undefined") {
   // Store original console methods
@@ -498,6 +506,7 @@ function App() {
   const [isPrCommentsView, setIsPrCommentsView] = useState(false);
   const [isPrCommentComposerOpen, setIsPrCommentComposerOpen] = useState(false);
   const [showAllFileTypes, setShowAllFileTypes] = useState(false);
+  const [paneZoomLevel, setPaneZoomLevel] = useState(PANE_ZOOM_DEFAULT);
   const workspaceBodyRef = useRef<HTMLDivElement | null>(null);
   const appShellRef = useRef<HTMLDivElement | null>(null);
   const userMenuRef = useRef<HTMLDivElement | null>(null);
@@ -508,6 +517,7 @@ function App() {
   const handleGlyphClickRef = useRef<((lineNumber: number) => void) | null>(null);
   const previewViewerRef = useRef<HTMLElement | null>(null);
   const editorRef = useRef<any>(null);
+  const diffEditorRef = useRef<any>(null);
   const isScrollingSyncRef = useRef(false);
   const previousBodyCursorRef = useRef<string | null>(null);
   const previousBodyUserSelectRef = useRef<string | null>(null);
@@ -526,6 +536,7 @@ function App() {
   const prCommentFormRef = useRef<HTMLFormElement | null>(null);
   const generalCommentFormRef = useRef<HTMLFormElement | null>(null);
   const queryClient = useQueryClient();
+  const hoveredPaneRef = useRef<'source' | 'preview' | null>(null);
 
   // Auto-focus textarea when comment composer opens
   useEffect(() => {
@@ -597,6 +608,76 @@ function App() {
       button.click();
     }
   }, []);
+
+  const resetPaneZoom = useCallback(() => {
+    setPaneZoomLevel(PANE_ZOOM_DEFAULT);
+  }, []);
+
+  const adjustPaneZoom = useCallback((delta: number) => {
+    setPaneZoomLevel(prev => {
+      const next = clamp(parseFloat((prev + delta).toFixed(2)), PANE_ZOOM_MIN, PANE_ZOOM_MAX);
+      return next;
+    });
+  }, []);
+
+  const applyCodeZoom = useCallback((scale: number) => {
+    const fontSize = Math.round(BASE_EDITOR_FONT_SIZE * scale);
+    if (editorRef.current) {
+      editorRef.current.updateOptions({ fontSize });
+    }
+    if (diffEditorRef.current) {
+      const modified = diffEditorRef.current.getModifiedEditor?.();
+      const original = diffEditorRef.current.getOriginalEditor?.();
+      modified?.updateOptions?.({ fontSize });
+      original?.updateOptions?.({ fontSize });
+    }
+  }, []);
+
+  useEffect(() => {
+    applyCodeZoom(paneZoomLevel);
+  }, [paneZoomLevel, applyCodeZoom]);
+
+  useEffect(() => {
+    const root = document.documentElement;
+    root.style.setProperty("--pane-zoom-scale", paneZoomLevel.toString());
+    return () => {
+      root.style.removeProperty("--pane-zoom-scale");
+    };
+  }, [paneZoomLevel]);
+
+  useEffect(() => {
+    const handleWheel = (event: WheelEvent) => {
+      if (!event.ctrlKey || !hoveredPaneRef.current) {
+        return;
+      }
+      event.preventDefault();
+      adjustPaneZoom(event.deltaY < 0 ? PANE_ZOOM_STEP : -PANE_ZOOM_STEP);
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (!event.ctrlKey || !hoveredPaneRef.current) {
+        return;
+      }
+      if (event.key === "=" || event.key === "+") {
+        event.preventDefault();
+        adjustPaneZoom(PANE_ZOOM_STEP);
+      } else if (event.key === "-" || event.key === "_") {
+        event.preventDefault();
+        adjustPaneZoom(-PANE_ZOOM_STEP);
+      } else if (event.key === "0") {
+        event.preventDefault();
+        resetPaneZoom();
+      }
+    };
+
+    window.addEventListener("wheel", handleWheel, { passive: false });
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      window.removeEventListener("wheel", handleWheel);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [adjustPaneZoom, resetPaneZoom]);
 
   // Monitor memory usage periodically to detect leaks
   useEffect(() => {
@@ -5771,6 +5852,18 @@ function App() {
                           >
                             {showDiff ? "Show Modified" : "Show Diff"}
                           </button>
+                          {Math.abs(paneZoomLevel - PANE_ZOOM_DEFAULT) > 0.001 && (
+                            <button
+                              type="button"
+                              className="source-menu__item"
+                              onClick={() => {
+                                resetPaneZoom();
+                                setShowSourceMenu(false);
+                              }}
+                            >
+                              Reset Zoom
+                            </button>
+                          )}
                         </div>
                       )}
                     </div>
@@ -5852,7 +5945,17 @@ function App() {
                     </div>
                   </form>
                 )}
-                <div className="pane__viewer">
+                <div
+                  className="pane__viewer pane__viewer--source"
+                  onMouseEnter={() => {
+                    hoveredPaneRef.current = 'source';
+                  }}
+                  onMouseLeave={() => {
+                    if (hoveredPaneRef.current === 'source') {
+                      hoveredPaneRef.current = null;
+                    }
+                  }}
+                >
                   {selectedFile ? (
                     showDiff ? (
                       <DiffEditor
@@ -5872,6 +5975,13 @@ function App() {
                           },
                         }}
                         onMount={(editor) => {
+                          diffEditorRef.current = editor;
+                          applyCodeZoom(paneZoomLevel);
+                          editor.onDidDispose(() => {
+                            if (diffEditorRef.current === editor) {
+                              diffEditorRef.current = null;
+                            }
+                          });
                           const modifiedEditor = editor.getModifiedEditor();
                           
                           const hoveredLineRef = { current: null as number | null };
@@ -5929,6 +6039,12 @@ function App() {
                         }}
                         onMount={(editor) => {
                           editorRef.current = editor;
+                          applyCodeZoom(paneZoomLevel);
+                          editor.onDidDispose(() => {
+                            if (editorRef.current === editor) {
+                              editorRef.current = null;
+                            }
+                          });
                           
                           // Scroll synchronization
                           editor.onDidScrollChange(() => {
@@ -6141,7 +6257,17 @@ function App() {
                 </div>
               </div>
               <div className="pane__content">
-                <div className="pane__viewer">
+                <div
+                  className="pane__viewer pane__viewer--preview"
+                  onMouseEnter={() => {
+                    hoveredPaneRef.current = 'preview';
+                  }}
+                  onMouseLeave={() => {
+                    if (hoveredPaneRef.current === 'preview') {
+                      hoveredPaneRef.current = null;
+                    }
+                  }}
+                >
                   {selectedFile ? (
                     selectedFile.language === "image" ? (
                       <div className="image-preview">
