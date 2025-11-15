@@ -509,6 +509,15 @@ function App() {
   const hoveredLineRef = useRef<number | null>(null);
   const decorationsRef = useRef<string[]>([]);
   const fileCommentTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const fileCommentFormRef = useRef<HTMLFormElement | null>(null);
+  const fileCommentPostButtonRef = useRef<HTMLButtonElement | null>(null);
+  const fileCommentReviewButtonRef = useRef<HTMLButtonElement | null>(null);
+  const inlineCommentPostButtonRef = useRef<HTMLButtonElement | null>(null);
+  const inlineCommentReviewButtonRef = useRef<HTMLButtonElement | null>(null);
+  const replyPostButtonRef = useRef<HTMLButtonElement | null>(null);
+  const replyReviewButtonRef = useRef<HTMLButtonElement | null>(null);
+  const prCommentFormRef = useRef<HTMLFormElement | null>(null);
+  const generalCommentFormRef = useRef<HTMLFormElement | null>(null);
   const queryClient = useQueryClient();
 
   // Auto-focus textarea when comment composer opens
@@ -517,6 +526,37 @@ function App() {
       fileCommentTextareaRef.current.focus();
     }
   }, [isFileCommentComposerVisible]);
+
+  const handleCtrlEnter = useCallback((
+    event: React.KeyboardEvent<HTMLTextAreaElement>,
+    action?: () => void,
+  ) => {
+    if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+      event.preventDefault();
+      action?.();
+    }
+  }, []);
+
+  const triggerFileCommentSubmit = useCallback((mode?: "single" | "review") => {
+    if (!fileCommentFormRef.current) {
+      return;
+    }
+    if (mode === "review" && fileCommentReviewButtonRef.current) {
+      fileCommentFormRef.current.requestSubmit(fileCommentReviewButtonRef.current);
+      return;
+    }
+    if (mode === "single" && fileCommentPostButtonRef.current) {
+      fileCommentFormRef.current.requestSubmit(fileCommentPostButtonRef.current);
+      return;
+    }
+    fileCommentFormRef.current.requestSubmit();
+  }, []);
+
+  const triggerButtonClick = useCallback((button: HTMLButtonElement | null) => {
+    if (button) {
+      button.click();
+    }
+  }, []);
 
   // Monitor memory usage periodically to detect leaks
   useEffect(() => {
@@ -1255,6 +1295,13 @@ function App() {
   const effectiveFileCommentMode: "single" | "review" = fileCommentIsFileLevel
     ? "single"
     : fileCommentMode;
+
+  const hasLocalPendingReview = Boolean(pendingReview && !pendingReview.html_url);
+  const fileCommentDefaultMode: "single" | "review" = hasLocalPendingReview && effectiveFileCommentMode === "review"
+    ? "review"
+    : "single";
+  const inlineDefaultMode: "single" | "review" = hasLocalPendingReview ? "review" : "single";
+  const replyDefaultMode = inlineDefaultMode;
 
   const formatFileLabel = useCallback((path: string, tocNameMap?: Map<string, string>) => {
     // Check if path contains toc.yml
@@ -3410,8 +3457,15 @@ function App() {
   );
 
   const handleFileCommentSubmit = useCallback(
-    (event: React.FormEvent) => {
+    (event: React.FormEvent<HTMLFormElement>) => {
       event.preventDefault();
+      const nativeEvent = event.nativeEvent as SubmitEvent;
+      const submitter = nativeEvent?.submitter as HTMLButtonElement | null;
+      const submitModeAttr = submitter?.getAttribute("data-submit-mode");
+      const requestedMode: "single" | "review" | null =
+        submitModeAttr === "review" ? "review" :
+        submitModeAttr === "single" ? "single" :
+        null;
       
       // Check if we're editing an existing comment
       if (editingCommentId !== null) {
@@ -3441,7 +3495,7 @@ function App() {
         return;
       }
 
-      const commentMode: "single" | "review" = effectiveFileCommentMode;
+      const commentMode: "single" | "review" = requestedMode ?? effectiveFileCommentMode;
 
       let parsedLine: number | null = null;
       let isFileLevelComment = fileCommentIsFileLevel;
@@ -3820,7 +3874,11 @@ function App() {
                 <div className="comment-panel__body" ref={commentPanelBodyRef}>
                   {selectedFile ? (
                     shouldShowFileCommentComposer ? (
-                      <form className="comment-panel__form" onSubmit={handleFileCommentSubmit}>
+                      <form
+                        className="comment-panel__form"
+                        onSubmit={handleFileCommentSubmit}
+                        ref={fileCommentFormRef}
+                      >
                         <textarea
                           ref={fileCommentTextareaRef}
                           value={fileCommentDraft}
@@ -3831,6 +3889,15 @@ function App() {
                             setFileCommentSuccess(false);
                           }}
                           rows={6}
+                          onKeyDown={(event) =>
+                            handleCtrlEnter(event, () => {
+                              if (editingCommentId !== null) {
+                                triggerFileCommentSubmit();
+                              } else {
+                                triggerFileCommentSubmit(fileCommentDefaultMode);
+                              }
+                            })
+                          }
                         />
                         {editingCommentId === null && fileCommentIsFileLevel && (
                           <label className="comment-panel__checkbox">
@@ -3930,29 +3997,27 @@ function App() {
                               )}
                               <button
                                 type="submit"
-                                className="comment-submit"
+                                className={`comment-submit${fileCommentDefaultMode === "review" ? " comment-submit--secondary" : ""}`}
                                 disabled={submitFileCommentMutation.isPending || !isOnline}
-                                onClick={() => {
-                                  setFileCommentMode("single");
-                                }}
+                                data-submit-mode="single"
+                                ref={fileCommentPostButtonRef}
                                 title={!isOnline ? "Direct comments are disabled while offline" : ""}
                               >
                                 {submitFileCommentMutation.isPending ? "Sending…" : "Post comment"}
                               </button>
                               {effectiveFileCommentMode === "review" ? (
                                 pendingReview ? (
-                                  pendingReview.html_url ? null : (
+                                  hasLocalPendingReview ? (
                                     <button
                                       type="submit"
-                                      className="comment-submit comment-submit--secondary"
+                                      className={`comment-submit${fileCommentDefaultMode === "review" ? "" : " comment-submit--secondary"}`}
                                       disabled={submitFileCommentMutation.isPending}
-                                      onClick={() => {
-                                        setFileCommentMode("review");
-                                      }}
+                                      data-submit-mode="review"
+                                      ref={fileCommentReviewButtonRef}
                                     >
-                                      Add to review
+                                      {submitFileCommentMutation.isPending ? "Saving…" : "Add to review"}
                                     </button>
-                                  )
+                                  ) : null
                                 ) : (
                                   <button
                                     type="button"
@@ -4232,6 +4297,15 @@ function App() {
                                       placeholder="Write a reply..."
                                       className="comment-panel__reply-textarea"
                                       rows={4}
+                                      onKeyDown={(event) =>
+                                        handleCtrlEnter(event, () => {
+                                          if (replyDefaultMode === "review") {
+                                            triggerButtonClick(replyReviewButtonRef.current);
+                                          } else {
+                                            triggerButtonClick(replyPostButtonRef.current);
+                                          }
+                                        })
+                                      }
                                     />
                                     {replyError && (
                                       <div className="comment-panel__error">{replyError}</div>
@@ -4242,9 +4316,10 @@ function App() {
                                     <div className="comment-panel__reply-actions">
                                       <button
                                         type="button"
-                                        className="comment-submit"
+                                        className={`comment-submit${replyDefaultMode === "review" ? " comment-submit--secondary" : ""}`}
                                         disabled={!isOnline}
                                         title={!isOnline ? "Direct comment replies are disabled while offline" : ""}
+                                        ref={replyPostButtonRef}
                                         onClick={async () => {
                                           if (!replyDraft.trim()) {
                                             setReplyError("Reply cannot be empty");
@@ -4305,10 +4380,10 @@ function App() {
                                           ⚠️ Offline - Use "Add to review" to save replies locally
                                         </div>
                                       )}
-                                      {pendingReview && !pendingReview.html_url ? (
+                                      {hasLocalPendingReview ? (
                                         <button
                                           type="button"
-                                          className="comment-submit comment-submit--secondary"
+                                          className={`comment-submit${replyDefaultMode === "review" ? "" : " comment-submit--secondary"}`}
                                           onClick={async () => {
                                             if (!replyDraft.trim()) {
                                               setReplyError("Reply cannot be empty");
@@ -4358,6 +4433,7 @@ function App() {
                                               setReplyError(err instanceof Error ? err.message : String(err));
                                             }
                                           }}
+                                          ref={replyReviewButtonRef}
                                         >
                                           Add to review
                                         </button>
@@ -4538,6 +4614,15 @@ function App() {
                               className="comment-panel__reply-textarea"
                               rows={4}
                               autoFocus
+                              onKeyDown={(event) =>
+                                handleCtrlEnter(event, () => {
+                                  if (inlineDefaultMode === "review") {
+                                    triggerButtonClick(inlineCommentReviewButtonRef.current);
+                                  } else {
+                                    triggerButtonClick(inlineCommentPostButtonRef.current);
+                                  }
+                                })
+                              }
                             />
                             <div className="comment-panel__line-input">
                               <label htmlFor="inline-comment-line">Line number: </label>
@@ -4560,9 +4645,10 @@ function App() {
                             <div className="comment-panel__reply-actions">
                               <button
                                 type="button"
-                                className="comment-submit"
+                                className={`comment-submit${inlineDefaultMode === "review" ? " comment-submit--secondary" : ""}`}
                                 disabled={!isOnline}
                                 title={!isOnline ? "Direct comments are disabled while offline" : ""}
+                                ref={inlineCommentPostButtonRef}
                                 onClick={async () => {
                                   if (!inlineCommentDraft.trim()) {
                                     setInlineCommentError("Comment cannot be empty");
@@ -4620,10 +4706,10 @@ function App() {
                               >
                                 Post comment
                               </button>
-                              {pendingReview && !pendingReview.html_url ? (
+                              {hasLocalPendingReview ? (
                                 <button
                                   type="button"
-                                  className="comment-submit comment-submit--secondary"
+                                  className={`comment-submit${inlineDefaultMode === "review" ? "" : " comment-submit--secondary"}`}
                                   onClick={async () => {
                                     if (!inlineCommentDraft.trim()) {
                                       setInlineCommentError("Comment cannot be empty");
@@ -4678,6 +4764,7 @@ function App() {
                                       setInlineCommentError(err instanceof Error ? err.message : String(err));
                                     }
                                   }}
+                                  ref={inlineCommentReviewButtonRef}
                                 >
                                   Add to review
                                 </button>
@@ -5250,7 +5337,11 @@ function App() {
                         <div className="pr-comments-view">
                           {isPrCommentComposerOpen ? (
                             <div className="pr-comment-composer">
-                              <form className="comment-composer comment-composer--pr-pane" onSubmit={handleCommentSubmit}>
+                              <form
+                                className="comment-composer comment-composer--pr-pane"
+                                onSubmit={handleCommentSubmit}
+                                ref={prCommentFormRef}
+                              >
                                 <textarea
                                   id="pr-comment-draft"
                                   value={commentDraft}
@@ -5261,6 +5352,13 @@ function App() {
                                     setCommentSuccess(false);
                                   }}
                                   rows={4}
+                                  onKeyDown={(event) =>
+                                    handleCtrlEnter(event, () => {
+                                      if (isOnline && !submitCommentMutation.isPending) {
+                                        prCommentFormRef.current?.requestSubmit();
+                                      }
+                                    })
+                                  }
                                 />
                                 <div className="comment-composer__actions">
                                   <div className="comment-composer__status">
@@ -5525,7 +5623,11 @@ function App() {
               </div>
               <div className="pane__content">
                 {isGeneralCommentOpen && prDetail && (
-                  <form className="comment-composer comment-composer--inline" onSubmit={handleCommentSubmit}>
+                  <form
+                    className="comment-composer comment-composer--inline"
+                    onSubmit={handleCommentSubmit}
+                    ref={generalCommentFormRef}
+                  >
                     <label className="comment-composer__label" htmlFor="comment-draft">
                       Pull request feedback
                     </label>
@@ -5539,6 +5641,13 @@ function App() {
                         setCommentSuccess(false);
                       }}
                       rows={4}
+                      onKeyDown={(event) =>
+                        handleCtrlEnter(event, () => {
+                          if (isOnline && !submitCommentMutation.isPending) {
+                            generalCommentFormRef.current?.requestSubmit();
+                          }
+                        })
+                      }
                     />
                     <div className="comment-composer__actions">
                       <div className="comment-composer__status">
