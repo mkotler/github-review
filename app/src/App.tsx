@@ -507,6 +507,7 @@ function App() {
   const [isPrCommentComposerOpen, setIsPrCommentComposerOpen] = useState(false);
   const [showAllFileTypes, setShowAllFileTypes] = useState(false);
   const [paneZoomLevel, setPaneZoomLevel] = useState(PANE_ZOOM_DEFAULT);
+  const [pendingAnchorId, setPendingAnchorId] = useState<string | null>(null);
   const workspaceBodyRef = useRef<HTMLDivElement | null>(null);
   const appShellRef = useRef<HTMLDivElement | null>(null);
   const userMenuRef = useRef<HTMLDivElement | null>(null);
@@ -678,6 +679,53 @@ function App() {
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, [adjustPaneZoom, resetPaneZoom]);
+
+  const scrollPreviewToAnchor = useCallback((anchorId: string) => {
+    if (!anchorId || !previewViewerRef.current) {
+      return false;
+    }
+    const selector = `#${CSS.escape(anchorId)}`;
+    const targetElement = previewViewerRef.current.querySelector(selector) as HTMLElement | null;
+    if (!targetElement) {
+      return false;
+    }
+    const previewPane = previewViewerRef.current;
+    const targetRect = targetElement.getBoundingClientRect();
+    const paneRect = previewPane.getBoundingClientRect();
+    const scrollOffset = targetRect.top - paneRect.top + previewPane.scrollTop;
+    previewPane.scrollTo({ top: scrollOffset, behavior: 'smooth' });
+    return true;
+  }, []);
+
+  useEffect(() => {
+    if (!pendingAnchorId) {
+      return;
+    }
+    let rafId: number | null = null;
+    let attempts = 0;
+    const maxAttempts = 60;
+
+    const tryScroll = () => {
+      if (scrollPreviewToAnchor(pendingAnchorId)) {
+        setPendingAnchorId(null);
+        return;
+      }
+      attempts += 1;
+      if (attempts < maxAttempts) {
+        rafId = window.requestAnimationFrame(tryScroll);
+      } else {
+        setPendingAnchorId(null);
+      }
+    };
+
+    rafId = window.requestAnimationFrame(tryScroll);
+
+    return () => {
+      if (rafId !== null) {
+        window.cancelAnimationFrame(rafId);
+      }
+    };
+  }, [pendingAnchorId, scrollPreviewToAnchor]);
 
   // Monitor memory usage periodically to detect leaks
   useEffect(() => {
@@ -6144,13 +6192,8 @@ function App() {
                                 // Handle anchor links
                                 if (clickedUrl.startsWith('#')) {
                                   const targetId = clickedUrl.substring(1);
-                                  const targetElement = previewViewerRef.current?.querySelector(`#${CSS.escape(targetId)}`);
-                                  if (targetElement && previewViewerRef.current) {
-                                    const previewPane = previewViewerRef.current;
-                                    const targetRect = targetElement.getBoundingClientRect();
-                                    const paneRect = previewPane.getBoundingClientRect();
-                                    const scrollOffset = targetRect.top - paneRect.top + previewPane.scrollTop;
-                                    previewPane.scrollTo({ top: scrollOffset, behavior: 'smooth' });
+                                  if (!scrollPreviewToAnchor(targetId)) {
+                                    setPendingAnchorId(targetId);
                                   }
                                   return;
                                 }
@@ -6163,10 +6206,12 @@ function App() {
                                 
                                 // Handle relative file paths
                                 let resolvedPath = clickedUrl;
+                                let anchorId: string | null = null;
                                 
                                 // Remove anchor/hash from path
                                 const hashIndex = resolvedPath.indexOf('#');
                                 if (hashIndex !== -1) {
+                                  anchorId = resolvedPath.substring(hashIndex + 1);
                                   resolvedPath = resolvedPath.substring(0, hashIndex);
                                 }
                                 
@@ -6194,7 +6239,20 @@ function App() {
                                 // Check if this file exists in the PR
                                 const targetFile = prDetail.files.find((f: PullRequestFile) => f.path === resolvedPath);
                                 if (targetFile) {
-                                  setSelectedFilePath(resolvedPath);
+                                  const currentPath = selectedFile.path || '';
+                                  if (anchorId) {
+                                    if (targetFile.path === currentPath) {
+                                      if (!scrollPreviewToAnchor(anchorId)) {
+                                        setPendingAnchorId(anchorId);
+                                      }
+                                    } else {
+                                      setPendingAnchorId(anchorId);
+                                      setSelectedFilePath(resolvedPath);
+                                    }
+                                  } else {
+                                    setPendingAnchorId(null);
+                                    setSelectedFilePath(resolvedPath);
+                                  }
                                 }
                               }
                             }
@@ -6339,14 +6397,8 @@ function App() {
                                 if (href.startsWith('#')) {
                                   e.preventDefault();
                                   const targetId = href.substring(1);
-                                  const targetElement = previewViewerRef.current?.querySelector(`#${CSS.escape(targetId)}`);
-                                  if (targetElement && previewViewerRef.current) {
-                                    // Scroll to the target element within the preview pane
-                                    const previewPane = previewViewerRef.current;
-                                    const targetRect = targetElement.getBoundingClientRect();
-                                    const paneRect = previewPane.getBoundingClientRect();
-                                    const scrollOffset = targetRect.top - paneRect.top + previewPane.scrollTop;
-                                    previewPane.scrollTo({ top: scrollOffset, behavior: 'smooth' });
+                                  if (!scrollPreviewToAnchor(targetId)) {
+                                    setPendingAnchorId(targetId);
                                   }
                                   return;
                                 }
@@ -6360,10 +6412,12 @@ function App() {
                                 } else if (prDetail && selectedFile) {
                                   // Handle relative file paths within the PR
                                   let resolvedPath = href;
+                                  let anchorId: string | null = null;
                                   
                                   // Remove anchor/hash from path
                                   const hashIndex = resolvedPath.indexOf('#');
                                   if (hashIndex !== -1) {
+                                    anchorId = resolvedPath.substring(hashIndex + 1);
                                     resolvedPath = resolvedPath.substring(0, hashIndex);
                                   }
                                   
@@ -6391,7 +6445,20 @@ function App() {
                                   // Check if this file exists in the PR
                                   const targetFile = prDetail.files.find((f: PullRequestFile) => f.path === resolvedPath);
                                   if (targetFile) {
-                                    setSelectedFilePath(resolvedPath);
+                                    const currentPath = selectedFile.path || '';
+                                    if (anchorId) {
+                                      if (targetFile.path === currentPath) {
+                                        if (!scrollPreviewToAnchor(anchorId)) {
+                                          setPendingAnchorId(anchorId);
+                                        }
+                                      } else {
+                                        setPendingAnchorId(anchorId);
+                                        setSelectedFilePath(resolvedPath);
+                                      }
+                                    } else {
+                                      setPendingAnchorId(null);
+                                      setSelectedFilePath(resolvedPath);
+                                    }
                                   }
                                 }
                               };
