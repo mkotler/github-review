@@ -1265,6 +1265,32 @@ select {
   gap: 12px;
 }
 
+.comment-panel__title-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.comment-panel__back {
+  border: none;
+  background: transparent;
+  color: rgba(201, 212, 240, 0.85);
+  font-size: 18px;
+  cursor: pointer;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  transition: background 0.18s ease, color 0.18s ease;
+}
+
+.comment-panel__back:hover {
+  background: rgba(118, 152, 224, 0.2);
+  color: #f1f5ff;
+}
+
 .comment-panel__title-group {
   display: flex;
   flex-direction: column;

@@ -115,7 +115,7 @@ const RETRY_CONFIG = {
 };
 
 // Global error handlers to catch crashes
-if (typeof window !== 'undefined') {
+if (typeof window !== "undefined") {
   // Store original console methods
   const originalError = console.error;
 
@@ -123,30 +123,30 @@ if (typeof window !== 'undefined') {
   console.error = (...args: any[]) => {
     originalError.apply(console, args);
     // Force flush to ensure it's written
-    if (typeof (console as any).flush === 'function') {
+    if (typeof (console as any).flush === "function") {
       (console as any).flush();
     }
   };
 
-  window.addEventListener('error', (event) => {
-    console.error('💥💥💥 UNHANDLED ERROR 💥💥💥');
-    console.error('Message:', event.message);
-    console.error('File:', event.filename, 'Line:', event.lineno, 'Col:', event.colno);
-    console.error('Error object:', event.error);
+  window.addEventListener("error", (event) => {
+    console.error("💥💥💥 UNHANDLED ERROR 💥💥💥");
+    console.error("Message:", event.message);
+    console.error("File:", event.filename, "Line:", event.lineno, "Col:", event.colno);
+    console.error("Error object:", event.error);
     if (event.error?.stack) {
-      console.error('Stack trace:', event.error.stack);
+      console.error("Stack trace:", event.error.stack);
     }
     // Prevent default to ensure we see the error
     event.preventDefault();
   });
 
-  window.addEventListener('unhandledrejection', (event) => {
-    console.error('💥💥💥 UNHANDLED PROMISE REJECTION 💥💥💥');
-    console.error('Reason:', event.reason);
+  window.addEventListener("unhandledrejection", (event) => {
+    console.error("💥💥💥 UNHANDLED PROMISE REJECTION 💥💥💥");
+    console.error("Reason:", event.reason);
     if (event.reason?.stack) {
-      console.error('Stack trace:', event.reason.stack);
+      console.error("Stack trace:", event.reason.stack);
     }
-    console.error('Promise:', event.promise);
+    console.error("Promise:", event.promise);
     // Prevent default to ensure we see the error
     event.preventDefault();
   });
@@ -154,16 +154,16 @@ if (typeof window !== 'undefined') {
   // Catch errors in Tauri invoke calls
   const originalInvoke = invoke;
   (window as any).originalInvoke = originalInvoke;
-  
+
   // Monitor for crashes every 5 seconds
   let lastHeartbeat = Date.now();
   setInterval(() => {
     const now = Date.now();
     if (now - lastHeartbeat > 10000) {
-      console.error('💥 App may have frozen! No heartbeat for', Math.floor((now - lastHeartbeat) / 1000), 'seconds');
+      console.error("💥 App may have frozen! No heartbeat for", Math.floor((now - lastHeartbeat) / 1000), "seconds");
     }
     lastHeartbeat = now;
-    console.log('💓 Heartbeat', new Date().toISOString());
+    console.log("💓 Heartbeat", new Date().toISOString());
   }, 5000);
 }
 
@@ -474,6 +474,9 @@ function App() {
   const [sidebarWidth, setSidebarWidth] = useState<number>(MIN_SIDEBAR_WIDTH);
   const [isSidebarResizing, setIsSidebarResizing] = useState(false);
   const [isFileCommentComposerVisible, setIsFileCommentComposerVisible] = useState(false);
+  const [showOutdatedComments, setShowOutdatedComments] = useState(false);
+  const [showOnlyMyComments, setShowOnlyMyComments] = useState(false);
+  const [showCommentPanelMenu, setShowCommentPanelMenu] = useState(false);
   const [, setReviewSummaryDraft] = useState("");
   const [, setReviewSummaryError] = useState<string | null>(null);
   const [pendingReviewOverride, setPendingReviewOverride] = useState<PullRequestReview | null>(null);
@@ -500,6 +503,7 @@ function App() {
   const prFilterMenuRef = useRef<HTMLDivElement | null>(null);
   const sourceMenuRef = useRef<HTMLDivElement | null>(null);
   const filesMenuRef = useRef<HTMLDivElement | null>(null);
+  const commentPanelMenuRef = useRef<HTMLDivElement | null>(null);
   const handleGlyphClickRef = useRef<((lineNumber: number) => void) | null>(null);
   const previewViewerRef = useRef<HTMLElement | null>(null);
   const editorRef = useRef<any>(null);
@@ -524,6 +528,27 @@ function App() {
   useEffect(() => {
     if (isFileCommentComposerVisible && fileCommentTextareaRef.current) {
       fileCommentTextareaRef.current.focus();
+    }
+  }, [isFileCommentComposerVisible]);
+
+  useEffect(() => {
+    if (!showCommentPanelMenu) {
+      return;
+    }
+    const handleClickOutside = (event: MouseEvent) => {
+      if (commentPanelMenuRef.current && !commentPanelMenuRef.current.contains(event.target as Node)) {
+        setShowCommentPanelMenu(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+    };
+  }, [showCommentPanelMenu]);
+
+  useEffect(() => {
+    if (isFileCommentComposerVisible) {
+      setShowCommentPanelMenu(false);
     }
   }, [isFileCommentComposerVisible]);
 
@@ -1919,6 +1944,10 @@ function App() {
     let filtered = !selectedFilePath 
       ? reviewAwareComments 
       : reviewAwareComments.filter((comment: PullRequestComment) => comment.path === selectedFilePath);
+
+    if (!showOutdatedComments) {
+      filtered = filtered.filter((comment: PullRequestComment) => !comment.outdated);
+    }
     
     // Sort by line number (comments without line numbers go to the end)
     return filtered.sort((a: PullRequestComment, b: PullRequestComment) => {
@@ -1927,11 +1956,21 @@ function App() {
       if (b.line === null) return -1;
       return (a.line ?? 0) - (b.line ?? 0);
     });
-  }, [reviewAwareComments, selectedFilePath]);
+  }, [reviewAwareComments, selectedFilePath, showOutdatedComments]);
+
+  const hasHiddenOutdatedComments = useMemo(() => {
+    if (showOutdatedComments) {
+      return false;
+    }
+    const relevant = !selectedFilePath
+      ? reviewAwareComments
+      : reviewAwareComments.filter((comment: PullRequestComment) => comment.path === selectedFilePath);
+    return relevant.some((comment: PullRequestComment) => comment.outdated);
+  }, [reviewAwareComments, selectedFilePath, showOutdatedComments]);
 
   // Group comments into threads (parent + replies)
   const commentThreads = useMemo(() => {
-    const threads: Array<{ parent: PullRequestComment; replies: PullRequestComment[] }> = [];
+    let threads: Array<{ parent: PullRequestComment; replies: PullRequestComment[] }> = [];
     const replyMap = new Map<number, PullRequestComment[]>();
     
     // Group replies by parent comment ID
@@ -1952,11 +1991,16 @@ function App() {
         });
       }
     });
+
+    if (showOnlyMyComments) {
+      threads = threads.filter((thread) => thread.parent.is_mine || (!!authQuery.data?.login && thread.parent.author === authQuery.data.login));
+    }
     
     return threads;
-  }, [fileComments]);
+  }, [fileComments, showOnlyMyComments, authQuery.data?.login]);
 
   const shouldShowFileCommentComposer = isFileCommentComposerVisible;
+  const noCommentsDueToFilters = fileComments.length === 0 && (showOnlyMyComments || hasHiddenOutdatedComments);
   const formattedRepo = repoRef ? `${repoRef.owner}/${repoRef.repo}` : "";
 
   // Load drafts from localStorage on mount
@@ -3795,13 +3839,29 @@ function App() {
                 {prDetail && <div style={{ height: '8px' }} />}
               <div className="comment-panel">
                 <div className="comment-panel__header">
-                  <div className="comment-panel__title-group">
-                    <span className="comment-panel__title">{shouldShowFileCommentComposer ? (editingCommentId !== null ? 'Edit comment' : 'Add comment') : 'File comments'}</span>
-                    {selectedFilePath && (
-                      <span className="comment-panel__subtitle" title={selectedFilePath}>
-                        {selectedFilePath}
-                      </span>
+                  <div className="comment-panel__title-wrapper">
+                    {!shouldShowFileCommentComposer && (
+                      <button
+                        type="button"
+                        className="comment-panel__back"
+                        onClick={() => {
+                          setShowCommentPanelMenu(false);
+                          closeInlineComment();
+                        }}
+                        aria-label="Hide file comments"
+                        title="Hide file comments"
+                      >
+                        ←
+                      </button>
                     )}
+                    <div className="comment-panel__title-group">
+                      <span className="comment-panel__title">{shouldShowFileCommentComposer ? (editingCommentId !== null ? 'Edit comment' : 'Add comment') : 'File comments'}</span>
+                      {selectedFilePath && (
+                        <span className="comment-panel__subtitle" title={selectedFilePath}>
+                          {selectedFilePath}
+                        </span>
+                      )}
+                    </div>
                   </div>
                   {shouldShowFileCommentComposer ? (
                     editingCommentId !== null ? (
@@ -3835,7 +3895,7 @@ function App() {
                           setFileCommentDraft("");
                           setFileCommentLine("");
                           setFileCommentError(null);
-                          
+                        
                           // If there's content in the full editor, restore it to inline editor
                           if (currentDraft.trim() || (selectedFilePath && draftsByFile[selectedFilePath]?.inline)) {
                             setIsAddingInlineComment(true);
@@ -3861,14 +3921,40 @@ function App() {
                       </button>
                     )
                   ) : (
-                    <button
-                      type="button"
-                      className="comment-panel__close"
-                      onClick={closeInlineComment}
-                      aria-label="Hide file comments"
-                    >
-                      ×
-                    </button>
+                    <div className="source-menu-container" ref={commentPanelMenuRef}>
+                      <button
+                        type="button"
+                        className="panel__title-button"
+                        onClick={() => setShowCommentPanelMenu((prev) => !prev)}
+                        aria-label="File comments options"
+                      >
+                        …
+                      </button>
+                      {showCommentPanelMenu && (
+                        <div className="source-menu">
+                          <button
+                            type="button"
+                            className="source-menu__item"
+                            onClick={() => {
+                              setShowOutdatedComments((prev) => !prev);
+                              setShowCommentPanelMenu(false);
+                            }}
+                          >
+                            {showOutdatedComments ? 'Hide Outdated Comments' : 'Show Outdated Comments'}
+                          </button>
+                          <button
+                            type="button"
+                            className="source-menu__item"
+                            onClick={() => {
+                              setShowOnlyMyComments((prev) => !prev);
+                              setShowCommentPanelMenu(false);
+                            }}
+                          >
+                            {showOnlyMyComments ? "Show Everyone's Comments" : 'Show Only My Comments'}
+                          </button>
+                        </div>
+                      )}
+                    </div>
                   )}
                 </div>
                 <div className="comment-panel__body" ref={commentPanelBodyRef}>
@@ -4063,12 +4149,17 @@ function App() {
                       </form>
                     ) : (
                       <div className="comment-panel__existing">
-                        {fileComments.length === 0 && !pendingReview && (
+                        {noCommentsDueToFilters && (
+                          <div className="comment-panel__empty-state">
+                            <p>No comments match the current filters.</p>
+                          </div>
+                        )}
+                        {!noCommentsDueToFilters && fileComments.length === 0 && !pendingReview && (
                           <div className="comment-panel__empty-state">
                             <p>There are no published comments.</p>
                           </div>
                         )}
-                        {fileComments.length === 0 && pendingReview && !isLoadingPendingComments && (
+                        {!noCommentsDueToFilters && fileComments.length === 0 && pendingReview && !isLoadingPendingComments && (
                           <div className="comment-panel__empty-state">
                             <p>
                               There are no comments in this pending review{" "}
