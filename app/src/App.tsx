@@ -591,6 +591,7 @@ function App() {
   const [showOutdatedComments, setShowOutdatedComments] = useState(false);
   const [showOnlyMyComments, setShowOnlyMyComments] = useState(false);
   const [showCommentPanelMenu, setShowCommentPanelMenu] = useState(false);
+  const [commentContextMenu, setCommentContextMenu] = useState<{ x: number; y: number; comment: PullRequestComment | null } | null>(null);
   const [, setReviewSummaryDraft] = useState("");
   const [, setReviewSummaryError] = useState<string | null>(null);
   const [pendingReviewOverride, setPendingReviewOverride] = useState<PullRequestReview | null>(null);
@@ -621,6 +622,7 @@ function App() {
   const sourceMenuRef = useRef<HTMLDivElement | null>(null);
   const filesMenuRef = useRef<HTMLDivElement | null>(null);
   const commentPanelMenuRef = useRef<HTMLDivElement | null>(null);
+  const commentContextMenuRef = useRef<HTMLDivElement | null>(null);
   const handleGlyphClickRef = useRef<((lineNumber: number) => void) | null>(null);
   const previewViewerRef = useRef<HTMLElement | null>(null);
   const editorRef = useRef<any>(null);
@@ -899,19 +901,22 @@ function App() {
   }, [replyingToCommentId]);
 
   useEffect(() => {
-    if (!showCommentPanelMenu) {
+    if (!showCommentPanelMenu && !commentContextMenu) {
       return;
     }
     const handleClickOutside = (event: MouseEvent) => {
       if (commentPanelMenuRef.current && !commentPanelMenuRef.current.contains(event.target as Node)) {
         setShowCommentPanelMenu(false);
       }
+      if (commentContextMenuRef.current && !commentContextMenuRef.current.contains(event.target as Node)) {
+        setCommentContextMenu(null);
+      }
     };
     document.addEventListener("mousedown", handleClickOutside);
     return () => {
       document.removeEventListener("mousedown", handleClickOutside);
     };
-  }, [showCommentPanelMenu]);
+  }, [showCommentPanelMenu, commentContextMenu]);
 
   useEffect(() => {
     if (isFileCommentComposerVisible) {
@@ -4868,7 +4873,21 @@ function App() {
                     </div>
                   )}
                 </div>
-                <div className="comment-panel__body" ref={commentPanelBodyRef}>
+                <div 
+                  className="comment-panel__body" 
+                  ref={commentPanelBodyRef}
+                  onContextMenu={(e) => {
+                    // Only show "Add Comment" if right-clicking on empty space
+                    if (e.target === commentPanelBodyRef.current) {
+                      e.preventDefault();
+                      setCommentContextMenu({
+                        x: e.clientX,
+                        y: e.clientY,
+                        comment: null
+                      });
+                    }
+                  }}
+                >
                   {selectedFile ? (
                     shouldShowFileCommentComposer ? (
                       <form
@@ -5140,7 +5159,18 @@ function App() {
                                       !isPendingGitHubReviewComment;
                                     
                                     return (
-                                      <div key={comment.id} className={`comment-panel__thread-comment${index > 0 ? " comment-panel__thread-comment--reply" : ""}`}>
+                                      <div 
+                                        key={comment.id} 
+                                        className={`comment-panel__thread-comment${index > 0 ? " comment-panel__thread-comment--reply" : ""}`}
+                                        onContextMenu={(e) => {
+                                          e.preventDefault();
+                                          setCommentContextMenu({
+                                            x: e.clientX,
+                                            y: e.clientY,
+                                            comment: comment
+                                          });
+                                        }}
+                                      >
                                         <div className="comment-panel__thread-comment-header" title={formattedTimestamp}>
                                           <div className="comment-panel__thread-comment-info">
                                             <span className="comment-panel__item-author">{comment.author}</span>
@@ -7520,6 +7550,105 @@ function App() {
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Comment Context Menu */}
+      {commentContextMenu && (
+        <div
+          ref={commentContextMenuRef}
+          className="source-menu source-menu--context"
+          style={{
+            top: `${commentContextMenu.y}px`,
+            left: `${commentContextMenu.x}px`
+          }}
+        >
+          {commentContextMenu.comment ? (
+            <>
+              {commentContextMenu.comment.is_mine && (
+                <button
+                  type="button"
+                  className="source-menu__item"
+                  onClick={() => {
+                    const comment = commentContextMenu.comment;
+                    if (comment) {
+                      setEditingCommentId(comment.id);
+                      setEditingComment(comment);
+                      setFileCommentDraft(comment.body);
+                      setFileCommentLine(comment.line?.toString() || "");
+                      setFileCommentSide(comment.side || "RIGHT");
+                      setFileCommentIsFileLevel(!comment.line);
+                      setFileCommentError(null);
+                      setFileCommentSuccess(false);
+                      setIsFileCommentComposerVisible(true);
+                    }
+                    setCommentContextMenu(null);
+                  }}
+                >
+                  Edit
+                </button>
+              )}
+              {commentContextMenu.comment.is_mine && (
+                <button
+                  type="button"
+                  className="source-menu__item"
+                  onClick={() => {
+                    const comment = commentContextMenu.comment;
+                    if (comment) {
+                      setEditingCommentId(comment.id);
+                      setEditingComment(comment);
+                      setShowDeleteConfirm(true);
+                    }
+                    setCommentContextMenu(null);
+                  }}
+                >
+                  Delete
+                </button>
+              )}
+              {!commentContextMenu.comment.is_draft && (
+                <button
+                  type="button"
+                  className="source-menu__item"
+                  onClick={() => {
+                    const comment = commentContextMenu.comment;
+                    if (comment) {
+                      // Find the parent comment for replies
+                      const parentComment = comment.in_reply_to_id 
+                        ? reviewAwareComments.find(c => c.id === comment.in_reply_to_id)
+                        : comment;
+                      
+                      if (parentComment) {
+                        setReplyingToCommentId(parentComment.id);
+                        setReplyDraft("");
+                        setReplyError(null);
+                        setReplySuccess(false);
+                      }
+                    }
+                    setCommentContextMenu(null);
+                  }}
+                >
+                  Reply
+                </button>
+              )}
+            </>
+          ) : (
+            <button
+              type="button"
+              className="source-menu__item"
+              onClick={() => {
+                setIsFileCommentComposerVisible(true);
+                setFileCommentDraft("");
+                setFileCommentLine("");
+                setFileCommentError(null);
+                setFileCommentSuccess(false);
+                setEditingCommentId(null);
+                setEditingComment(null);
+                setCommentContextMenu(null);
+              }}
+            >
+              Add Comment
+            </button>
+          )}
         </div>
       )}
     </div>

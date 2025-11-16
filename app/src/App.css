@@ -2641,6 +2641,14 @@ select {
   z-index: 1000;
 }
 
+.source-menu--context {
+  position: fixed;
+  width: auto;
+  max-width: 200px;
+  top: auto;
+  right: auto;
+}
+
 .source-menu__item {
   display: block;
   width: 100%;
