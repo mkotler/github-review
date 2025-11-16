@@ -375,7 +375,7 @@ pub async fn get_pull_request(
     let issue_comments = fetch_issue_comments(&client, owner, repo, number).await?;
     let reviews = fetch_pull_request_reviews(&client, owner, repo, number).await?;
 
-    let comments = build_comments(current_login, &review_comments, &issue_comments, &head_sha);
+    let comments = build_comments(current_login, &review_comments, &issue_comments, &reviews, &head_sha);
     let mapped_reviews = build_reviews(current_login, &reviews);
     let my_comments = comments
         .iter()
@@ -1042,6 +1042,7 @@ fn build_comments(
     current_login: Option<&str>,
     review_comments: &[GitHubReviewComment],
     issue_comments: &[GitHubIssueComment],
+    reviews: &[GitHubPullRequestReview],
     pr_head_sha: &str,
 ) -> Vec<PullRequestComment> {
     let normalized_login = current_login
@@ -1065,6 +1066,19 @@ fn build_comments(
             .map(|login| comment.user.login.eq_ignore_ascii_case(login))
             .unwrap_or(false);
         collected.push(map_issue_comment(comment, is_mine));
+    }
+
+    // Add review bodies as PR-level comments
+    for review in reviews {
+        if let Some(body) = &review.body {
+            if !body.trim().is_empty() {
+                let is_mine = normalized_login
+                    .as_ref()
+                    .map(|login| review.user.login.eq_ignore_ascii_case(login))
+                    .unwrap_or(false);
+                collected.push(map_review_body_comment(review, is_mine));
+            }
+        }
     }
 
     collected.sort_by(|a, b| a.created_at.cmp(&b.created_at));
@@ -1107,11 +1121,14 @@ fn map_review(
 }
 
 fn map_review_comment(comment: &GitHubReviewComment, is_mine: bool, patch: Option<&String>, pr_head_sha: &str) -> PullRequestComment {
+    // Check if this is a PR-level comment (empty path means it's a review body comment, not a file comment)
+    let is_pr_level = comment.path.trim().is_empty();
+    
     // Check if this is a file-level comment
     let is_file_level = comment.subject_type.as_deref() == Some("file");
     
-    // Try to get line number from multiple possible fields, but only if not file-level
-    let mut line = if is_file_level {
+    // Try to get line number from multiple possible fields, but only if not file-level and not PR-level
+    let mut line = if is_file_level || is_pr_level {
         None
     } else {
         comment.line
@@ -1121,7 +1138,7 @@ fn map_review_comment(comment: &GitHubReviewComment, is_mine: bool, patch: Optio
     };
     
     // If we don't have a line number but we have a position and patch, convert it
-    if line.is_none() && !is_file_level {
+    if line.is_none() && !is_file_level && !is_pr_level {
         if let (Some(position), Some(patch_text)) = (comment.position.or(comment.original_position), patch) {
             line = convert_diff_position_to_line(patch_text, position, comment.side.as_deref().unwrap_or("RIGHT"));
         }
@@ -1143,10 +1160,10 @@ fn map_review_comment(comment: &GitHubReviewComment, is_mine: bool, patch: Optio
         author: comment.user.login.clone(),
         created_at: comment.created_at.clone(),
         url: comment.html_url.clone(),
-        path: Some(comment.path.clone()),
+        path: if is_pr_level { None } else { Some(comment.path.clone()) },
         line,
         side: comment.side.clone().or(comment.start_side.clone()),
-        is_review_comment: true,
+        is_review_comment: !is_pr_level, // PR-level review comments should be treated as non-review comments
         is_draft: comment
             .state
             .as_deref()
@@ -1256,6 +1273,26 @@ fn map_issue_comment(comment: &GitHubIssueComment, is_mine: bool) -> PullRequest
         state: None,
         is_mine,
         review_id: None,
+        in_reply_to_id: None,
+        outdated: None,
+    }
+}
+
+fn map_review_body_comment(review: &GitHubPullRequestReview, is_mine: bool) -> PullRequestComment {
+    PullRequestComment {
+        id: review.id,
+        body: review.body.clone().unwrap_or_default(),
+        author: review.user.login.clone(),
+        created_at: review.submitted_at.clone().unwrap_or_default(),
+        url: review.html_url.clone().unwrap_or_default(),
+        path: None,
+        line: None,
+        side: None,
+        is_review_comment: false,
+        is_draft: false,
+        state: Some(review.state.clone()),
+        is_mine,
+        review_id: Some(review.id),
         in_reply_to_id: None,
         outdated: None,
     }

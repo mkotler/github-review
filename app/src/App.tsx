@@ -1556,16 +1556,16 @@ function App() {
     [isSidebarCollapsed],
   );
 
-  const comments = useMemo(() => prDetail?.comments ?? [], [prDetail]);
-  // const myComments = useMemo(() => {
-  //   if (comments.length > 0) {
-  //     return comments.filter((comment) => comment.is_mine);
-  //   }
-  //   return prDetail?.my_comments ?? [];
-  // }, [comments, prDetail]);
-
+  const comments = useMemo(() => {
+    const allComments = prDetail?.comments ?? [];
+    return allComments;
+  }, [prDetail]);
+  
   // Filter to get only PR-level (issue) comments, not file review comments
-  const prLevelComments = useMemo(() => comments.filter((c: PullRequestComment) => !c.is_review_comment), [comments]);
+  const prLevelComments = useMemo(() => {
+    const filtered = comments.filter((c: PullRequestComment) => !c.is_review_comment);
+    return filtered;
+  }, [comments]);
 
   const reviews = useMemo(() => prDetail?.reviews ?? [], [prDetail?.reviews]);
   const pendingReviewFromServer = useMemo(() => {
