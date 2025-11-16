@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -122,6 +122,112 @@ const BASE_EDITOR_FONT_SIZE = 14;
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
+const SCROLL_CACHE_KEY = "scroll-cache-v1";
+const SCROLL_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const LEGACY_SCROLL_KEY = "__legacy__";
+const SOURCE_RESTORE_TIMEOUT_MS = 5000; // Increased for long files
+const SOURCE_RESTORE_MAX_ATTEMPTS = 50; // Increased for long files
+const SOURCE_RESTORE_EPSILON = 2;
+const SOURCE_RESTORE_GRACE_MS = 400;
+const SOURCE_RESTORE_ACTIVATION_GRACE_MS = 600;
+
+type ScrollCacheEntry = {
+  position: number;
+  updatedAt: number;
+};
+
+type ScrollCacheCollection = Record<string, ScrollCacheEntry>;
+
+type ScrollCacheState = {
+  fileList?: ScrollCacheCollection;
+  fileComments?: ScrollCacheCollection;
+  sourcePane?: ScrollCacheCollection;
+};
+
+type ScrollCacheSection = "fileList" | "fileComments" | "sourcePane";
+
+type SourceRestoreState = {
+  fileKey: string;
+  target: number;
+  startedAt: number;
+  attempts: number;
+};
+
+const isScrollCacheEntry = (value: unknown): value is ScrollCacheEntry => {
+  return Boolean(
+    value &&
+    typeof value === "object" &&
+    typeof (value as ScrollCacheEntry).position === "number" &&
+    typeof (value as ScrollCacheEntry).updatedAt === "number",
+  );
+};
+
+const normalizeCollection = (value: unknown): ScrollCacheCollection | undefined => {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+
+  if (isScrollCacheEntry(value)) {
+    return { [LEGACY_SCROLL_KEY]: value };
+  }
+
+  const result: ScrollCacheCollection = {};
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    if (isScrollCacheEntry(entry)) {
+      result[key] = entry;
+    }
+  }
+
+  return Object.keys(result).length > 0 ? result : undefined;
+};
+
+const loadScrollCache = (): ScrollCacheState => {
+  if (typeof window === "undefined") {
+    return {};
+  }
+  try {
+    const stored = window.localStorage.getItem(SCROLL_CACHE_KEY);
+    if (!stored) {
+      return {};
+    }
+    const parsed = JSON.parse(stored);
+    if (!parsed || typeof parsed !== "object") {
+      return {};
+    }
+    const normalized = {
+      fileList: normalizeCollection((parsed as ScrollCacheState).fileList),
+      fileComments: normalizeCollection((parsed as ScrollCacheState).fileComments),
+      sourcePane: normalizeCollection((parsed as ScrollCacheState).sourcePane),
+    };
+    return normalized;
+  } catch (error) {
+    return {};
+  }
+};
+
+const pruneCollection = (collection?: ScrollCacheCollection): ScrollCacheCollection | undefined => {
+  if (!collection) {
+    return undefined;
+  }
+  const now = Date.now();
+  const entries: ScrollCacheCollection = {};
+  for (const [key, entry] of Object.entries(collection)) {
+    if (now - entry.updatedAt <= SCROLL_CACHE_TTL_MS) {
+      entries[key] = entry;
+    }
+  }
+  return Object.keys(entries).length > 0 ? entries : undefined;
+};
+
+const pruneScrollCache = (cache: ScrollCacheState): ScrollCacheState => {
+  const pruned = {
+    fileList: pruneCollection(cache.fileList),
+    fileComments: pruneCollection(cache.fileComments),
+    sourcePane: pruneCollection(cache.sourcePane),
+  };
+  return pruned;
+};
+
 // Global error handlers to catch crashes
 if (typeof window !== "undefined") {
   // Store original console methods
@@ -171,7 +277,6 @@ if (typeof window !== "undefined") {
       console.error("💥 App may have frozen! No heartbeat for", Math.floor((now - lastHeartbeat) / 1000), "seconds");
     }
     lastHeartbeat = now;
-    console.log("💓 Heartbeat", new Date().toISOString());
   }, 5000);
 }
 
@@ -297,7 +402,7 @@ const MermaidCode = ({ children }: { children: string }) => {
   }, [children]);
 
   if (error) {
-    return <pre style={{ color: 'red' }}>Mermaid Error: {error}</pre>;
+    return <pre className="mermaid-error">Mermaid Error: {error}</pre>;
   }
 
   return <div ref={ref} className="mermaid-diagram" />;
@@ -492,6 +597,7 @@ function App() {
   const [localComments, setLocalComments] = useState<PullRequestComment[]>([]);
   const [submissionProgress, setSubmissionProgress] = useState<{ current: number; total: number; file: string } | null>(null);
   const commentPanelBodyRef = useRef<HTMLDivElement>(null);
+  const commentPanelLastScrollTopRef = useRef<number | null>(null);
   const [isLoadingPendingComments, setIsLoadingPendingComments] = useState(false);
   const [editingCommentId, setEditingCommentId] = useState<number | null>(null);
   const [editingComment, setEditingComment] = useState<PullRequestComment | null>(null);
@@ -519,6 +625,8 @@ function App() {
   const previewViewerRef = useRef<HTMLElement | null>(null);
   const editorRef = useRef<any>(null);
   const diffEditorRef = useRef<any>(null);
+  const fileListScrollRef = useRef<HTMLUListElement | null>(null);
+  const lastFileListScrollTopRef = useRef<number | null>(null);
   const isScrollingSyncRef = useRef(false);
   const previousBodyCursorRef = useRef<string | null>(null);
   const previousBodyUserSelectRef = useRef<string | null>(null);
@@ -536,8 +644,204 @@ function App() {
   const replyActionsRefs = useRef<Record<number, HTMLDivElement | null>>({});
   const prCommentFormRef = useRef<HTMLFormElement | null>(null);
   const generalCommentFormRef = useRef<HTMLFormElement | null>(null);
+  const scrollCacheRef = useRef<ScrollCacheState>(loadScrollCache());
+  const sourcePaneLastScrollTopRef = useRef<Record<string, number>>({});
+  const skipNextSourceScrollRestoreRef = useRef(false);
+  const skipSourceRestoreForRef = useRef<string | null>(null);
+  const selectedFilePathRef = useRef<string | null>(null);
+  const selectedFileCacheKeyRef = useRef<string | null>(null);
+  const sourcePaneRestoreInFlightRef = useRef<SourceRestoreState | null>(null);
+  const sourcePaneRestoreGraceRef = useRef<{ fileKey: string; target: number; expiresAt: number } | null>(null);
+  const sourcePaneActivationHoldRef = useRef<{ fileKey: string; target: number; expiresAt: number } | null>(null);
+  const sourcePaneReEnforcingRef = useRef<boolean>(false);
+  const sourcePaneFileChangeInProgressRef = useRef<boolean>(false);
+  const sourcePaneFrozenPositionsRef = useRef<Set<string>>(new Set());
+  const repoIdentityRef = useRef<{ owner: string; repo: string } | null>(null);
+  const selectedPrRef = useRef<number | null>(null);
   const queryClient = useQueryClient();
   const hoveredPaneRef = useRef<'source' | 'preview' | null>(null);
+
+  const persistScrollCache = useCallback((cache: ScrollCacheState) => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    try {
+      window.localStorage.setItem(SCROLL_CACHE_KEY, JSON.stringify(cache));
+    } catch (error) {
+      // Silent fail
+    }
+  }, []);
+
+  const saveScrollPosition = useCallback((section: ScrollCacheSection, identifier: string | null, rawPosition: number) => {
+    const position = Math.max(0, Math.round(rawPosition));
+    const now = Date.now();
+    const cache = scrollCacheRef.current;
+
+    switch (section) {
+      case "fileList":
+        if (!identifier) {
+          break;
+        }
+        cache.fileList = cache.fileList ?? {};
+        cache.fileList[identifier] = { position, updatedAt: now };
+        break;
+      case "fileComments":
+        if (!identifier) {
+          break;
+        }
+        cache.fileComments = cache.fileComments ?? {};
+        cache.fileComments[identifier] = { position, updatedAt: now };
+        break;
+      case "sourcePane":
+        if (!identifier) {
+          break;
+        }
+        cache.sourcePane = cache.sourcePane ?? {};
+        cache.sourcePane[identifier] = { position, updatedAt: now };
+        break;
+    }
+
+    const pruned = pruneScrollCache(cache);
+    scrollCacheRef.current = pruned;
+    persistScrollCache(pruned);
+  }, [persistScrollCache]);
+
+  const persistSourceScrollPosition = useCallback((
+    fileKey: string | null,
+    rawPosition: number,
+    context: "scroll" | "restore" | "fileChange",
+    options?: { allowZero?: boolean },
+  ) => {
+    if (!fileKey) {
+      return;
+    }
+    
+    // If this file's position is frozen (during file change), reject updates
+    if (sourcePaneFrozenPositionsRef.current.has(fileKey) && context === "scroll") {
+      return;
+    }
+    
+    let normalized = Math.max(0, Math.round(rawPosition));
+    const lastKnown = sourcePaneLastScrollTopRef.current[fileKey];
+    if (!options?.allowZero && normalized === 0 && lastKnown && lastKnown > 0) {
+      normalized = lastKnown;
+    }
+    sourcePaneLastScrollTopRef.current[fileKey] = normalized;
+    saveScrollPosition("sourcePane", fileKey, normalized);
+  }, [saveScrollPosition]);
+
+  const shouldSkipSourceScrollSnapshot = useCallback((fileKey: string, position: number) => {
+    const pending = sourcePaneRestoreInFlightRef.current;
+    if (pending && pending.fileKey === fileKey) {
+      const delta = Math.abs(position - pending.target);
+      if (delta <= SOURCE_RESTORE_EPSILON) {
+        // Note: Don't clear restore in-flight here; let the RAF loop handle grace period setup
+        return false;
+      }
+      const elapsed = Date.now() - pending.startedAt;
+      if (elapsed < SOURCE_RESTORE_TIMEOUT_MS && pending.attempts < SOURCE_RESTORE_MAX_ATTEMPTS) {
+        return true;
+      }
+      sourcePaneRestoreInFlightRef.current = null;
+    }
+
+    const grace = sourcePaneRestoreGraceRef.current;
+    if (grace && grace.fileKey === fileKey) {
+      if (Date.now() <= grace.expiresAt) {
+        const isPrematureZero = position <= SOURCE_RESTORE_EPSILON && grace.target > SOURCE_RESTORE_EPSILON;
+        if (isPrematureZero) {
+          return true;
+        }
+        if (position > SOURCE_RESTORE_EPSILON) {
+          sourcePaneRestoreGraceRef.current = null;
+        }
+      } else {
+        sourcePaneRestoreGraceRef.current = null;
+      }
+    }
+
+    const activationHold = sourcePaneActivationHoldRef.current;
+    if (activationHold && activationHold.fileKey === fileKey) {
+      if (Date.now() <= activationHold.expiresAt) {
+        const isPrematureZero = position <= SOURCE_RESTORE_EPSILON && activationHold.target > SOURCE_RESTORE_EPSILON;
+        if (isPrematureZero) {
+          return true;
+        }
+        if (position > SOURCE_RESTORE_EPSILON) {
+          sourcePaneActivationHoldRef.current = null;
+        }
+      } else {
+        sourcePaneActivationHoldRef.current = null;
+      }
+    }
+
+    return false;
+  }, []);
+
+  const syncPreviewToEditor = useCallback((editorInstance: any) => {
+    const previewNode = previewViewerRef.current;
+    if (!previewNode || !editorInstance || typeof editorInstance.getScrollTop !== "function") {
+      return;
+    }
+
+    const editorScrollTop = editorInstance.getScrollTop();
+    const scrollHeight = typeof editorInstance.getScrollHeight === "function"
+      ? editorInstance.getScrollHeight()
+      : 0;
+    const layoutInfo = typeof editorInstance.getLayoutInfo === "function"
+      ? editorInstance.getLayoutInfo()
+      : null;
+    const editorClientHeight = layoutInfo?.height ?? previewNode.clientHeight;
+    const editorMaxScroll = Math.max(0, scrollHeight - editorClientHeight);
+    const previewMaxScroll = Math.max(0, previewNode.scrollHeight - previewNode.clientHeight);
+
+    let previewTarget = 0;
+    if (editorMaxScroll > 0 && previewMaxScroll > 0) {
+      const scrollPercentage = editorScrollTop / editorMaxScroll;
+      previewTarget = scrollPercentage * previewMaxScroll;
+    }
+
+    previewNode.scrollTop = Math.max(0, Math.min(previewMaxScroll, previewTarget));
+  }, []);
+
+  const getScrollPosition = useCallback((section: ScrollCacheSection, identifier: string | null) => {
+    const now = Date.now();
+    const cache = scrollCacheRef.current;
+    let entry: ScrollCacheEntry | undefined;
+
+    if (section === "fileList") {
+      if (identifier) {
+        entry = cache.fileList?.[identifier];
+      }
+      if (!entry) {
+        entry = cache.fileList?.[LEGACY_SCROLL_KEY];
+      }
+    } else if (section === "fileComments") {
+      if (identifier) {
+        entry = cache.fileComments?.[identifier];
+      }
+      if (!entry) {
+        entry = cache.fileComments?.[LEGACY_SCROLL_KEY];
+      }
+    } else if (section === "sourcePane") {
+      if (identifier) {
+        entry = cache.sourcePane?.[identifier];
+      }
+    }
+
+    if (!entry) {
+      return null;
+    }
+
+    if (now - entry.updatedAt > SCROLL_CACHE_TTL_MS) {
+      const pruned = pruneScrollCache(cache);
+      scrollCacheRef.current = pruned;
+      persistScrollCache(pruned);
+      return null;
+    }
+
+    return entry.position;
+  }, [persistScrollCache]);
 
   // Auto-focus textarea when comment composer opens
   useEffect(() => {
@@ -545,6 +849,42 @@ function App() {
       fileCommentTextareaRef.current.focus();
     }
   }, [isFileCommentComposerVisible]);
+
+  useEffect(() => {
+    const pruned = pruneScrollCache(scrollCacheRef.current);
+    scrollCacheRef.current = pruned;
+    persistScrollCache(pruned);
+  }, [persistScrollCache]);
+
+  // Keep imperative ref for the selected file path in sync during render
+  selectedFilePathRef.current = selectedFilePath;
+
+  useEffect(() => {
+    if (repoRef) {
+      repoIdentityRef.current = { owner: repoRef.owner, repo: repoRef.repo };
+    } else {
+      repoIdentityRef.current = null;
+    }
+  }, [repoRef]);
+
+  useEffect(() => {
+    selectedPrRef.current = selectedPr;
+  }, [selectedPr]);
+
+  const repoScopeKey = useMemo(() => {
+    if (!repoRef || selectedPr === null) {
+      return null;
+    }
+    return `${repoRef.owner}/${repoRef.repo}#${selectedPr}`;
+  }, [repoRef?.owner, repoRef?.repo, selectedPr]);
+
+  const selectedFileCacheKey = useMemo(() => {
+    if (!repoScopeKey || !selectedFilePath) {
+      return null;
+    }
+    return `${repoScopeKey}:${selectedFilePath}`;
+  }, [repoScopeKey, selectedFilePath]);
+
 
   useEffect(() => {
     if (replyingToCommentId === null) {
@@ -1158,7 +1498,7 @@ function App() {
               setMediaViewerContent({ type: 'mermaid', content: mermaidContent });
               setMaximizedPane('media');
             }}
-            style={{ cursor: 'pointer' }}
+            className="mermaid-clickable"
             title="Click to view fullscreen"
           >
             <MermaidCode>{mermaidContent}</MermaidCode>
@@ -1796,6 +2136,93 @@ function App() {
     setVisibleFileCount(50);
   }, [selectedPr]);
 
+  useEffect(() => {
+    lastFileListScrollTopRef.current = null;
+  }, [repoScopeKey]);
+
+  useEffect(() => {
+    if (!repoScopeKey) {
+      return;
+    }
+
+    const persistSnapshot = (
+      position: number,
+      _context: "scroll" | "panel-hidden" | "cleanup" | "restore" | "attached",
+      options?: { allowZero?: boolean },
+    ) => {
+      let normalized = Math.max(0, Math.round(position));
+      const lastKnown = lastFileListScrollTopRef.current;
+
+      if (!options?.allowZero && normalized === 0 && lastKnown && lastKnown > 0) {
+        normalized = lastKnown;
+      }
+
+      lastFileListScrollTopRef.current = normalized;
+      saveScrollPosition("fileList", repoScopeKey, normalized);
+    };
+
+    if (isPrCommentsView || isInlineCommentOpen) {
+      const lastKnown = lastFileListScrollTopRef.current;
+      if (lastKnown !== null) {
+        persistSnapshot(lastKnown, "panel-hidden", { allowZero: true });
+      }
+      return;
+    }
+
+    const node = fileListScrollRef.current;
+    if (!node) {
+      return;
+    }
+
+    lastFileListScrollTopRef.current = node.scrollTop;
+
+    const handleScroll = () => {
+      persistSnapshot(node.scrollTop, "scroll", { allowZero: true });
+    };
+
+    node.addEventListener("scroll", handleScroll, { passive: true });
+
+    let rafId: number | null = null;
+    let attempts = 0;
+    const maxAttempts = 8;
+
+    const tryRestore = () => {
+      const stored = getScrollPosition("fileList", repoScopeKey);
+      if (stored !== null && Math.abs(node.scrollTop - stored) > 1) {
+        node.scrollTop = stored;
+        persistSnapshot(stored, "restore", { allowZero: true });
+      }
+
+      const needsRetry = stored !== null && Math.abs(node.scrollTop - stored) > 1;
+      if (needsRetry && attempts < maxAttempts) {
+        attempts += 1;
+        rafId = window.requestAnimationFrame(tryRestore);
+      } else {
+        rafId = null;
+        if (stored === null) {
+          lastFileListScrollTopRef.current = node.scrollTop;
+        }
+      }
+    };
+
+    rafId = window.requestAnimationFrame(tryRestore);
+
+    return () => {
+      if (rafId !== null) {
+        window.cancelAnimationFrame(rafId);
+      }
+      node.removeEventListener("scroll", handleScroll);
+      persistSnapshot(node.scrollTop, "cleanup");
+    };
+  }, [
+    isPrCommentsView,
+    isInlineCommentOpen,
+    repoScopeKey,
+    visibleFiles.length,
+    getScrollPosition,
+    saveScrollPosition,
+  ]);
+
   // Auto-select first file when filtered sorted files load
   useEffect(() => {
     if (filteredSortedFiles.length > 0 && !selectedFilePath) {
@@ -2085,6 +2512,234 @@ function App() {
     };
   }, [selectedFileMetadata, fileContentsQuery.data]);
 
+  // CRITICAL: Eagerly capture scroll position BEFORE React unmounts Monaco editor
+  // This must run synchronously in useLayoutEffect before any DOM changes
+  useLayoutEffect(() => {
+    const currentFileKey = selectedFileCacheKeyRef.current;
+    const newFileKey = selectedFileCacheKey;
+    
+    // If file is changing and we have a current file, capture its scroll position NOW
+    if (currentFileKey && newFileKey && currentFileKey !== newFileKey) {
+      const currentPosition = sourcePaneLastScrollTopRef.current[currentFileKey];
+      
+      if (typeof currentPosition === "number" && currentPosition > SOURCE_RESTORE_EPSILON) {
+        // FREEZE this file's position to prevent corruption from spurious scroll events
+        sourcePaneFrozenPositionsRef.current.add(currentFileKey);
+        persistSourceScrollPosition(currentFileKey, currentPosition, "fileChange", { allowZero: false });
+        
+      } else if (currentPosition === undefined || currentPosition === 0) {
+        // Ref doesn't have position - check localStorage for previous session
+        const cacheEntry = scrollCacheRef.current.sourcePane?.[currentFileKey];
+        if (cacheEntry && Date.now() - cacheEntry.updatedAt <= SCROLL_CACHE_TTL_MS && cacheEntry.position > SOURCE_RESTORE_EPSILON) {
+          // FREEZE this file's position
+          sourcePaneFrozenPositionsRef.current.add(currentFileKey);
+          persistSourceScrollPosition(currentFileKey, cacheEntry.position, "fileChange", { allowZero: false });
+        }
+      }
+      
+      // Set flag to block scroll events during transition
+      sourcePaneFileChangeInProgressRef.current = true;
+    }
+  }, [selectedFileCacheKey, persistSourceScrollPosition]);
+
+  useEffect(() => {
+    if (!selectedFilePath || !selectedFileCacheKey) {
+      selectedFileCacheKeyRef.current = null;
+      sourcePaneRestoreInFlightRef.current = null;
+      sourcePaneRestoreGraceRef.current = null;
+      sourcePaneActivationHoldRef.current = null;
+      return;
+    }
+
+    const previousFileKey = selectedFileCacheKeyRef.current;
+    const isFileChange = previousFileKey !== selectedFileCacheKey;
+
+    if (isFileChange) {
+      // Note: file change flag and eager save already handled in useLayoutEffect above
+      // to run synchronously before Monaco unmounts
+      
+      let cachedPosition: number | null = null;
+      if (typeof sourcePaneLastScrollTopRef.current[selectedFileCacheKey] === "number") {
+        cachedPosition = sourcePaneLastScrollTopRef.current[selectedFileCacheKey];
+      } else {
+        const cacheEntry = scrollCacheRef.current.sourcePane?.[selectedFileCacheKey];
+        if (cacheEntry && Date.now() - cacheEntry.updatedAt <= SCROLL_CACHE_TTL_MS) {
+          cachedPosition = cacheEntry.position;
+        }
+      }
+
+      if (typeof cachedPosition === "number" && cachedPosition > SOURCE_RESTORE_EPSILON) {
+        sourcePaneActivationHoldRef.current = {
+          fileKey: selectedFileCacheKey,
+          target: cachedPosition,
+          expiresAt: Date.now() + SOURCE_RESTORE_ACTIVATION_GRACE_MS,
+        };
+      } else {
+        sourcePaneActivationHoldRef.current = null;
+      }
+    }
+
+    selectedFileCacheKeyRef.current = selectedFileCacheKey;
+
+    let attempts = 0;
+    const maxAttempts = 20;
+    let rafId: number | null = null;
+    let settleRafId: number | null = null;
+
+    const cancelRafs = () => {
+      if (rafId !== null) {
+        window.cancelAnimationFrame(rafId);
+      }
+      if (settleRafId !== null) {
+        window.cancelAnimationFrame(settleRafId);
+      }
+      sourcePaneRestoreInFlightRef.current = null;
+    };
+
+    const enforceRestore = (editorInstance: any) => {
+      const pending = sourcePaneRestoreInFlightRef.current;
+      if (!pending || pending.fileKey !== selectedFileCacheKey) {
+        return;
+      }
+      const currentTop = editorInstance.getScrollTop?.() ?? 0;
+      const delta = Math.abs(currentTop - pending.target);
+      if (delta <= SOURCE_RESTORE_EPSILON) {
+        sourcePaneRestoreInFlightRef.current = null;
+        const graceExpiresAt = Date.now() + SOURCE_RESTORE_GRACE_MS;
+        sourcePaneRestoreGraceRef.current = {
+          fileKey: pending.fileKey,
+          target: pending.target,
+          expiresAt: graceExpiresAt,
+        };
+        
+        // Clear file change flag and unfreeze positions now that restore is complete
+        sourcePaneFileChangeInProgressRef.current = false;
+        if (previousFileKey) {
+          sourcePaneFrozenPositionsRef.current.delete(previousFileKey);
+        }
+        
+        // Keep enforcing scroll position during grace period
+        let graceCheckCount = 0;
+        const graceInterval = setInterval(() => {
+          graceCheckCount++;
+          const now = Date.now();
+          const currentFileKey = selectedFileCacheKeyRef.current;
+          
+          // Stop if file changed or grace expired
+          if (currentFileKey !== pending.fileKey || now > graceExpiresAt) {
+            clearInterval(graceInterval);
+            return;
+          }
+          
+          // Check if scroll position drifted
+          const actualTop = editorInstance.getScrollTop?.() ?? 0;
+          const drift = Math.abs(actualTop - pending.target);
+          if (drift > SOURCE_RESTORE_EPSILON) {
+            editorInstance.setScrollTop?.(pending.target);
+            syncPreviewToEditor(editorInstance);
+          }
+        }, 50); // Check every 50ms
+        
+        return;
+      }
+      if (
+        Date.now() - pending.startedAt > SOURCE_RESTORE_TIMEOUT_MS ||
+        pending.attempts >= SOURCE_RESTORE_MAX_ATTEMPTS
+      ) {
+        sourcePaneRestoreInFlightRef.current = null;
+        sourcePaneFileChangeInProgressRef.current = false;
+        // Unfreeze previous file on timeout
+        if (previousFileKey) {
+          sourcePaneFrozenPositionsRef.current.delete(previousFileKey);
+        }
+        console.warn("Source restore timeout", {
+          selectedFilePath,
+          target: pending.target,
+          actual: currentTop,
+        });
+        return;
+      }
+      pending.attempts += 1;
+      editorInstance.setScrollTop?.(pending.target);
+      syncPreviewToEditor(editorInstance);
+      settleRafId = window.requestAnimationFrame(() => enforceRestore(editorInstance));
+    };
+
+    const tryRestore = () => {
+      const editorInstance = showDiff
+        ? diffEditorRef.current?.getModifiedEditor?.()
+        : editorRef.current;
+
+      if (!editorInstance) {
+        if (attempts < maxAttempts) {
+          attempts += 1;
+          rafId = window.requestAnimationFrame(tryRestore);
+        }
+        return;
+      }
+
+      if (
+        skipSourceRestoreForRef.current &&
+        skipSourceRestoreForRef.current !== selectedFilePath
+      ) {
+        skipNextSourceScrollRestoreRef.current = false;
+        skipSourceRestoreForRef.current = null;
+      }
+
+      if (
+        skipNextSourceScrollRestoreRef.current &&
+        skipSourceRestoreForRef.current === selectedFilePath
+      ) {
+        skipNextSourceScrollRestoreRef.current = false;
+        skipSourceRestoreForRef.current = null;
+        return;
+      }
+
+      const stored = getScrollPosition("sourcePane", selectedFileCacheKey);
+      const target = stored ?? 0;
+      const currentTop = editorInstance.getScrollTop?.() ?? 0;
+      const shouldEnforceRestore =
+        target > SOURCE_RESTORE_EPSILON ||
+        Math.abs(currentTop - target) > SOURCE_RESTORE_EPSILON;
+
+      if (shouldEnforceRestore) {
+        // Do NOT clear activation hold - let it continue protecting during restore
+        sourcePaneRestoreInFlightRef.current = {
+          fileKey: selectedFileCacheKey,
+          target,
+          startedAt: Date.now(),
+          attempts: 0,
+        };
+      } else {
+        // No restore needed, can safely clear activation hold
+        sourcePaneActivationHoldRef.current = null;
+        sourcePaneRestoreInFlightRef.current = null;
+      }
+
+      editorInstance.setScrollTop(target);
+      syncPreviewToEditor(editorInstance);
+      if (shouldEnforceRestore) {
+        settleRafId = window.requestAnimationFrame(() => enforceRestore(editorInstance));
+      }
+      persistSourceScrollPosition(selectedFileCacheKey, target, "restore", { allowZero: true });
+    };
+
+    tryRestore();
+
+    return () => {
+      cancelRafs();
+    };
+  }, [
+    selectedFilePath,
+    showDiff,
+    selectedFile?.head_content,
+    selectedFile?.base_content,
+    selectedFileCacheKey,
+    getScrollPosition,
+    persistSourceScrollPosition,
+    syncPreviewToEditor,
+  ]);
+
   const fileComments = useMemo(() => {
     let filtered = !selectedFilePath 
       ? reviewAwareComments 
@@ -2143,6 +2798,104 @@ function App() {
     
     return threads;
   }, [fileComments, showOnlyMyComments, authQuery.data?.login]);
+
+  useEffect(() => {
+    if (!selectedFileCacheKey) {
+      return;
+    }
+
+    const panel = commentPanelBodyRef.current;
+    if (!panel) {
+      return;
+    }
+
+    if (!isInlineCommentOpen) {
+      return;
+    }
+
+    const storedPosition = getScrollPosition("fileComments", selectedFileCacheKey);
+
+    const persistSnapshot = (
+      position: number,
+      _context: "scroll" | "cleanup" | "restore",
+      options?: { allowZero?: boolean },
+    ) => {
+      let normalized = Math.max(0, Math.round(position));
+      const lastKnown = commentPanelLastScrollTopRef.current ?? storedPosition ?? null;
+      if (!options?.allowZero && normalized === 0 && lastKnown && lastKnown > 0) {
+        normalized = lastKnown;
+      }
+      commentPanelLastScrollTopRef.current = normalized;
+      saveScrollPosition("fileComments", selectedFileCacheKey, normalized);
+    };
+
+    let suppressScrollPersistence = true;
+
+    const handleScroll = () => {
+      if (suppressScrollPersistence) {
+        return;
+      }
+      persistSnapshot(panel.scrollTop, "scroll", { allowZero: true });
+    };
+
+    panel.addEventListener("scroll", handleScroll, { passive: true });
+
+    if (storedPosition !== null) {
+      commentPanelLastScrollTopRef.current = storedPosition;
+    } else {
+      commentPanelLastScrollTopRef.current = panel.scrollTop;
+    }
+
+    let rafId: number | null = null;
+    let attempts = 0;
+    const maxAttempts = 8;
+
+    const settleRestore = () => {
+      if (!suppressScrollPersistence) {
+        return;
+      }
+      suppressScrollPersistence = false;
+    };
+
+    const restore = () => {
+      const stored = storedPosition;
+      if (stored !== null && Math.abs(panel.scrollTop - stored) > 1) {
+        panel.scrollTop = stored;
+        if (Math.abs(panel.scrollTop - stored) <= 1) {
+          persistSnapshot(stored, "restore", { allowZero: true });
+        }
+      }
+
+      const needsRetry = stored !== null && Math.abs(panel.scrollTop - stored) > 1;
+      if (needsRetry && attempts < maxAttempts) {
+        attempts += 1;
+        rafId = window.requestAnimationFrame(restore);
+      } else {
+        rafId = null;
+        settleRestore();
+        if (stored === null) {
+          persistSnapshot(panel.scrollTop, "restore", { allowZero: true });
+        }
+      }
+    };
+
+    rafId = window.requestAnimationFrame(restore);
+
+    return () => {
+      if (rafId !== null) {
+        window.cancelAnimationFrame(rafId);
+      }
+      suppressScrollPersistence = false;
+      panel.removeEventListener("scroll", handleScroll);
+      persistSnapshot(panel.scrollTop, "cleanup");
+    };
+  }, [
+    selectedFileCacheKey,
+    isInlineCommentOpen,
+    commentThreads.length,
+    getScrollPosition,
+    saveScrollPosition,
+  ]);
 
   const shouldShowFileCommentComposer = isFileCommentComposerVisible;
   const noCommentsDueToFilters = fileComments.length === 0 && (showOnlyMyComments || hasHiddenOutdatedComments);
@@ -3994,7 +4747,7 @@ function App() {
                     </div>
                   </div>
                 )}
-                {prDetail && <div style={{ height: '8px' }} />}
+                {prDetail && <div className="spacer-8" />}
               <div className="comment-panel">
                 <div className="comment-panel__header">
                   <div className="comment-panel__title-wrapper">
@@ -4340,6 +5093,7 @@ function App() {
                             </p>
                           </div>
                         )}
+                        {/* @ts-ignore: CommentThreadItem returns <li> element but linter cannot detect this */}
                         <ul className="comment-panel__list">
                           {commentThreads.map((thread) => (
                             <CommentThreadItem
@@ -5611,8 +6365,8 @@ function App() {
                         </div>
                       </div>
                     </div>
-                    <div className="panel__body panel__body--flush">
-                      {isPrCommentsView ? (
+                    {isPrCommentsView ? (
+                      <div className="panel__body panel__body--flush">
                         <div className="pr-comments-view">
                           {isPrCommentComposerOpen ? (
                             <div className="pr-comment-composer">
@@ -5699,8 +6453,9 @@ function App() {
                             </>
                           )}
                         </div>
-                      ) : (
-                        <>
+                      </div>
+                    ) : (
+                      <div className="panel__body panel__body--flush">
                           {pullDetailQuery.isLoading || (tocFileMetadata && tocContentQuery.isLoading) ? (
                             <div className="empty-state empty-state--subtle">Loading files…</div>
                           ) : !prDetail ? (
@@ -5714,8 +6469,8 @@ function App() {
                               No Markdown or YAML files in this pull request.
                             </div>
                           ) : (
-                          <>
-                            <ul className="file-list file-list--compact">
+                            <>
+                            <ul className="file-list file-list--compact" ref={fileListScrollRef}>
                           {visibleFiles.map((file) => {
                             const displayName = formatFileLabel(file.path, tocFileNameMap);
                             const tooltip = formatFileTooltip(file);
@@ -5819,11 +6574,10 @@ function App() {
                                 </div>
                               </div>
                             )}
-                          </>
+                            </>
                           )}
-                        </>
+                        </div>
                       )}
-                    </div>
                   </div>
                 )}
               </>
@@ -6031,6 +6785,27 @@ function App() {
                             }
                           });
                           const modifiedEditor = editor.getModifiedEditor();
+                          if (modifiedEditor) {
+                            modifiedEditor.onDidScrollChange(() => {
+                              const fileKey = selectedFileCacheKeyRef.current;
+                              if (!fileKey) {
+                                return;
+                              }
+                              
+                              // Ignore scroll events during file change transition to prevent corruption
+                              if (sourcePaneFileChangeInProgressRef.current) {
+                                return;
+                              }
+                              
+                              const scrollTop = modifiedEditor.getScrollTop();
+                              
+                              // Check if we should skip this scroll snapshot
+                              if (shouldSkipSourceScrollSnapshot(fileKey, scrollTop)) {
+                                return;
+                              }
+                              persistSourceScrollPosition(fileKey, scrollTop, "scroll", { allowZero: true });
+                            });
+                          }
                           
                           const hoveredLineRef = { current: null as number | null };
                           const decorationsRef = { current: [] as string[] };
@@ -6098,8 +6873,44 @@ function App() {
                           editor.onDidScrollChange(() => {
                             if (!previewViewerRef.current) return;
                             
+                            // Skip if we're currently re-enforcing to avoid loops
+                            if (sourcePaneReEnforcingRef.current) {
+                              return;
+                            }
+                            
                             // Get actual scroll position from editor
                             const editorScrollTop = editor.getScrollTop();
+                            const fileKey = selectedFileCacheKeyRef.current;
+                            if (fileKey) {
+                              if (shouldSkipSourceScrollSnapshot(fileKey, editorScrollTop)) {
+                                // If suppression is active and this is a spurious zero, re-enforce target
+                                const isPrematureZero = editorScrollTop <= SOURCE_RESTORE_EPSILON;
+                                if (isPrematureZero) {
+                                  const pending = sourcePaneRestoreInFlightRef.current;
+                                  const grace = sourcePaneRestoreGraceRef.current;
+                                  const activationHold = sourcePaneActivationHoldRef.current;
+                                  
+                                  let targetToEnforce = null;
+                                  if (pending && pending.fileKey === fileKey && pending.target > SOURCE_RESTORE_EPSILON) {
+                                    targetToEnforce = pending.target;
+                                  } else if (grace && grace.fileKey === fileKey && Date.now() <= grace.expiresAt && grace.target > SOURCE_RESTORE_EPSILON) {
+                                    targetToEnforce = grace.target;
+                                  } else if (activationHold && activationHold.fileKey === fileKey && Date.now() <= activationHold.expiresAt && activationHold.target > SOURCE_RESTORE_EPSILON) {
+                                    targetToEnforce = activationHold.target;
+                                  }
+                                  
+                                  if (targetToEnforce !== null) {
+                                    sourcePaneReEnforcingRef.current = true;
+                                    editor.setScrollTop(targetToEnforce);
+                                    setTimeout(() => {
+                                      sourcePaneReEnforcingRef.current = false;
+                                    }, 50);
+                                  }
+                                }
+                              } else {
+                                persistSourceScrollPosition(fileKey, editorScrollTop, "scroll", { allowZero: true });
+                              }
+                            }
                             const editorScrollHeight = editor.getScrollHeight();
                             const editorClientHeight = editor.getLayoutInfo().height;
                             const editorMaxScroll = editorScrollHeight - editorClientHeight;
@@ -6246,10 +7057,14 @@ function App() {
                                         setPendingAnchorId(anchorId);
                                       }
                                     } else {
+                                      skipNextSourceScrollRestoreRef.current = true;
+                                      skipSourceRestoreForRef.current = resolvedPath;
                                       setPendingAnchorId(anchorId);
                                       setSelectedFilePath(resolvedPath);
                                     }
                                   } else {
+                                    skipNextSourceScrollRestoreRef.current = false;
+                                    skipSourceRestoreForRef.current = null;
                                     setPendingAnchorId(null);
                                     setSelectedFilePath(resolvedPath);
                                   }

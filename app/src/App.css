@@ -2791,3 +2791,16 @@ select {
   align-items: center;
   gap: 8px;
 }
+
+/* Utility classes for inline style replacements */
+.mermaid-error {
+  color: #ff6b6b;
+}
+
+.mermaid-clickable {
+  cursor: pointer;
+}
+
+.spacer-8 {
+  height: 8px;
+}
