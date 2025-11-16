@@ -1136,6 +1136,27 @@ function App() {
     }
   }, [isOnline, authQuery.data?.is_offline]);
 
+  // Handle app wake from sleep/hibernation - refetch all queries
+  useEffect(() => {
+    let lastVisibilityChange = Date.now();
+    
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        const timeSinceLastChange = Date.now() - lastVisibilityChange;
+        
+        // If more than 5 minutes have passed, the system likely slept
+        if (timeSinceLastChange > 5 * 60 * 1000) {
+          console.log('🔄 System wake detected after sleep, refetching all queries...');
+          queryClient.refetchQueries({ type: 'active' });
+        }
+      }
+      lastVisibilityChange = Date.now();
+    };
+    
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, [queryClient]);
+
   const loginMutation = useMutation({
     mutationFn: async () => {
       const status = await invoke<AuthStatus>("cmd_start_github_oauth");
@@ -1211,6 +1232,8 @@ function App() {
               has_pending_review: true,
               viewed_count: 0,
               total_count: pr.file_count,
+              state: pr.state,
+              merged: pr.merged,
             }));
           
           if (prsWithPendingReviews.length > 0) {
@@ -1266,6 +1289,8 @@ function App() {
               has_pending_review: true,
               viewed_count: 0,
               total_count: pr.file_count,
+              state: pr.state,
+              merged: pr.merged,
             }));
           
           if (prsWithPendingReviews.length > 0) {
@@ -3631,8 +3656,20 @@ function App() {
 
   // Get comment count for a file
   const getFileCommentCount = useCallback((filePath: string): number => {
-    return reviewAwareComments.filter((c: PullRequestComment) => c.path === filePath).length;
-  }, [reviewAwareComments]);
+    let fileComments = reviewAwareComments.filter((c: PullRequestComment) => c.path === filePath);
+    
+    // Apply outdated filter
+    if (!showOutdatedComments) {
+      fileComments = fileComments.filter((c: PullRequestComment) => !c.outdated);
+    }
+    
+    // Apply "only my comments" filter
+    if (showOnlyMyComments) {
+      fileComments = fileComments.filter((c: PullRequestComment) => c.is_mine);
+    }
+    
+    return fileComments.length;
+  }, [reviewAwareComments, showOutdatedComments, showOnlyMyComments]);
 
   // Check if a file has any pending comments (draft or pending GitHub review)
   const fileHasPendingComments = useCallback((filePath: string): boolean => {
@@ -3641,6 +3678,19 @@ function App() {
       (c.is_draft || (c.review_id === pendingReview?.id && pendingReview?.html_url))
     );
   }, [reviewAwareComments, pendingReview]);
+
+  // Check if a file has user-authored comments with replies (for green badge)
+  const fileHasRepliedComments = useCallback((filePath: string): boolean => {
+    const fileComments = reviewAwareComments.filter((c: PullRequestComment) => c.path === filePath);
+    
+    // Find user's comments
+    const userComments = fileComments.filter((c: PullRequestComment) => c.is_mine);
+    
+    // Check if any user comment has replies
+    return userComments.some((userComment: PullRequestComment) => {
+      return fileComments.some((c: PullRequestComment) => c.in_reply_to_id === userComment.id);
+    });
+  }, [reviewAwareComments]);
 
   // Helper to check if a file draft entry should be deleted (no non-empty drafts)
   const shouldDeleteFileDraft = useCallback((fileDrafts: { inline?: string; reply?: Record<string, string> } | undefined): boolean => {
@@ -6529,8 +6579,8 @@ function App() {
                                   <span className="file-list__badge-wrapper">
                                     {commentCount > 0 ? (
                                       <span 
-                                        className={`file-list__badge${fileHasPendingComments(file.path) ? ' file-list__badge--pending' : ''}${fileHasDraftsInProgress(file.path) ? ' file-list__badge--draft' : ''}`}
-                                        title={`${commentCount} comment${commentCount !== 1 ? 's' : ''}${fileHasDraftsInProgress(file.path) ? ' (comment in progress)' : ''}`}
+                                        className={`file-list__badge${fileHasPendingComments(file.path) ? ' file-list__badge--pending' : ''}${fileHasDraftsInProgress(file.path) ? ' file-list__badge--draft' : ''}${!fileHasPendingComments(file.path) && !fileHasDraftsInProgress(file.path) && fileHasRepliedComments(file.path) ? ' file-list__badge--replied' : ''}`}
+                                        title={`${commentCount} comment${commentCount !== 1 ? 's' : ''}${fileHasDraftsInProgress(file.path) ? ' (comment in progress)' : ''}${!fileHasPendingComments(file.path) && !fileHasDraftsInProgress(file.path) && fileHasRepliedComments(file.path) ? ' (has replies)' : ''}`}
                                         onClick={(e) => {
                                           e.stopPropagation();
                                           if (selectedFilePath !== file.path) {
@@ -7107,7 +7157,7 @@ function App() {
                     )
                   ) : (
                     <div className="empty-state">
-                      {prDetail ? "Pick a file to see its diff." : "Choose a pull request to begin."}
+                      {prDetail ? "Pick a file to see its diff." : pullDetailQuery.isFetching ? "Loading..." : "Choose a pull request to begin."}
                     </div>
                   )}
                 </div>
@@ -7440,7 +7490,7 @@ function App() {
                     )
                   ) : (
                     <div className="empty-state">
-                      {prDetail ? "Preview appears once a file is selected." : "Choose a pull request to begin."}
+                      {prDetail ? "Preview appears once a file is selected." : pullDetailQuery.isFetching ? "Loading..." : "Choose a pull request to begin."}
                     </div>
                   )}
                 </div>

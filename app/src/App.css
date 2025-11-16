@@ -1096,6 +1096,12 @@ select {
   color: #c8a0ff;
 }
 
+.file-list__badge--replied {
+  background: rgba(110, 231, 183, 0.18);
+  border-color: rgba(110, 231, 183, 0.4);
+  color: #6ee7b7;
+}
+
 .file-list__badge:hover {
   background: rgba(111, 150, 241, 0.5);
   border-color: rgba(111, 150, 241, 0.7);
@@ -1119,6 +1125,11 @@ select {
 .file-list__badge--draft:hover {
   background: rgba(200, 160, 255, 0.28);
   border-color: rgba(200, 160, 255, 0.6);
+}
+
+.file-list__badge--replied:hover {
+  background: rgba(110, 231, 183, 0.28);
+  border-color: rgba(110, 231, 183, 0.6);
 }
 
 .file-list__badge--add {

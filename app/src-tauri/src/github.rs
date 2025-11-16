@@ -173,6 +173,8 @@ fn build_client(token: &str) -> AppResult<reqwest::Client> {
 
     let client = reqwest::Client::builder()
         .default_headers(headers)
+        .timeout(std::time::Duration::from_secs(30)) // 30 second timeout
+        .connect_timeout(std::time::Duration::from_secs(10)) // 10 second connect timeout
         .build()?;
 
     Ok(client)
