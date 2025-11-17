@@ -3644,15 +3644,18 @@ function App() {
         (viewedCount > 0 && totalCount > 0 && viewedCount < totalCount);
       
       return showPr ? {
-        ...pr,
+        owner: pr.owner,
+        repo: pr.repo,
+        number: pr.number,
+        has_local_review: pr.has_local_review,
+        has_pending_review: hasPendingReview,
         title,
         viewed_count: viewedCount,
         total_count: totalCount,
-        has_pending_review: hasPendingReview,
         state,
         merged,
-      } : null;
-    }).filter((pr): pr is PrUnderReview => pr !== null);
+      } as PrUnderReview : null;
+    }).filter((pr): pr is NonNullable<typeof pr> => pr !== null);
   }, [prsUnderReviewQuery.data, viewedFiles, prFileCounts, prTitles, prMetadata, queryClient, authQuery.data?.login, repoMRU, mruOpenPrsQueries, mruClosedPrsQueries, showAllFileTypes]);
 
   // Prefetch PR details for PRs under review that don't have titles
@@ -7822,7 +7825,7 @@ function App() {
                     if (comment) {
                       // Find the parent comment for replies
                       const parentComment = comment.in_reply_to_id 
-                        ? reviewAwareComments.find(c => c.id === comment.in_reply_to_id)
+                        ? reviewAwareComments.find((c: PullRequestComment) => c.id === comment.in_reply_to_id)
                         : comment;
                       
                       if (parentComment) {
