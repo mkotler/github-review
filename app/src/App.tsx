@@ -549,6 +549,10 @@ function App() {
     const stored = localStorage.getItem('pr-titles');
     return stored ? JSON.parse(stored) : {};
   });
+  const [prMetadata, setPrMetadata] = useState<Record<string, { state: string; merged: boolean }>>(() => {
+    const stored = localStorage.getItem('pr-metadata');
+    return stored ? JSON.parse(stored) : {};
+  });
   const [selectedPr, setSelectedPr] = useState<number | null>(null);
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
   const [showClosedPRs, setShowClosedPRs] = useState(false);
@@ -1119,6 +1123,9 @@ function App() {
         markOnline();
       }
       
+      // Cache auth status for instant reload
+      localStorage.setItem('cached-auth-status', JSON.stringify(status));
+      
       return status;
     },
     retry: 3, // Retry up to 3 times for transient network errors
@@ -1126,6 +1133,18 @@ function App() {
     staleTime: 5 * 60 * 1000, // Consider auth status fresh for 5 minutes
     refetchOnWindowFocus: true, // Re-check auth when window regains focus
     refetchOnReconnect: true, // Re-check auth when browser detects network reconnection
+    initialData: () => {
+      // Load cached auth status immediately
+      const cached = localStorage.getItem('cached-auth-status');
+      if (cached) {
+        try {
+          return JSON.parse(cached);
+        } catch {
+          return undefined;
+        }
+      }
+      return undefined;
+    },
   });
 
   // Re-validate authentication when coming back online
@@ -1187,13 +1206,33 @@ function App() {
   });
 
   const prsUnderReviewQuery = useQuery({
-    queryKey: ["prs-under-review", authQuery.data?.login],
+    queryKey: ["prs-under-review"], // Remove login from key since it's local storage
     queryFn: async () => {
       const prs = await invoke<PrUnderReview[]>("cmd_get_prs_under_review");
+      // Cache the results with timestamp in localStorage for instant display on next load
+      const cacheData = {
+        data: prs,
+        timestamp: Date.now(),
+      };
+      localStorage.setItem('cached-prs-under-review', JSON.stringify(cacheData));
       return prs;
     },
     enabled: authQuery.data?.is_authenticated === true,
     ...RETRY_CONFIG,
+    staleTime: 5 * 60 * 1000, // 5 minutes - local reviews don't change often
+    placeholderData: () => {
+      // Show cached data immediately while loading
+      const cached = localStorage.getItem('cached-prs-under-review');
+      if (cached) {
+        try {
+          const cacheData = JSON.parse(cached);
+          return cacheData.data || cacheData; // Handle both old and new format
+        } catch {
+          return undefined;
+        }
+      }
+      return undefined;
+    },
   });
 
   // Query all MRU repos for OPEN PRs with pending reviews
@@ -1240,12 +1279,34 @@ function App() {
             console.log(`✓ Found ${prsWithPendingReviews.length} PR(s) with pending review in ${owner}/${repo} (open)`);
           }
           
+          // Cache results in localStorage
+          const cacheKey = `mru-open-prs-${owner}-${repo}`;
+          const cacheData = {
+            data: prsWithPendingReviews,
+            timestamp: Date.now(),
+          };
+          localStorage.setItem(cacheKey, JSON.stringify(cacheData));
+          
           return prsWithPendingReviews;
         },
         enabled: authQuery.data?.is_authenticated === true && !!currentLogin,
         ...RETRY_CONFIG,
         staleTime: 60 * 60 * 1000, // 1 hour
         gcTime: 60 * 60 * 1000, // Keep in cache for 1 hour
+        placeholderData: () => {
+          // Load from cache for instant display
+          const cacheKey = `mru-open-prs-${owner}-${repo}`;
+          const cached = localStorage.getItem(cacheKey);
+          if (cached) {
+            try {
+              const cacheData = JSON.parse(cached);
+              return cacheData.data || cacheData;
+            } catch {
+              return undefined;
+            }
+          }
+          return undefined;
+        },
       };
     }),
   });
@@ -1297,12 +1358,34 @@ function App() {
             console.log(`✓ Found ${prsWithPendingReviews.length} PR(s) with pending review in ${owner}/${repo} (closed)`);
           }
           
+          // Cache results in localStorage
+          const cacheKey = `mru-closed-prs-${owner}-${repo}`;
+          const cacheData = {
+            data: prsWithPendingReviews,
+            timestamp: Date.now(),
+          };
+          localStorage.setItem(cacheKey, JSON.stringify(cacheData));
+          
           return prsWithPendingReviews;
         },
         enabled: authQuery.data?.is_authenticated === true && !!currentLogin && allOpenQueriesFinished,
         ...RETRY_CONFIG,
         staleTime: 60 * 60 * 1000, // 1 hour
         gcTime: 60 * 60 * 1000, // Keep in cache for 1 hour
+        placeholderData: () => {
+          // Load from cache for instant display
+          const cacheKey = `mru-closed-prs-${owner}-${repo}`;
+          const cached = localStorage.getItem(cacheKey);
+          if (cached) {
+            try {
+              const cacheData = JSON.parse(cached);
+              return cacheData.data || cacheData;
+            } catch {
+              return undefined;
+            }
+          }
+          return undefined;
+        },
       };
     }),
   });
@@ -3389,6 +3472,13 @@ function App() {
           if (!prMap.has(key)) {
             prMap.set(key, pr);
           }
+          // Cache state/merged metadata from MRU queries
+          if (pr.state !== undefined && pr.merged !== undefined) {
+            const cached = prMetadata[key];
+            if (!cached || cached.state !== pr.state || cached.merged !== pr.merged) {
+              setPrMetadata(prev => ({ ...prev, [key]: { state: pr.state!, merged: pr.merged! } }));
+            }
+          }
         });
       }
     });
@@ -3414,6 +3504,15 @@ function App() {
           // Try to get from pulls list cache as fallback
           let title = prTitles[prKey] || "";
           let totalCount = prFileCounts[prKey] || 0;
+          let state: string | undefined;
+          let merged: boolean | undefined;
+          
+          // Check cached metadata first
+          const cachedMetadata = prMetadata[prKey];
+          if (cachedMetadata) {
+            state = cachedMetadata.state;
+            merged = cachedMetadata.merged;
+          }
           
           if (cachedPrDetail) {
             title = cachedPrDetail.title;
@@ -3429,18 +3528,34 @@ function App() {
               setPrTitles(prev => ({ ...prev, [prKey]: title }));
             }
           } else {
-            // Check pulls query cache for this repo
-            const cachedPulls = queryClient.getQueryData<PullRequestSummary[]>([
+            // Check pulls query cache for this repo (both open and closed)
+            const cachedOpenPulls = queryClient.getQueryData<PullRequestSummary[]>([
               "pull-requests",
               owner,
               repo,
               false, // showClosedPRs
             ]);
-            const prSummary = cachedPulls?.find(p => p.number === number);
+            const cachedClosedPulls = queryClient.getQueryData<PullRequestSummary[]>([
+              "pull-requests",
+              owner,
+              repo,
+              true, // showClosedPRs
+            ]);
+            const prSummary = [...(cachedOpenPulls || []), ...(cachedClosedPulls || [])].find(p => p.number === number);
             if (prSummary) {
               title = prSummary.title;
+              state = prSummary.state;
+              merged = prSummary.merged;
               if (prTitles[prKey] !== title) {
                 setPrTitles(prev => ({ ...prev, [prKey]: title }));
+              }
+              // Cache the metadata
+              if (state !== undefined && merged !== undefined) {
+                const definedState: string = state;
+                const definedMerged: boolean = merged;
+                if (!cachedMetadata || cachedMetadata.state !== definedState || cachedMetadata.merged !== definedMerged) {
+                  setPrMetadata(prev => ({ ...prev, [prKey]: { state: definedState, merged: definedMerged } }));
+                }
               }
             }
           }
@@ -3456,6 +3571,8 @@ function App() {
               has_pending_review: false,
               viewed_count: 0,
               total_count: totalCount,
+              state,
+              merged,
             });
           }
         }
@@ -3509,6 +3626,17 @@ function App() {
       
       const viewedCount = viewed.length;
       
+      // Get cached state/merged if not already on pr
+      let state = pr.state;
+      let merged = pr.merged;
+      if (state === undefined || merged === undefined) {
+        const cachedMetadata = prMetadata[prKey];
+        if (cachedMetadata) {
+          state = cachedMetadata.state;
+          merged = cachedMetadata.merged;
+        }
+      }
+      
       // Only show if it meets the criteria
       const showPr = 
         pr.has_local_review || 
@@ -3521,17 +3649,43 @@ function App() {
         viewed_count: viewedCount,
         total_count: totalCount,
         has_pending_review: hasPendingReview,
+        state,
+        merged,
       } : null;
     }).filter((pr): pr is PrUnderReview => pr !== null);
-  }, [prsUnderReviewQuery.data, viewedFiles, prFileCounts, prTitles, queryClient, authQuery.data?.login, repoMRU, mruOpenPrsQueries, mruClosedPrsQueries, showAllFileTypes]);
+  }, [prsUnderReviewQuery.data, viewedFiles, prFileCounts, prTitles, prMetadata, queryClient, authQuery.data?.login, repoMRU, mruOpenPrsQueries, mruClosedPrsQueries, showAllFileTypes]);
 
   // Prefetch PR details for PRs under review that don't have titles
+  // Prioritize PRs with local reviews for immediate fetching
   useEffect(() => {
     if (!authQuery.data?.login) return;
     
-    enhancedPrsUnderReview.forEach(pr => {
+    // Separate PRs with local reviews from others
+    const prsWithLocalReviews = enhancedPrsUnderReview.filter(pr => pr.has_local_review);
+    const otherPrs = enhancedPrsUnderReview.filter(pr => !pr.has_local_review);
+    
+    // Immediately fetch PRs with local reviews that lack titles (high priority)
+    prsWithLocalReviews.forEach(pr => {
       if (!pr.title || pr.title === "") {
-        // Prefetch the PR detail to get the title
+        // Use fetchQuery instead of prefetchQuery to get results immediately
+        void queryClient.fetchQuery({
+          queryKey: ["pull-request", pr.owner, pr.repo, pr.number, authQuery.data?.login],
+          queryFn: async () => {
+            return await invoke<PullRequestDetail>("cmd_get_pull_request", {
+              owner: pr.owner,
+              repo: pr.repo,
+              number: pr.number,
+              currentLogin: authQuery.data?.login,
+            });
+          },
+          staleTime: 60 * 60 * 1000, // Cache for 1 hour
+        });
+      }
+    });
+    
+    // Prefetch other PRs in the background (lower priority)
+    otherPrs.forEach(pr => {
+      if (!pr.title || pr.title === "") {
         void queryClient.prefetchQuery({
           queryKey: ["pull-request", pr.owner, pr.repo, pr.number, authQuery.data?.login],
           queryFn: async () => {
@@ -3591,6 +3745,10 @@ function App() {
   useEffect(() => {
     localStorage.setItem('pr-titles', JSON.stringify(prTitles));
   }, [prTitles]);
+
+  useEffect(() => {
+    localStorage.setItem('pr-metadata', JSON.stringify(prMetadata));
+  }, [prMetadata]);
 
   // Auto-switch PR mode based on whether there are PRs under review
   // Only switch after queries have finished loading to avoid premature switching
