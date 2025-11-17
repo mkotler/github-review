@@ -16,7 +16,7 @@
     "@tauri-apps/plugin-opener": "^2",
     "clsx": "^2.1.1",
     "mermaid": "^11.12.1",
-    "monaco-editor": "^0.54.0",
+    "monaco-editor": "^0.53.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "react-markdown": "^10.1.0",
