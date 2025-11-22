@@ -2343,6 +2343,28 @@ function App() {
     }
   }, [filteredSortedFiles, selectedFilePath]);
 
+  // Scroll selected file into view in the file list
+  useEffect(() => {
+    if (!selectedFilePath || !fileListScrollRef.current || isPrCommentsView || isInlineCommentOpen) {
+      return;
+    }
+
+    // Find the button element for the selected file
+    const fileListElement = fileListScrollRef.current;
+    const fileButton = fileListElement.querySelector(
+      `button.file-list__button--active`
+    ) as HTMLElement;
+
+    if (fileButton) {
+      // Scroll the button into view with smooth behavior
+      fileButton.scrollIntoView({
+        behavior: 'smooth',
+        block: 'nearest',
+        inline: 'nearest'
+      });
+    }
+  }, [selectedFilePath, isPrCommentsView, isInlineCommentOpen]);
+
   // Progressively load more file metadata in the background
   useEffect(() => {
     if (visibleFileCount >= filteredSortedFiles.length) {
@@ -7267,6 +7289,14 @@ function App() {
                                   resolvedPath = resolvedPath.substring(0, hashIndex);
                                 }
                                 
+                                // Decode URL-encoded characters (e.g., %20 for spaces)
+                                try {
+                                  resolvedPath = decodeURIComponent(resolvedPath);
+                                } catch (e) {
+                                  // If decoding fails, use the original path
+                                  console.warn('Failed to decode URL path:', resolvedPath, e);
+                                }
+                                
                                 if (resolvedPath.startsWith('./') || resolvedPath.startsWith('../') || !resolvedPath.startsWith('/')) {
                                   // Relative path - resolve based on current file location
                                   const filePath = selectedFile.path || '';
@@ -7475,6 +7505,14 @@ function App() {
                                   if (hashIndex !== -1) {
                                     anchorId = resolvedPath.substring(hashIndex + 1);
                                     resolvedPath = resolvedPath.substring(0, hashIndex);
+                                  }
+                                  
+                                  // Decode URL-encoded characters (e.g., %20 for spaces)
+                                  try {
+                                    resolvedPath = decodeURIComponent(resolvedPath);
+                                  } catch (e) {
+                                    // If decoding fails, use the original path
+                                    console.warn('Failed to decode URL path:', resolvedPath, e);
                                   }
                                   
                                   if (resolvedPath.startsWith('./') || resolvedPath.startsWith('../') || !resolvedPath.startsWith('/')) {
