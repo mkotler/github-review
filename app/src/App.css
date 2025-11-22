@@ -2409,6 +2409,7 @@ select {
 
 .markdown-preview pre code {
   background: transparent;
+  padding: 0;
 }
 
 .markdown-preview a {
