@@ -4831,6 +4831,8 @@ function App() {
       setInlineCommentDraft("");
       setInlineCommentError(null);
       setIsInlineCommentOpen(true);
+      // Auto-expand sidebar if it's collapsed
+      setIsSidebarCollapsed(false);
       // Scroll to bottom after a brief delay to allow render
       setTimeout(() => {
         if (commentPanelBodyRef.current) {
@@ -6975,6 +6977,18 @@ function App() {
                           >
                             {showDiff ? "Show Modified" : "Show Diff"}
                           </button>
+                          {selectedFilePath && (
+                            <button
+                              type="button"
+                              className="source-menu__item"
+                              onClick={() => {
+                                toggleFileViewed(selectedFilePath);
+                                setShowSourceMenu(false);
+                              }}
+                            >
+                              {isFileViewed(selectedFilePath) ? "Mark file as unviewed" : "Mark file as viewed"}
+                            </button>
+                          )}
                           {Math.abs(paneZoomLevel - PANE_ZOOM_DEFAULT) > 0.001 && (
                             <button
                               type="button"
