@@ -555,6 +555,9 @@ function App() {
   });
   const [selectedPr, setSelectedPr] = useState<number | null>(null);
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
+  const [fileNavigationHistory, setFileNavigationHistory] = useState<string[]>([]);
+  const [fileNavigationIndex, setFileNavigationIndex] = useState<number>(-1);
+  const [isNavigatingFromHistory, setIsNavigatingFromHistory] = useState(false);
   const [showClosedPRs, setShowClosedPRs] = useState(false);
   const [prMode, setPrMode] = useState<"under-review" | "repo">("under-review");
   const [prSearchFilter, setPrSearchFilter] = useState("");
@@ -3117,6 +3120,39 @@ function App() {
     }
   }, [selectedPr]);
 
+  // Reset navigation history when PR changes
+  useEffect(() => {
+    setFileNavigationHistory([]);
+    setFileNavigationIndex(-1);
+  }, [selectedPr]);
+
+  // Track file navigation history (only when user navigates, not from history buttons)
+  useEffect(() => {
+    if (!selectedFilePath || isNavigatingFromHistory) {
+      if (isNavigatingFromHistory) {
+        setIsNavigatingFromHistory(false);
+      }
+      return;
+    }
+
+    setFileNavigationHistory(prev => {
+      // If we're in the middle of history, truncate forward history
+      const newHistory = fileNavigationIndex >= 0 
+        ? prev.slice(0, fileNavigationIndex + 1)
+        : prev;
+      
+      // Don't add duplicate if the last entry is the same file
+      if (newHistory.length > 0 && newHistory[newHistory.length - 1] === selectedFilePath) {
+        return prev;
+      }
+      
+      // Add new entry
+      const updated = [...newHistory, selectedFilePath];
+      setFileNavigationIndex(updated.length - 1);
+      return updated;
+    });
+  }, [selectedFilePath, isNavigatingFromHistory, fileNavigationIndex]);
+
   useEffect(() => {
     if (filteredSortedFiles.length > 0) {
       setSelectedFilePath((current) => {
@@ -3826,6 +3862,28 @@ function App() {
     const prKey = `${repoRef.owner}/${repoRef.repo}#${selectedPr}`;
     return (viewedFiles[prKey] || []).includes(filePath);
   }, [repoRef, selectedPr, viewedFiles]);
+
+  // Navigation functions for file history
+  const canNavigateBack = fileNavigationIndex > 0;
+  const canNavigateForward = fileNavigationIndex < fileNavigationHistory.length - 1;
+  
+  const navigateBack = useCallback(() => {
+    if (canNavigateBack) {
+      const newIndex = fileNavigationIndex - 1;
+      setFileNavigationIndex(newIndex);
+      setIsNavigatingFromHistory(true);
+      setSelectedFilePath(fileNavigationHistory[newIndex]);
+    }
+  }, [canNavigateBack, fileNavigationIndex, fileNavigationHistory]);
+  
+  const navigateForward = useCallback(() => {
+    if (canNavigateForward) {
+      const newIndex = fileNavigationIndex + 1;
+      setFileNavigationIndex(newIndex);
+      setIsNavigatingFromHistory(true);
+      setSelectedFilePath(fileNavigationHistory[newIndex]);
+    }
+  }, [canNavigateForward, fileNavigationIndex, fileNavigationHistory]);
 
   const markAllFilesAsViewed = useCallback(() => {
     if (!repoRef || !selectedPr || !files) return;
@@ -7368,7 +7426,33 @@ function App() {
             <div className={`pane pane--preview ${maximizedPane === 'preview' || isImageFile(selectedFile) ? 'pane--maximized' : (maximizedPane === 'source' || maximizedPane === 'media') ? 'pane--hidden' : ''}`}>
               <div className="pane__header">
                 <div className="pane__title-group">
-                  <span>Preview</span>
+                  <span>
+                    {fileNavigationHistory.length > 1 && (
+                      <>
+                        <button
+                          type="button"
+                          className="pane__nav-button"
+                          onClick={navigateBack}
+                          disabled={!canNavigateBack}
+                          aria-label="Navigate back"
+                          title="Navigate back"
+                        >
+                          ←
+                        </button>
+                        <button
+                          type="button"
+                          className="pane__nav-button"
+                          onClick={navigateForward}
+                          disabled={!canNavigateForward}
+                          aria-label="Navigate forward"
+                          title="Navigate forward"
+                        >
+                          →
+                        </button>
+                      </>
+                    )}
+                    Preview
+                  </span>
                 </div>
                 <div className="pane__actions">
                   {!isImageFile(selectedFile) && (

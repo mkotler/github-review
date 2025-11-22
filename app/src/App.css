@@ -2206,7 +2206,33 @@ select {
 .pane__title-group > span {
   display: flex;
   align-items: center;
+  gap: 6px;
   min-width: 0;
+}
+
+.pane__nav-button {
+  background: transparent;
+  border: none;
+  color: #b9c6e6;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 300;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 0.18s ease;
+  padding: 0;
+  width: auto;
+  height: auto;
+}
+
+.pane__nav-button:hover:not(:disabled) {
+  opacity: 0.8;
+}
+
+.pane__nav-button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
 }
 
 .pane__subtitle {
