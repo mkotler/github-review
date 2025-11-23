@@ -269,15 +269,17 @@ if (typeof window !== "undefined") {
   const originalInvoke = invoke;
   (window as any).originalInvoke = originalInvoke;
 
-  // Monitor for crashes every 5 seconds
-  let lastHeartbeat = Date.now();
-  setInterval(() => {
-    const now = Date.now();
-    if (now - lastHeartbeat > 10000) {
-      console.error("💥 App may have frozen! No heartbeat for", Math.floor((now - lastHeartbeat) / 1000), "seconds");
-    }
-    lastHeartbeat = now;
-  }, 5000);
+  // Monitor for crashes only in development mode to save battery
+  if (import.meta.env.DEV) {
+    let lastHeartbeat = Date.now();
+    setInterval(() => {
+      const now = Date.now();
+      if (now - lastHeartbeat > 10000) {
+        console.error("💥 App may have frozen! No heartbeat for", Math.floor((now - lastHeartbeat) / 1000), "seconds");
+      }
+      lastHeartbeat = now;
+    }, 5000);
+  }
 }
 
 const openDevtoolsWindow = () => {
@@ -1079,8 +1081,10 @@ function App() {
     };
   }, [pendingAnchorId, scrollPreviewToAnchor]);
 
-  // Monitor memory usage periodically to detect leaks
+  // Monitor memory usage periodically to detect leaks (only in development mode to save battery)
   useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    
     const memoryInterval = setInterval(() => {
       if ((performance as any).memory) {
         const memory = (performance as any).memory;
@@ -3086,12 +3090,18 @@ function App() {
     }
   }, [repoRef, selectedPr]);
 
-  // Save drafts to localStorage whenever they change
+  // Save drafts to localStorage whenever they change (debounced to avoid lag during typing)
   useEffect(() => {
-    if (repoRef && selectedPr) {
-      const key = `drafts_${repoRef.owner}_${repoRef.repo}_${selectedPr}`;
+    if (!repoRef || !selectedPr) return;
+    
+    const key = `drafts_${repoRef.owner}_${repoRef.repo}_${selectedPr}`;
+    
+    // Debounce localStorage writes to improve typing performance
+    const timeoutId = setTimeout(() => {
       localStorage.setItem(key, JSON.stringify(draftsByFile));
-    }
+    }, 500); // Wait 500ms after last change before saving
+    
+    return () => clearTimeout(timeoutId);
   }, [draftsByFile, repoRef, selectedPr]);
 
   // Automatically restore inline draft when file with draft is selected
