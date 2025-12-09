@@ -283,6 +283,34 @@ async fn cmd_local_add_comment(
 }
 
 #[tauri::command]
+async fn cmd_local_update_review_commit(
+    owner: String,
+    repo: String,
+    pr_number: u64,
+    new_commit_id: String,
+) -> Result<ReviewMetadata, String> {
+    let storage = review_storage::get_storage().map_err(|e| e.to_string())?;
+    storage
+        .update_review_commit(&owner, &repo, pr_number, &new_commit_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn cmd_local_update_comment_file_path(
+    owner: String,
+    repo: String,
+    pr_number: u64,
+    old_path: String,
+    new_path: String,
+) -> Result<usize, String> {
+    let storage = review_storage::get_storage().map_err(|e| e.to_string())?;
+    storage
+        .update_comment_file_path(&owner, &repo, pr_number, &old_path, &new_path)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn cmd_local_update_comment(
     comment_id: i64,
     body: String,
@@ -405,6 +433,7 @@ async fn cmd_submit_local_review(
     body: Option<String>,
 ) -> Result<(), String> {
     use auth::submit_review_with_comments;
+    use auth::fetch_pull_request_details;
     
     let storage = review_storage::get_storage().map_err(|e| e.to_string())?;
     
@@ -418,13 +447,31 @@ async fn cmd_submit_local_review(
         .get_comments(&owner, &repo, pr_number)
         .map_err(|e| e.to_string())?;
     
+    // Check if PR has been updated since comments were created
+    let pr_detail = fetch_pull_request_details(&owner, &repo, pr_number, None)
+        .await
+        .map_err(|e| e.to_string())?;
+    
+    let commit_id_to_use = if pr_detail.head_sha != metadata.commit_id {
+        tracing::warn!(
+            "⚠️  WARNING: PR has been updated since you created these comments!\n   \
+            Your comments were created for: {}\n   \
+            Current PR head commit:      {}\n   \
+            Using CURRENT commit for submission to maximize success rate.",
+            metadata.commit_id, pr_detail.head_sha
+        );
+        &pr_detail.head_sha
+    } else {
+        &metadata.commit_id
+    };
+    
     // Submit to GitHub - returns (succeeded_ids, optional_error_message)
     let (succeeded_ids, error_msg) = submit_review_with_comments(
         &app,
         &owner,
         &repo,
         pr_number,
-        &metadata.commit_id,
+        commit_id_to_use,
         body.as_deref().or(metadata.body.as_deref()),
         event.as_deref(),
         &comments,
@@ -664,6 +711,8 @@ pub fn run() {
             cmd_get_prs_under_review,
             cmd_local_start_review,
             cmd_local_add_comment,
+            cmd_local_update_review_commit,
+            cmd_local_update_comment_file_path,
             cmd_local_update_comment,
             cmd_local_delete_comment,
             cmd_github_update_comment,

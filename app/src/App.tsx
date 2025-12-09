@@ -410,6 +410,23 @@ const MermaidCode = ({ children }: { children: string }) => {
   return <div ref={ref} className="mermaid-diagram" />;
 };
 
+// Helper function to parse [Line #] prefix from file-level comments
+function parseLinePrefix(body: string): { hasLinePrefix: boolean; lineNumber: number | null; remainingBody: string } {
+  const match = body.match(/^\[Line (\d+)\]\s*/);
+  if (match) {
+    return {
+      hasLinePrefix: true,
+      lineNumber: parseInt(match[1], 10),
+      remainingBody: body.slice(match[0].length)
+    };
+  }
+  return {
+    hasLinePrefix: false,
+    lineNumber: null,
+    remainingBody: body
+  };
+}
+
 // Helper component for comment thread items with collapse functionality
 interface CommentThreadItemProps {
   thread: { parent: PullRequestComment; replies: PullRequestComment[] };
@@ -507,6 +524,33 @@ const CommentThreadItem = ({
               #{parentComment.line}
             </span>
           )}
+          {/* Handle file-level comments with [Line #] prefix from fallback mechanism */}
+          {(!parentComment.line || parentComment.line === 0) && (() => {
+            const parsed = parseLinePrefix(parentComment.body);
+            if (parsed.hasLinePrefix && parsed.lineNumber) {
+              return (
+                <span 
+                  className="comment-panel__item-line comment-panel__item-line--clickable"
+                  onClick={() => {
+                    if (editorRef.current && parsed.lineNumber) {
+                      const editor = editorRef.current;
+                      
+                      // Reveal the line with some context
+                      editor.revealLineInCenter(parsed.lineNumber);
+                      
+                      // Set cursor position at the line
+                      editor.setPosition({ lineNumber: parsed.lineNumber, column: 1 });
+                      editor.focus();
+                    }
+                  }}
+                  title="Click to jump to line in editor (file-level comment)"
+                >
+                  [#{parsed.lineNumber}]
+                </span>
+              );
+            }
+            return null;
+          })()}
         </div>
         <div className="comment-panel__item-actions">
           {showCollapseButton && (
@@ -1697,6 +1741,56 @@ function App() {
 
   // Only use pendingReviewOverride - user must explicitly click "Show Review" to load GitHub review
   const pendingReview = pendingReviewOverride;
+
+  // Auto-update local review commit ID when PR is refreshed
+  useEffect(() => {
+    if (!prDetail || !repoRef || !selectedPr || !pendingReview) {
+      console.log('🔄 Commit update skipped:', { 
+        hasPrDetail: !!prDetail, 
+        hasRepoRef: !!repoRef, 
+        hasSelectedPr: !!selectedPr, 
+        hasPendingReview: !!pendingReview 
+      });
+      return;
+    }
+    
+    // Check if this is a local review (ID matches PR number)
+    const isLocalReview = pendingReview.id === selectedPr;
+    console.log('🔄 Checking for commit update:', {
+      pendingReviewId: pendingReview.id,
+      selectedPr,
+      isLocalReview,
+      pendingCommit: pendingReview.commit_id,
+      currentCommit: prDetail.head_sha,
+    });
+    
+    if (!isLocalReview) {
+      console.log('🔄 Not a local review, skipping commit update');
+      return;
+    }
+    
+    // If the PR's head commit is different from the pending review's commit, update it
+    if (prDetail.head_sha !== pendingReview.commit_id) {
+      console.log(`🔄 Updating local review commit from ${pendingReview.commit_id} to ${prDetail.head_sha}`);
+      
+      invoke("cmd_local_update_review_commit", {
+        owner: repoRef.owner,
+        repo: repoRef.repo,
+        prNumber: selectedPr,
+        newCommitId: prDetail.head_sha,
+      })
+        .then(() => {
+          console.log('✅ Local review commit ID updated');
+          // Refresh the pending review data
+          void prsUnderReviewQuery.refetch();
+        })
+        .catch((err) => {
+          console.error('Failed to update review commit:', err);
+        });
+    } else {
+      console.log('✅ Commit IDs already match, no update needed');
+    }
+  }, [prDetail, repoRef, selectedPr, pendingReview, prsUnderReviewQuery]);
 
   useEffect(() => {
     if (!pendingReviewOverride) {
@@ -2892,11 +2986,30 @@ function App() {
     }
     
     // Sort by line number (comments without line numbers go to the end)
+    // For file-level comments with [Line #] prefix, extract the line number for sorting
     return filtered.sort((a: PullRequestComment, b: PullRequestComment) => {
-      if (a.line === null && b.line === null) return 0;
-      if (a.line === null) return 1;
-      if (b.line === null) return -1;
-      return (a.line ?? 0) - (b.line ?? 0);
+      // Extract effective line number for comment a
+      let aLine = a.line;
+      if (aLine === null || aLine === 0) {
+        const aParsed = parseLinePrefix(a.body);
+        if (aParsed.hasLinePrefix && aParsed.lineNumber) {
+          aLine = aParsed.lineNumber;
+        }
+      }
+      
+      // Extract effective line number for comment b
+      let bLine = b.line;
+      if (bLine === null || bLine === 0) {
+        const bParsed = parseLinePrefix(b.body);
+        if (bParsed.hasLinePrefix && bParsed.lineNumber) {
+          bLine = bParsed.lineNumber;
+        }
+      }
+      
+      if (aLine === null && bLine === null) return 0;
+      if (aLine === null) return 1;
+      if (bLine === null) return -1;
+      return (aLine ?? 0) - (bLine ?? 0);
     });
   }, [reviewAwareComments, selectedFilePath, showOutdatedComments]);
 
@@ -5415,7 +5528,7 @@ function App() {
                             </p>
                           </div>
                         )}
-                        {/* @ts-ignore: CommentThreadItem returns <li> element but linter cannot detect this */}
+                        {/* eslint-disable-next-line react/no-children-prop */}
                         <ul className="comment-panel__list">
                           {commentThreads.map((thread) => (
                             <CommentThreadItem
@@ -5571,7 +5684,12 @@ function App() {
                                               }
                                             }}
                                           >
-                                            {comment.body}
+                                            {(() => {
+                                              // Strip [Line #] prefix from file-level comments for display
+                                              // (the line number is already shown in the header)
+                                              const parsed = parseLinePrefix(comment.body);
+                                              return parsed.hasLinePrefix ? parsed.remainingBody : comment.body;
+                                            })()}
                                           </ReactMarkdown>
                                         </div>
                                       </div>
@@ -7912,6 +8030,7 @@ function App() {
 
       {/* Comment Context Menu */}
       {commentContextMenu && (
+        // eslint-disable-next-line react/forbid-dom-props
         <div
           ref={commentContextMenuRef}
           className="source-menu source-menu--context"

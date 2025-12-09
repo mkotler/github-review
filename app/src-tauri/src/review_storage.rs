@@ -172,6 +172,73 @@ impl ReviewStorage {
         })
     }
     
+    /// Update the commit_id for an existing review (useful when PR is updated)
+    pub fn update_review_commit(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: u64,
+        new_commit_id: &str,
+    ) -> AppResult<ReviewMetadata> {
+        tracing::info!("Updating commit ID for review {}/{}#{} to {}", owner, repo, pr_number, new_commit_id);
+        let conn = self.conn.lock().map_err(|_| AppError::Internal("Lock poisoned".into()))?;
+        
+        // Check if review exists
+        let existing: Option<ReviewMetadata> = conn
+            .query_row(
+                "SELECT owner, repo, pr_number, commit_id, body, created_at, log_file_index 
+                 FROM review_metadata 
+                 WHERE owner = ?1 AND repo = ?2 AND pr_number = ?3",
+                params![owner, repo, pr_number],
+                |row| {
+                    Ok(ReviewMetadata {
+                        owner: row.get(0)?,
+                        repo: row.get(1)?,
+                        pr_number: row.get(2)?,
+                        commit_id: row.get(3)?,
+                        body: row.get(4)?,
+                        created_at: row.get(5)?,
+                        log_file_index: row.get(6)?,
+                    })
+                },
+            )
+            .optional()?;
+        
+        if existing.is_none() {
+            return Err(AppError::Internal(format!(
+                "No review found for {}/{}#{}",
+                owner, repo, pr_number
+            )));
+        }
+        
+        // Update the commit_id
+        conn.execute(
+            "UPDATE review_metadata SET commit_id = ?1 WHERE owner = ?2 AND repo = ?3 AND pr_number = ?4",
+            params![new_commit_id, owner, repo, pr_number],
+        )?;
+        
+        // Return updated metadata
+        let metadata = conn.query_row(
+            "SELECT owner, repo, pr_number, commit_id, body, created_at, log_file_index 
+             FROM review_metadata 
+             WHERE owner = ?1 AND repo = ?2 AND pr_number = ?3",
+            params![owner, repo, pr_number],
+            |row| {
+                Ok(ReviewMetadata {
+                    owner: row.get(0)?,
+                    repo: row.get(1)?,
+                    pr_number: row.get(2)?,
+                    commit_id: row.get(3)?,
+                    body: row.get(4)?,
+                    created_at: row.get(5)?,
+                    log_file_index: row.get(6)?,
+                })
+            },
+        )?;
+        
+        Ok(metadata)
+    }
+    
     /// Add a comment to the pending review
     pub async fn add_comment(
         &self,
@@ -308,6 +375,35 @@ impl ReviewStorage {
         Ok(())
     }
     
+    /// Update file path for comments (useful for fixing typos)
+    pub async fn update_comment_file_path(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: u64,
+        old_path: &str,
+        new_path: &str,
+    ) -> AppResult<usize> {
+        let affected = {
+            let conn = self.conn.lock().map_err(|_| AppError::Internal("Lock poisoned".into()))?;
+            
+            let affected = conn.execute(
+                "UPDATE review_comments SET file_path = ?1, updated_at = ?2 
+                 WHERE owner = ?3 AND repo = ?4 AND pr_number = ?5 AND file_path = ?6 AND deleted = 0",
+                params![new_path, Utc::now().to_rfc3339(), owner, repo, pr_number, old_path],
+            )?;
+            
+            affected
+        };
+        
+        // Update log file if any comments were affected
+        if affected > 0 {
+            self.write_log(owner, repo, pr_number).await?;
+        }
+        
+        Ok(affected)
+    }
+
     /// Get all comments for a review (excluding deleted ones)
     pub fn get_comments(
         &self,

@@ -1460,6 +1460,29 @@ pub async fn create_review_with_comments(
     
     let total = comments.len();
     warn!("Submitting {} comments to {}/{} PR #{}", total, owner, repo, number);
+    warn!("Using commit_id: {}", commit_id);
+    
+    // Get the PR file list to validate comments
+    let pr_files_response = client
+        .get(format!("{API_BASE}/repos/{owner}/{repo}/pulls/{number}/files"))
+        .send()
+        .await;
+    
+    if let Ok(files_resp) = pr_files_response {
+        if let Ok(files_json) = files_resp.json::<Vec<serde_json::Value>>().await {
+            let file_paths: Vec<String> = files_json.iter()
+                .filter_map(|f| f.get("filename").and_then(|n| n.as_str()).map(String::from))
+                .collect();
+            warn!("PR contains {} files: {:?}", file_paths.len(), file_paths);
+            
+            // Check if any comments reference files not in the PR
+            for comment in comments {
+                if !file_paths.contains(&comment.file_path) {
+                    warn!("⚠️  Comment references file NOT in PR: {}", comment.file_path);
+                }
+            }
+        }
+    }
     
     let mut succeeded = 0;
     let mut failed = 0;
@@ -1480,10 +1503,13 @@ pub async fn create_review_with_comments(
         } else {
             comment_obj.insert("line".into(), Value::Number(comment.line_number.into()));
             comment_obj.insert("side".into(), Value::String(comment.side.clone()));
-            warn!("Posting comment to {}:{}: {}", comment.file_path, comment.line_number, comment.body);
+            warn!("Posting comment to {}:{} (side: {}): {}", comment.file_path, comment.line_number, comment.side, comment.body);
         }
 
         let comment_payload = Value::Object(comment_obj);
+        
+        // Log the full payload for debugging
+        warn!("Comment payload: {}", serde_json::to_string_pretty(&comment_payload).unwrap_or_default());
 
         // Emit progress event
         let _ = app.emit("comment-submit-progress", serde_json::json!({
@@ -1522,8 +1548,9 @@ pub async fn create_review_with_comments(
         };
 
         let mut cloned_headers = response.headers().clone();
+        let status = response.status();
 
-        if response.status() == reqwest::StatusCode::FORBIDDEN {
+        if status == reqwest::StatusCode::FORBIDDEN {
             let body = response.text().await.unwrap_or_default();
             let retry_after_header = cloned_headers
                 .get("retry-after")
@@ -1632,23 +1659,83 @@ pub async fn create_review_with_comments(
             wait_time_ms = 0;
         }
 
-        match ensure_success(
-            response,
-            &format!("add comment to {owner}/{repo}#{number}"),
-        )
-        .await
-        {
-            Ok(_) => {
-                succeeded += 1;
-                succeeded_ids.push(comment.id);
-                warn!("✓ Comment posted successfully");
+        // For error responses, capture body before ensure_success consumes it
+        let (should_retry_as_file_level, response_body_copy) = if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            let should_retry = body.contains("pull_request_review_thread.line") && comment.line_number > 0;
+            (should_retry, body)
+        } else {
+            (false, String::new())
+        };
+
+        // Process the result
+        if status.is_success() {
+            succeeded += 1;
+            succeeded_ids.push(comment.id);
+            warn!("✓ Comment posted successfully");
+        } else if should_retry_as_file_level {
+            // Retry as file-level comment with line number prefix
+            warn!("⚠️  Line {} could not be resolved, retrying as file-level comment with line prefix", comment.line_number);
+            
+            let mut file_comment_obj = Map::new();
+            let prefixed_body = format!("[Line {}] {}", comment.line_number, comment.body);
+            file_comment_obj.insert("body".into(), Value::String(prefixed_body));
+            file_comment_obj.insert("commit_id".into(), Value::String(commit_id.to_string()));
+            file_comment_obj.insert("path".into(), Value::String(comment.file_path.clone()));
+            file_comment_obj.insert("subject_type".into(), Value::String("file".to_string()));
+            
+            let file_comment_payload = Value::Object(file_comment_obj);
+            warn!("Retry payload: {}", serde_json::to_string_pretty(&file_comment_payload).unwrap_or_default());
+            
+            let retry_response = client
+                .post(format!("{API_BASE}/repos/{owner}/{repo}/pulls/{number}/comments"))
+                .json(&file_comment_payload)
+                .send()
+                .await;
+            
+            match retry_response {
+                Ok(resp) => {
+                    match ensure_success(
+                        resp,
+                        &format!("add file-level comment (retry) to {owner}/{repo}#{number}"),
+                    )
+                    .await
+                    {
+                        Ok(_) => {
+                            succeeded += 1;
+                            succeeded_ids.push(comment.id);
+                            warn!("✓ Comment posted successfully as file-level with line prefix");
+                        }
+                        Err(retry_err) => {
+                            failed += 1;
+                            let error_msg = format!(
+                                "Failed to post comment to {}:{} (even as file-level) - {}",
+                                comment.file_path, comment.line_number, retry_err
+                            );
+                            warn!("✗ {}", error_msg);
+                            errors.push(error_msg);
+                        }
+                    }
+                }
+                Err(retry_err) => {
+                    failed += 1;
+                    let error_msg = format!(
+                        "Failed to post comment to {}:{} (even as file-level) - {}",
+                        comment.file_path, comment.line_number, retry_err
+                    );
+                    warn!("✗ {}", error_msg);
+                    errors.push(error_msg);
+                }
             }
-            Err(e) => {
-                failed += 1;
-                let error_msg = format!("Failed to post comment to {}:{} - {}", comment.file_path, comment.line_number, e);
-                warn!("✗ {}", error_msg);
-                errors.push(error_msg);
-            }
+        } else {
+            // Regular error, no retry
+            failed += 1;
+            let error_msg = format!(
+                "Failed to post comment to {}:{} - Status {}: {}",
+                comment.file_path, comment.line_number, status, response_body_copy
+            );
+            warn!("✗ {}", error_msg);
+            errors.push(error_msg);
         }
     }
     
@@ -1656,9 +1743,27 @@ pub async fn create_review_with_comments(
     
     if failed > 0 {
         let error_summary = if succeeded > 0 {
-            format!("Submitted {} of {} comments. Failed comments:\n{}", succeeded, comments.len(), errors.join("\n"))
+            format!(
+                "Submitted {} of {} comments. Failed comments:\n{}\n\n\
+                💡 Common causes:\n\
+                - PR was updated after you created the comments (check commit IDs)\n\
+                - Files were renamed, moved, or deleted\n\
+                - Line numbers changed due to PR updates\n\
+                - File-level comments (line 0) don't work reliably with GitHub's API\n\n\
+                To fix: Refresh the PR and re-create comments on the latest commit.",
+                succeeded, comments.len(), errors.join("\n")
+            )
         } else {
-            format!("Failed to submit all {} comments:\n{}", comments.len(), errors.join("\n"))
+            format!(
+                "Failed to submit all {} comments:\n{}\n\n\
+                💡 Common causes:\n\
+                - PR was updated after you created the comments (check commit IDs)\n\
+                - Files were renamed, moved, or deleted\n\
+                - Line numbers changed due to PR updates\n\
+                - File-level comments (line 0) don't work reliably with GitHub's API\n\n\
+                To fix: Refresh the PR and re-create comments on the latest commit.",
+                comments.len(), errors.join("\n")
+            )
         };
         // Return succeeded_ids along with error message
         Ok((succeeded_ids, Some(error_summary)))
