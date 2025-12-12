@@ -2073,7 +2073,7 @@ function App() {
 
   // Load all toc.yml content
   const tocContentsQuery = useQuery({
-    queryKey: ["toc-contents", repoRef?.owner, repoRef?.repo, tocFilesMetadata.map(f => f.path).join(','), prDetail?.base_sha, prDetail?.head_sha],
+    queryKey: ["toc-contents", repoRef?.owner, repoRef?.repo, tocFilesMetadata.map((f: PullRequestFile) => f.path).join(','), prDetail?.base_sha, prDetail?.head_sha],
     queryFn: async () => {
       if (tocFilesMetadata.length === 0 || !prDetail || !repoRef || !selectedPr) return new Map<string, string>();
       
