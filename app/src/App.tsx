@@ -2066,82 +2066,85 @@ function App() {
 
   const files = prDetail?.files ?? [];
 
-  // Find toc.yml file if it exists
-  const tocFileMetadata = useMemo(() => {
-    return files.find((file: PullRequestFile) => file.path.toLowerCase().endsWith("toc.yml"));
+  // Find all toc.yml files if they exist
+  const tocFilesMetadata = useMemo(() => {
+    return files.filter((file: PullRequestFile) => file.path.toLowerCase().endsWith("toc.yml"));
   }, [files]);
 
-  // Load toc.yml content if it exists
-  const tocContentQuery = useQuery({
-    queryKey: ["toc-content", repoRef?.owner, repoRef?.repo, tocFileMetadata?.path, prDetail?.base_sha, prDetail?.head_sha],
+  // Load all toc.yml content
+  const tocContentsQuery = useQuery({
+    queryKey: ["toc-contents", repoRef?.owner, repoRef?.repo, tocFilesMetadata.map(f => f.path).join(','), prDetail?.base_sha, prDetail?.head_sha],
     queryFn: async () => {
-      if (!tocFileMetadata || !prDetail || !repoRef || !selectedPr) return null;
+      if (tocFilesMetadata.length === 0 || !prDetail || !repoRef || !selectedPr) return new Map<string, string>();
       
-      // Always try network first (to detect coming back online)
-      try {
-        const [headContent, baseContent] = await invoke<[string | null, string | null]>("cmd_get_file_contents", {
-          owner: repoRef.owner,
-          repo: repoRef.repo,
-          filePath: tocFileMetadata.path,
-          baseSha: prDetail.base_sha,
-          headSha: prDetail.head_sha,
-          status: tocFileMetadata.status,
-        });
-        
-        // Successful network request - mark online and cache
-        markOnline();
-        await offlineCache.cacheFileContent(
-          repoRef.owner,
-          repoRef.repo,
-          selectedPr,
-          tocFileMetadata.path,
-          prDetail.head_sha,
-          prDetail.base_sha,
-          headContent,
-          baseContent
-        );
-        
-        return headContent ?? baseContent ?? "";
-      } catch (error) {
-        // Check if it's a network error
-        const errorMsg = error instanceof Error ? error.message : String(error);
-        const isNetworkError = 
-          errorMsg.includes('http error') ||
-          errorMsg.includes('error sending request') ||
-          errorMsg.includes('fetch') || 
-          errorMsg.includes('network') || 
-          errorMsg.includes('Failed to invoke') ||
-          errorMsg.includes('connection') ||
-          errorMsg.includes('timeout');
-        
-        if (isNetworkError) {
-          console.log('🌐 Network error detected for toc.yml:', errorMsg);
-          markOffline();
+      const contentMap = new Map<string, string>();
+      
+      for (const tocFile of tocFilesMetadata) {
+        try {
+          const [headContent, baseContent] = await invoke<[string | null, string | null]>("cmd_get_file_contents", {
+            owner: repoRef.owner,
+            repo: repoRef.repo,
+            filePath: tocFile.path,
+            baseSha: prDetail.base_sha,
+            headSha: prDetail.head_sha,
+            status: tocFile.status,
+          });
           
-          // Try cache as fallback
-          const cached = await offlineCache.getCachedFileContent(
+          markOnline();
+          await offlineCache.cacheFileContent(
             repoRef.owner,
             repoRef.repo,
             selectedPr,
-            tocFileMetadata.path,
+            tocFile.path,
             prDetail.head_sha,
-            prDetail.base_sha
+            prDetail.base_sha,
+            headContent,
+            baseContent
           );
-          if (cached) {
-            console.log(`📦 Loaded toc.yml from offline cache`);
-            return cached.headContent ?? cached.baseContent ?? "";
+          
+          const content = headContent ?? baseContent ?? "";
+          if (content) {
+            contentMap.set(tocFile.path, content);
           }
-          // Return empty string if no cache (graceful degradation)
-          console.warn('No cached toc.yml available, file ordering will be default');
-          return "";
+        } catch (error) {
+          const errorMsg = error instanceof Error ? error.message : String(error);
+          const isNetworkError = 
+            errorMsg.includes('http error') ||
+            errorMsg.includes('error sending request') ||
+            errorMsg.includes('fetch') || 
+            errorMsg.includes('network') || 
+            errorMsg.includes('Failed to invoke') ||
+            errorMsg.includes('connection') ||
+            errorMsg.includes('timeout');
+          
+          if (isNetworkError) {
+            console.log('🌐 Network error detected for toc.yml:', errorMsg);
+            markOffline();
+            
+            const cached = await offlineCache.getCachedFileContent(
+              repoRef.owner,
+              repoRef.repo,
+              selectedPr,
+              tocFile.path,
+              prDetail.head_sha,
+              prDetail.base_sha
+            );
+            if (cached) {
+              console.log(`📦 Loaded ${tocFile.path} from offline cache`);
+              const content = cached.headContent ?? cached.baseContent ?? "";
+              if (content) {
+                contentMap.set(tocFile.path, content);
+              }
+            }
+          }
         }
-        throw error;
       }
+      
+      return contentMap;
     },
-    enabled: Boolean(tocFileMetadata && prDetail && repoRef),
+    enabled: Boolean(tocFilesMetadata.length > 0 && prDetail && repoRef),
     staleTime: Infinity,
     retry: (failureCount, error) => {
-      // Don't retry if offline and no cache available
       if (!isOnline && error instanceof Error && error.message.includes('No cached data available')) {
         return false;
       }
@@ -2150,75 +2153,75 @@ function App() {
     retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 30000),
   });
 
-  // Build a map of file paths to display names from toc.yml
+  // Build a map of file paths to display names from all toc.yml files
   const tocFileNameMap = useMemo(() => {
     const map = new Map<string, string>();
     
-    if (!tocFileMetadata || !tocContentQuery.data) {
+    if (!tocContentsQuery.data || tocContentsQuery.data.size === 0) {
       return map;
     }
 
-    const content = tocContentQuery.data;
-    if (!content.trim()) {
-      return map;
-    }
-
-    const baseSegments = tocFileMetadata.path.split("/").slice(0, -1);
-    
-    const resolveHref = (href: string) => {
-      const sanitized = href.split("#")[0].split("?")[0];
-      const segments = sanitized.split("/");
-      const resolved = [...baseSegments];
-      for (const segment of segments) {
-        if (!segment || segment === ".") {
-          continue;
-        }
-        if (segment === "..") {
-          resolved.pop();
-        } else {
-          resolved.push(segment);
-        }
-      }
-      return resolved.join("/");
-    };
-
-    const collectFileNames = (node: unknown) => {
-      if (Array.isArray(node)) {
-        for (const item of node) {
-          collectFileNames(item);
-        }
-        return;
+    for (const [tocPath, content] of tocContentsQuery.data.entries()) {
+      if (!content.trim()) {
+        continue;
       }
 
-      if (!node || typeof node !== "object") {
-        return;
-      }
-
-      const entry = node as Record<string, unknown>;
-      const href = entry.href;
-      const name = entry.name;
+      const baseSegments = tocPath.split("/").slice(0, -1);
       
-      if (typeof href === "string" && typeof name === "string") {
-        const resolvedPath = resolveHref(href);
-        map.set(resolvedPath, name);
-      }
+      const resolveHref = (href: string) => {
+        const sanitized = href.split("#")[0].split("?")[0];
+        const segments = sanitized.split("/");
+        const resolved = [...baseSegments];
+        for (const segment of segments) {
+          if (!segment || segment === ".") {
+            continue;
+          }
+          if (segment === "..") {
+            resolved.pop();
+          } else {
+            resolved.push(segment);
+          }
+        }
+        return resolved.join("/");
+      };
 
-      if (entry.items) {
-        collectFileNames(entry.items);
-      }
-    };
+      const collectFileNames = (node: unknown) => {
+        if (Array.isArray(node)) {
+          for (const item of node) {
+            collectFileNames(item);
+          }
+          return;
+        }
 
-    try {
-      // Strip BOM if present (some editors add UTF-8 BOM which breaks YAML parsing)
-      const cleanContent = content.replace(/^\uFEFF/, '');
-      const parsed = parseYaml(cleanContent);
-      collectFileNames(parsed);
-    } catch (error) {
-      console.warn("Failed to parse toc.yml for file names", error);
+        if (!node || typeof node !== "object") {
+          return;
+        }
+
+        const entry = node as Record<string, unknown>;
+        const href = entry.href;
+        const name = entry.name;
+        
+        if (typeof href === "string" && typeof name === "string") {
+          const resolvedPath = resolveHref(href);
+          map.set(resolvedPath, name);
+        }
+
+        if (entry.items) {
+          collectFileNames(entry.items);
+        }
+      };
+
+      try {
+        const cleanContent = content.replace(/^\uFEFF/, '');
+        const parsed = parseYaml(cleanContent);
+        collectFileNames(parsed);
+      } catch (error) {
+        console.warn(`Failed to parse ${tocPath} for file names`, error);
+      }
     }
 
     return map;
-  }, [tocFileMetadata, tocContentQuery.data]);
+  }, [tocContentsQuery.data]);
 
   const sortedFiles = useMemo(() => {
     if (files.length === 0) {
@@ -2226,13 +2229,27 @@ function App() {
     }
 
     const originalOrder = [...files];
-    const tocFile = tocFileMetadata;
-    const orderedPaths: string[] = [];
-
-    if (tocFile) {
-      const content = tocContentQuery.data ?? "";
-      if (content.trim()) {
-        const baseSegments = tocFile.path.split("/").slice(0, -1);
+    
+    // Build a map of directory -> toc file for that directory
+    const tocByDirectory = new Map<string, PullRequestFile>();
+    for (const tocFile of tocFilesMetadata) {
+      const dir = tocFile.path.split("/").slice(0, -1).join("/");
+      tocByDirectory.set(dir, tocFile);
+    }
+    
+    // Build a map of directory -> ordered file paths from that toc
+    const orderedPathsByToc = new Map<string, string[]>();
+    
+    if (tocContentsQuery.data) {
+      for (const [tocPath, content] of tocContentsQuery.data.entries()) {
+        if (!content.trim()) {
+          continue;
+        }
+        
+        const baseSegments = tocPath.split("/").slice(0, -1);
+        const dir = baseSegments.join("/");
+        const orderedPaths: string[] = [];
+        
         const resolveHref = (href: string) => {
           const sanitized = href.split("#")[0].split("?")[0];
           const segments = sanitized.split("/");
@@ -2277,51 +2294,113 @@ function App() {
         };
 
         try {
-          // Strip BOM if present (some editors add UTF-8 BOM which breaks YAML parsing)
           const cleanContent = content.replace(/^\uFEFF/, '');
           const parsed = parseYaml(cleanContent);
           collectMarkdownPaths(parsed);
+          orderedPathsByToc.set(dir, orderedPaths);
         } catch (error) {
-          console.warn("Failed to parse toc.yml", error);
+          console.warn(`Failed to parse ${tocPath}`, error);
         }
       }
     }
-
+    
+    // Helper to get directory depth
+    const getDepth = (path: string) => {
+      return path.split("/").filter(Boolean).length;
+    };
+    
+    // Helper to get the governing toc directory for a file
+    const getGoverningTocDir = (filePath: string): string | null => {
+      const fileDir = filePath.split("/").slice(0, -1).join("/");
+      
+      // Check if this directory has a toc
+      if (tocByDirectory.has(fileDir)) {
+        return fileDir;
+      }
+      
+      // Check parent directories
+      let currentDir = fileDir;
+      while (currentDir.includes("/")) {
+        const parentDir = currentDir.split("/").slice(0, -1).join("/");
+        if (tocByDirectory.has(parentDir)) {
+          return parentDir;
+        }
+        currentDir = parentDir;
+      }
+      
+      // Check root directory
+      if (tocByDirectory.has("")) {
+        return "";
+      }
+      
+      return null;
+    };
+    
     const seen = new Set<string>();
     const ordered: PullRequestFile[] = [];
-
-    if (tocFile) {
-      ordered.push(tocFile);
-      seen.add(tocFile.path);
+    
+    // Group files by their governing toc directory
+    const filesByTocDir = new Map<string | null, PullRequestFile[]>();
+    
+    for (const file of originalOrder) {
+      const tocDir = getGoverningTocDir(file.path);
+      if (!filesByTocDir.has(tocDir)) {
+        filesByTocDir.set(tocDir, []);
+      }
+      filesByTocDir.get(tocDir)!.push(file);
     }
-
-    for (const path of orderedPaths) {
-      let matchingFile = originalOrder.find((file) => file.path === path);
+    
+    // Sort toc directories by depth and then alphabetically
+    const sortedTocDirs = Array.from(tocByDirectory.keys()).sort((a, b) => {
+      const depthA = getDepth(a);
+      const depthB = getDepth(b);
+      if (depthA !== depthB) {
+        return depthA - depthB;
+      }
+      return a.localeCompare(b);
+    });
+    
+    // Process each toc directory in order
+    for (const tocDir of sortedTocDirs) {
+      const tocFile = tocByDirectory.get(tocDir);
+      if (tocFile && !seen.has(tocFile.path)) {
+        ordered.push(tocFile);
+        seen.add(tocFile.path);
+      }
       
-      // If not found with resolved path, try without the toc directory prefix
-      if (!matchingFile && tocFile) {
-        const baseSegments = tocFile.path.split("/").slice(0, -1);
-        const relativePrefix = baseSegments.join("/") + "/";
-        if (path.startsWith(relativePrefix)) {
-          const withoutPrefix = path.substring(relativePrefix.length);
-          matchingFile = originalOrder.find((file) => file.path === withoutPrefix);
+      // Add files governed by this toc in the order specified
+      const filesInThisDir = filesByTocDir.get(tocDir) || [];
+      const orderedPaths = orderedPathsByToc.get(tocDir) || [];
+      
+      // First add files in toc order
+      for (const path of orderedPaths) {
+        let matchingFile = filesInThisDir.find((file) => file.path === path);
+        
+        // Try suffix matching if exact match not found
+        if (!matchingFile) {
+          matchingFile = filesInThisDir.find((file) => 
+            file.path.endsWith(path) || path.endsWith(file.path)
+          );
+        }
+        
+        if (matchingFile && !seen.has(matchingFile.path)) {
+          ordered.push(matchingFile);
+          seen.add(matchingFile.path);
         }
       }
       
-      // If still not found, try matching by suffix (handles different directory structures)
-      if (!matchingFile) {
-        matchingFile = originalOrder.find((file) => 
-          file.path.endsWith(path) || path.endsWith(file.path)
-        );
-      }
-      
-      if (matchingFile && !seen.has(matchingFile.path)) {
-        ordered.push(matchingFile);
-        seen.add(matchingFile.path);
+      // Then add any remaining files from this directory (not in toc)
+      for (const file of filesInThisDir) {
+        if (!seen.has(file.path)) {
+          ordered.push(file);
+          seen.add(file.path);
+        }
       }
     }
-
-    for (const file of originalOrder) {
+    
+    // Finally add any files not governed by any toc
+    const ungoverned = filesByTocDir.get(null) || [];
+    for (const file of ungoverned) {
       if (!seen.has(file.path)) {
         ordered.push(file);
         seen.add(file.path);
@@ -2329,7 +2408,7 @@ function App() {
     }
 
     return ordered;
-  }, [files, tocFileMetadata, tocContentQuery.data]);
+  }, [files, tocFilesMetadata, tocContentsQuery.data]);
 
   // Apply file type filtering
   const filteredSortedFiles = useMemo(() => {
@@ -6372,7 +6451,7 @@ function App() {
                         </div>
                       </div>
                     )
-                  ) : pullDetailQuery.isLoading || (tocFileMetadata && tocContentQuery.isLoading) ? (
+                  ) : pullDetailQuery.isLoading || (tocFilesMetadata.length > 0 && tocContentsQuery.isLoading) ? (
                     <div className="comment-panel__empty">Loading files…</div>
                   ) : (
                     <div className="comment-panel__empty">Select a file to leave feedback.</div>
@@ -6907,7 +6986,7 @@ function App() {
                       </div>
                     ) : (
                       <div className="panel__body panel__body--flush">
-                          {pullDetailQuery.isLoading || (tocFileMetadata && tocContentQuery.isLoading) ? (
+                          {pullDetailQuery.isLoading || (tocFilesMetadata.length > 0 && tocContentsQuery.isLoading) ? (
                             <div className="empty-state empty-state--subtle">Loading files…</div>
                           ) : !prDetail ? (
                             <div className="empty-state empty-state--subtle">Select a pull request.</div>
