@@ -319,6 +319,22 @@ async fn cmd_get_pull_request(
 }
 
 #[tauri::command]
+async fn cmd_get_pull_request_metadata(
+    owner: String,
+    repo: String,
+    number: u64,
+) -> Result<models::PullRequestMetadata, String> {
+    if owner == "__local__" || repo == "local" {
+        return Err(
+            "Local folder mode does not support fetching GitHub pull request metadata".to_string(),
+        );
+    }
+    auth::fetch_pull_request_metadata(&owner, &repo, number)
+        .await
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
 async fn cmd_get_file_contents(
     owner: String,
     repo: String,
@@ -957,6 +973,7 @@ pub fn run() {
             cmd_logout,
             cmd_list_pull_requests,
             cmd_get_pull_request,
+            cmd_get_pull_request_metadata,
             cmd_get_file_contents,
             cmd_submit_review_comment,
             cmd_submit_file_comment,

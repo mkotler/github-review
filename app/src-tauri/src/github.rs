@@ -8,7 +8,7 @@ use tracing::{debug, info, warn};
 use crate::error::{AppError, AppResult};
 use crate::models::{
     FileLanguage, PullRequestComment, PullRequestDetail, PullRequestFile, PullRequestReview,
-    PullRequestSummary,
+    PullRequestMetadata, PullRequestSummary,
 };
 
 const API_BASE: &str = "https://api.github.com";
@@ -254,6 +254,7 @@ pub async fn list_pull_requests_with_login(
                 file_count,
                 state: pr.state.clone(),
                 merged: pr.merged_at.is_some(),
+                locked: pr.locked.unwrap_or(false),
             });
         }
 
@@ -414,6 +415,27 @@ pub async fn get_pull_request(
         comments,
         my_comments,
         reviews: mapped_reviews,
+    })
+}
+
+pub async fn get_pull_request_metadata(
+    token: &str,
+    owner: &str,
+    repo: &str,
+    number: u64,
+) -> AppResult<PullRequestMetadata> {
+    let client = build_client(token)?;
+    let pr = client
+        .get(format!("{API_BASE}/repos/{owner}/{repo}/pulls/{number}"))
+        .send()
+        .await?;
+    let pr = ensure_success(pr, &format!("get pull request metadata {owner}/{repo}#{number}")).await?;
+    let pr = pr.json::<GitHubPullRequest>().await?;
+
+    Ok(PullRequestMetadata {
+        state: pr.state,
+        merged: pr.merged_at.is_some(),
+        locked: pr.locked.unwrap_or(false),
     })
 }
 
@@ -1389,6 +1411,8 @@ struct GitHubPullRequest {
     pub user: GitHubUser,
     pub state: String,
     pub merged_at: Option<String>,
+    #[serde(default)]
+    pub locked: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1474,11 +1498,68 @@ pub async fn create_review_with_comments(
     _event: Option<&str>,
     comments: &[crate::review_storage::ReviewComment],
 ) -> AppResult<(Vec<i64>, Option<String>)> {
+    fn is_submitted_too_quickly(body: &str) -> bool {
+        // GitHub returns a 422 Validation Failed payload like:
+        // {"message":"Validation Failed","errors":[{"field":"pull_request_review_thread.base","message":"was submitted too quickly"}],...}
+        if body.contains("was submitted too quickly") {
+            return true;
+        }
+
+        let Ok(value) = serde_json::from_str::<Value>(body) else {
+            return false;
+        };
+        let Some(errors) = value.get("errors").and_then(|v| v.as_array()) else {
+            return false;
+        };
+        errors.iter().any(|err| {
+            let field = err.get("field").and_then(|v| v.as_str()).unwrap_or("");
+            let message = err.get("message").and_then(|v| v.as_str()).unwrap_or("");
+            field == "pull_request_review_thread.base" && message.contains("submitted too quickly")
+        })
+    }
+
+    fn next_jitter_ms(max_exclusive: u64) -> u64 {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let Ok(duration) = SystemTime::now().duration_since(UNIX_EPOCH) else {
+            return 0;
+        };
+        if max_exclusive == 0 {
+            return 0;
+        }
+        duration.subsec_millis() as u64 % max_exclusive
+    }
+
     let client = build_client(token)?;
     
     let total = comments.len();
     info!("Submitting {} comments to {}/{} PR #{}", total, owner, repo, number);
     debug!("Using commit_id: {}", commit_id);
+
+    // Fail fast if GitHub has locked the PR conversation. Re-opening a PR does not necessarily
+    // unlock a locked conversation, and the API will return 422 Validation Failed with
+    // `pull_request_review_thread.issue` = "is locked".
+    let pr_meta = client
+        .get(format!("{API_BASE}/repos/{owner}/{repo}/pulls/{number}"))
+        .send()
+        .await?;
+
+    let pr_meta = ensure_success(pr_meta, &format!("fetch PR metadata for {owner}/{repo}#{number}")).await?;
+    let pr_meta_json: Value = pr_meta.json().await?;
+    let is_locked = pr_meta_json
+        .get("locked")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    if is_locked {
+        return Ok((
+            Vec::new(),
+            Some(format!(
+                "Cannot submit review comments because this PR conversation is locked on GitHub. \
+Re-opening the PR does not unlock a locked conversation. \
+Ask a repo maintainer to use \"Unlock conversation\" on PR #{number}, then retry."
+            )),
+        ));
+    }
     
     // Get the PR file list to validate comments
     let pr_files_response = client
@@ -1508,8 +1589,17 @@ pub async fn create_review_with_comments(
     let mut succeeded_ids = Vec::new();
     let mut wait_time_ms: u64 = 0;
 
+    // GitHub can reject bursts of review comment creation with:
+    // 422 Validation Failed, pull_request_review_thread.base: "was submitted too quickly".
+    // A small pacing delay + targeted retry dramatically improves success rates for large batches.
+    const MIN_REQUEST_SPACING_MS: u64 = 1200;
+    const TOO_QUICK_MAX_RETRIES: usize = 6;
+    const TOO_QUICK_BASE_BACKOFF_MS: u64 = 1200;
+    const TOO_QUICK_MAX_BACKOFF_MS: u64 = 20_000;
+    let mut last_request_started_at: Option<std::time::Instant> = None;
+
     // Submit each comment individually, continuing even if some fail
-    for (index, comment) in comments.iter().enumerate() {
+    'outer: for (index, comment) in comments.iter().enumerate() {
         let mut comment_obj = Map::new();
         comment_obj.insert("body".into(), Value::String(comment.body.clone()));
         comment_obj.insert("commit_id".into(), Value::String(commit_id.to_string()));
@@ -1541,33 +1631,126 @@ pub async fn create_review_with_comments(
             "file": comment.file_path,
         }));
 
-        // Respect any wait time determined from previous API response
-        if wait_time_ms > 0 {
-            if wait_time_ms > 1000 {
-                warn!("Pausing for {}ms due to rate limit", wait_time_ms);
-                let _ = app.emit("comment-submit-progress", serde_json::json!({
-                    "current": index + 1,
-                    "total": total,
-                    "file": comment.file_path,
-                    "waitTimeMs": wait_time_ms,
-                }));
+        let mut attempt = 0usize;
+        let mut response = loop {
+            // Respect any wait time determined from previous API response.
+            if wait_time_ms > 0 {
+                if wait_time_ms > 1000 {
+                    warn!("Pausing for {}ms due to rate limit", wait_time_ms);
+                    let _ = app.emit("comment-submit-progress", serde_json::json!({
+                        "current": index + 1,
+                        "total": total,
+                        "file": comment.file_path,
+                        "waitTimeMs": wait_time_ms,
+                    }));
+                }
+                tokio::time::sleep(tokio::time::Duration::from_millis(wait_time_ms)).await;
+                wait_time_ms = 0;
             }
-            tokio::time::sleep(tokio::time::Duration::from_millis(wait_time_ms)).await;
-        }
 
-        let mut response = match client
-            .post(format!("{API_BASE}/repos/{owner}/{repo}/pulls/{number}/comments"))
-            .json(&comment_payload)
-            .send()
-            .await {
-            Ok(resp) => resp,
-            Err(e) => {
+            // Always pace requests to avoid GitHub 422 "submitted too quickly" errors.
+            if let Some(last) = last_request_started_at {
+                let elapsed = last.elapsed();
+                let min = tokio::time::Duration::from_millis(MIN_REQUEST_SPACING_MS);
+                if elapsed < min {
+                    tokio::time::sleep(min - elapsed).await;
+                }
+            }
+            last_request_started_at = Some(std::time::Instant::now());
+
+            let resp = match client
+                .post(format!("{API_BASE}/repos/{owner}/{repo}/pulls/{number}/comments"))
+                .json(&comment_payload)
+                .send()
+                .await
+            {
+                Ok(resp) => resp,
+                Err(e) => {
+                    failed += 1;
+                    let error_msg = format!(
+                        "Failed to post comment to {}:{} - {}",
+                        comment.file_path, comment.line_number, e
+                    );
+                    warn!("✗ {}", error_msg);
+                    errors.push(error_msg);
+                    continue 'outer;
+                }
+            };
+
+            // Intercept 422 too-fast errors here, so we can retry the same comment.
+            if resp.status() == reqwest::StatusCode::UNPROCESSABLE_ENTITY {
+                let body = resp.text().await.unwrap_or_default();
+
+                // If the PR conversation gets locked (or was just locked and our cached metadata is stale),
+                // stop immediately instead of issuing dozens of doomed requests.
+                if body.contains("\"pull_request_review_thread.issue\"") && body.contains("is locked") {
+                    let msg = format!(
+                        "Cannot submit review comments because PR #{number} is locked on GitHub (\"issue is locked\"). \
+Re-opening the PR does not unlock the conversation; a maintainer must unlock it."
+                    );
+                    warn!(
+                        status = 422,
+                        body_len = body.len(),
+                        body_snippet = %body_snippet(&body, ERROR_BODY_SNIPPET_CHARS),
+                        "PR conversation is locked; aborting comment submission"
+                    );
+                    return Ok((succeeded_ids, Some(msg)));
+                }
+
+                if is_submitted_too_quickly(&body) {
+                    if attempt < TOO_QUICK_MAX_RETRIES {
+                        let exponent = attempt.min(8) as u32;
+                        let mut backoff = TOO_QUICK_BASE_BACKOFF_MS.saturating_mul(1u64 << exponent);
+                        if backoff > TOO_QUICK_MAX_BACKOFF_MS {
+                            backoff = TOO_QUICK_MAX_BACKOFF_MS;
+                        }
+                        let jitter = next_jitter_ms(350);
+                        let delay = backoff.saturating_add(jitter);
+
+                        warn!(
+                            attempt = attempt + 1,
+                            delay_ms = delay,
+                            file = %comment.file_path,
+                            line = comment.line_number,
+                            "GitHub rejected comment as submitted too quickly; retrying"
+                        );
+                        let _ = app.emit("comment-submit-progress", serde_json::json!({
+                            "current": index + 1,
+                            "total": total,
+                            "file": comment.file_path,
+                            "waitTimeMs": delay,
+                        }));
+
+                        tokio::time::sleep(tokio::time::Duration::from_millis(delay)).await;
+                        attempt += 1;
+                        // Do NOT count as failed yet; retry the same payload.
+                        continue;
+                    }
+
+                    failed += 1;
+                    let response_body_copy = body_snippet(&body, ERROR_BODY_SNIPPET_CHARS);
+                    let error_msg = format!(
+                        "Failed to post comment to {}:{} - Status 422: {}",
+                        comment.file_path, comment.line_number, response_body_copy
+                    );
+                    warn!("✗ {}", error_msg);
+                    errors.push(error_msg);
+                    continue 'outer;
+                }
+
+                // Not retryable; count as failure and move on.
                 failed += 1;
-                let error_msg = format!("Failed to post comment to {}:{} - {}", comment.file_path, comment.line_number, e);
+                let response_body_copy = body_snippet(&body, ERROR_BODY_SNIPPET_CHARS);
+                let error_msg = format!(
+                    "Failed to post comment to {}:{} - Status 422: {}",
+                    comment.file_path, comment.line_number, response_body_copy
+                );
                 warn!("✗ {}", error_msg);
                 errors.push(error_msg);
-                continue;
+                continue 'outer;
             }
+
+            break resp;
         };
 
         let mut cloned_headers = response.headers().clone();
@@ -1781,6 +1964,8 @@ pub async fn create_review_with_comments(
                 💡 Common causes:\n\
                 - PR was updated after you created the comments (check commit IDs)\n\
                 - Files were renamed, moved, or deleted\n\
+                - PR conversation was locked (GitHub will report: issue is locked)\n\
+                - Comments were submitted too quickly (GitHub will report: was submitted too quickly)\n\
                 - Line numbers changed due to PR updates\n\
                 - File-level comments (line 0) don't work reliably with GitHub's API\n\n\
                 To fix: Refresh the PR and re-create comments on the latest commit.",
@@ -1792,6 +1977,8 @@ pub async fn create_review_with_comments(
                 💡 Common causes:\n\
                 - PR was updated after you created the comments (check commit IDs)\n\
                 - Files were renamed, moved, or deleted\n\
+                - PR conversation was locked (GitHub will report: issue is locked)\n\
+                - Comments were submitted too quickly (GitHub will report: was submitted too quickly)\n\
                 - Line numbers changed due to PR updates\n\
                 - File-level comments (line 0) don't work reliably with GitHub's API\n\n\
                 To fix: Refresh the PR and re-create comments on the latest commit.",

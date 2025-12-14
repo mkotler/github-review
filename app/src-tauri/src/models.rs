@@ -32,6 +32,14 @@ pub struct PullRequestSummary {
     pub file_count: usize,
     pub state: String,
     pub merged: bool,
+    pub locked: bool,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct PullRequestMetadata {
+    pub state: String,
+    pub merged: bool,
+    pub locked: bool,
 }
 
 #[derive(Debug, Serialize)]

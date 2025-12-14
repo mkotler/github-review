@@ -898,6 +898,13 @@ select {
   white-space: nowrap;
 }
 
+.pr-item__state-badge--icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
 .pr-item__state-badge--merged {
   background: rgba(160, 120, 200, 0.2);
   color: #c8b0e8;

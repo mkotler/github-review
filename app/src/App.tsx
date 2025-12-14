@@ -33,6 +33,7 @@ type PullRequestSummary = {
   file_count: number;
   state: string;
   merged: boolean;
+  locked?: boolean;
 };
 
 type FileLanguage = string;
@@ -107,7 +108,14 @@ type PrUnderReview = {
   total_count: number;
   state?: string;
   merged?: boolean;
+  locked?: boolean;
   local_folder?: string | null;
+};
+
+type PullRequestMetadata = {
+  state: string;
+  merged: boolean;
+  locked: boolean;
 };
 
 const AUTH_QUERY_KEY = ["auth-status"] as const;
@@ -636,7 +644,7 @@ function App() {
     const stored = localStorage.getItem('pr-titles');
     return stored ? JSON.parse(stored) : {};
   });
-  const [prMetadata, setPrMetadata] = useState<Record<string, { state: string; merged: boolean }>>(() => {
+  const [prMetadata, setPrMetadata] = useState<Record<string, { state: string; merged: boolean; locked?: boolean }>>(() => {
     const stored = localStorage.getItem('pr-metadata');
     return stored ? JSON.parse(stored) : {};
   });
@@ -703,6 +711,7 @@ function App() {
   const [editingComment, setEditingComment] = useState<PullRequestComment | null>(null);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showDeleteReviewConfirm, setShowDeleteReviewConfirm] = useState(false);
+  const [submitReviewDialogMessage, setSubmitReviewDialogMessage] = useState<string | null>(null);
   const [showDiff, setShowDiff] = useState(false);
   const [showSourceMenu, setShowSourceMenu] = useState(false);
   const [maximizedPane, setMaximizedPane] = useState<'source' | 'preview' | 'media' | null>(null);
@@ -4004,7 +4013,14 @@ function App() {
           if (pr.state !== undefined && pr.merged !== undefined) {
             const cached = prMetadata[key];
             if (!cached || cached.state !== pr.state || cached.merged !== pr.merged) {
-              setPrMetadata(prev => ({ ...prev, [key]: { state: pr.state!, merged: pr.merged! } }));
+              setPrMetadata(prev => ({
+                ...prev,
+                [key]: {
+                  state: pr.state!,
+                  merged: pr.merged!,
+                  locked: prev[key]?.locked,
+                },
+              }));
             }
           }
         });
@@ -4034,12 +4050,14 @@ function App() {
           let totalCount = prFileCounts[prKey] || 0;
           let state: string | undefined;
           let merged: boolean | undefined;
+          let locked: boolean | undefined;
           
           // Check cached metadata first
           const cachedMetadata = prMetadata[prKey];
           if (cachedMetadata) {
             state = cachedMetadata.state;
             merged = cachedMetadata.merged;
+            locked = cachedMetadata.locked;
           }
           
           if (cachedPrDetail) {
@@ -4074,15 +4092,24 @@ function App() {
               title = prSummary.title;
               state = prSummary.state;
               merged = prSummary.merged;
+              locked = prSummary.locked;
               if (prTitles[prKey] !== title) {
                 setPrTitles(prev => ({ ...prev, [prKey]: title }));
               }
               // Cache the metadata
-              if (state !== undefined && merged !== undefined) {
+              if (state !== undefined && merged !== undefined && locked !== undefined) {
                 const definedState: string = state;
                 const definedMerged: boolean = merged;
-                if (!cachedMetadata || cachedMetadata.state !== definedState || cachedMetadata.merged !== definedMerged) {
-                  setPrMetadata(prev => ({ ...prev, [prKey]: { state: definedState, merged: definedMerged } }));
+                const definedLocked: boolean = locked;
+                if (!cachedMetadata || cachedMetadata.state !== definedState || cachedMetadata.merged !== definedMerged || cachedMetadata.locked !== definedLocked) {
+                  setPrMetadata(prev => ({
+                    ...prev,
+                    [prKey]: {
+                      state: definedState,
+                      merged: definedMerged,
+                      locked: definedLocked,
+                    },
+                  }));
                 }
               }
             }
@@ -4101,6 +4128,7 @@ function App() {
               total_count: totalCount,
               state,
               merged,
+              locked,
             });
           }
         }
@@ -4157,11 +4185,13 @@ function App() {
       // Get cached state/merged if not already on pr
       let state = pr.state;
       let merged = pr.merged;
+      let locked = pr.locked;
       if (state === undefined || merged === undefined) {
         const cachedMetadata = prMetadata[prKey];
         if (cachedMetadata) {
           state = cachedMetadata.state;
           merged = cachedMetadata.merged;
+          locked = cachedMetadata.locked;
         }
       }
       
@@ -4188,10 +4218,69 @@ function App() {
         total_count: totalCount,
         state,
         merged,
+        locked,
         local_folder: pr.local_folder ?? null,
       } as PrUnderReview : null;
     }).filter((pr): pr is NonNullable<typeof pr> => pr !== null);
   }, [prsUnderReviewQuery.data, viewedFiles, prFileCounts, prTitles, prMetadata, queryClient, authQuery.data?.login, repoMRU, mruOpenPrsQueries, mruClosedPrsQueries, showAllFileTypes]);
+
+  // Fetch PR state/merged/locked for PRs under review that are missing it.
+  useEffect(() => {
+    if (!authQuery.data?.is_authenticated) return;
+
+    const candidates = enhancedPrsUnderReview
+      .filter(pr => !(pr.owner === "__local__" && pr.repo === "local"))
+      .filter(pr => {
+        const key = `${pr.owner}/${pr.repo}#${pr.number}`;
+        const cached = prMetadata[key];
+        const hasState = pr.state !== undefined || cached?.state !== undefined;
+        const hasMerged = pr.merged !== undefined || cached?.merged !== undefined;
+        const hasLocked = pr.locked !== undefined || cached?.locked !== undefined;
+        return !(hasState && hasMerged && hasLocked);
+      });
+
+    if (candidates.length === 0) return;
+
+    let cancelled = false;
+
+    const run = async () => {
+      for (const pr of candidates) {
+        if (cancelled) return;
+        const prKey = `${pr.owner}/${pr.repo}#${pr.number}`;
+        try {
+          const metadata = await queryClient.fetchQuery({
+            queryKey: ["pull-request-metadata", pr.owner, pr.repo, pr.number],
+            queryFn: async () =>
+              await invoke<PullRequestMetadata>("cmd_get_pull_request_metadata", {
+                owner: pr.owner,
+                repo: pr.repo,
+                number: pr.number,
+              }),
+            staleTime: 60 * 60 * 1000,
+          });
+
+          if (cancelled) return;
+
+          setPrMetadata(prev => ({
+            ...prev,
+            [prKey]: {
+              state: metadata.state,
+              merged: metadata.merged,
+              locked: metadata.locked,
+            },
+          }));
+        } catch {
+          // Ignore (offline / permissions / transient failures). We'll try again later.
+        }
+      }
+    };
+
+    void run();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authQuery.data?.is_authenticated, enhancedPrsUnderReview, prMetadata, queryClient]);
 
   // Prefetch PR details for PRs under review that don't have titles
   // Prioritize PRs with local reviews for immediate fetching
@@ -4693,8 +4782,40 @@ function App() {
       void prsUnderReviewQuery.refetch();
     },
     onError: (error: unknown) => {
-      const message = error instanceof Error ? error.message : "Failed to submit review.";
-      setFileCommentError(message);
+      const message = (() => {
+        if (typeof error === "string") return error;
+        if (error instanceof Error) return error.message;
+        if (error && typeof error === "object" && "message" in error) {
+          const maybeMessage = (error as { message?: unknown }).message;
+          if (typeof maybeMessage === "string" && maybeMessage.trim()) return maybeMessage;
+          if (maybeMessage != null) return String(maybeMessage);
+        }
+        return "Failed to submit review.";
+      })();
+
+      // If the PR conversation is locked, show a clear modal dialog (same style as Delete Comment)
+      // so this failure cannot be missed.
+      const normalized = message.toLowerCase();
+
+      const prKey = repoRef && prDetail ? `${repoRef.owner}/${repoRef.repo}#${prDetail.number}` : null;
+      const knownLocked = prKey ? prMetadata[prKey]?.locked : undefined;
+      const isLockedConversation =
+        knownLocked === true ||
+        (normalized.includes("pull_request_review_thread.issue") && normalized.includes("is locked")) ||
+        normalized.includes("issue is locked") ||
+        normalized.includes("conversation is locked") ||
+        normalized.includes("pr conversation is locked on github");
+
+      setFileCommentError(null);
+
+      if (isLockedConversation) {
+        setSubmitReviewDialogMessage(
+          `Unable to submit review comments because this PR conversation is locked on GitHub. Ask a repo maintainer to "Unlock conversation" on PR #${prDetail?.number ?? "?"} and then retry.`,
+        );
+      } else {
+        setSubmitReviewDialogMessage(message);
+      }
+
       setSubmissionProgress(null);
       // Reload local comments to show which ones are left (the ones that failed)
       void loadLocalComments();
@@ -7155,6 +7276,29 @@ function App() {
                                     {!isLocalUnderReview && pr.state && pr.state.toLowerCase() !== 'open' && (
                                       <>{'\u00a0\u00a0'}<span className={`pr-item__state-badge ${pr.merged ? 'pr-item__state-badge--merged' : 'pr-item__state-badge--closed'}`}>{pr.merged ? 'MERGED' : 'CLOSED'}</span></>
                                     )}
+                                    {!isLocalUnderReview && pr.locked && (
+                                      <>
+                                        {'\u00a0\u00a0'}
+                                        <span
+                                          className="pr-item__state-badge pr-item__state-badge--closed pr-item__state-badge--icon"
+                                          title="Locked for comments"
+                                          aria-label="Locked for comments"
+                                        >
+                                          <svg
+                                            viewBox="0 0 24 24"
+                                            width="12"
+                                            height="12"
+                                            aria-hidden="true"
+                                            focusable="false"
+                                          >
+                                            <path
+                                              fill="currentColor"
+                                              d="M17 9h-1V7a4 4 0 0 0-8 0v2H7a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-8a2 2 0 0 0-2-2Zm-7-2a2 2 0 1 1 4 0v2h-4V7Zm7 12H7v-8h10v8Z"
+                                            />
+                                          </svg>
+                                        </span>
+                                      </>
+                                    )}
                                   </span>
                                   <span 
                                     className="pr-item__file-count" 
@@ -7206,6 +7350,29 @@ function App() {
                                     #{pr.number} · {pr.title}
                                     {pr.state && pr.state.toLowerCase() !== 'open' && (
                                       <>{'\u00a0\u00a0'}<span className={`pr-item__state-badge ${pr.merged ? 'pr-item__state-badge--merged' : 'pr-item__state-badge--closed'}`}>{pr.merged ? 'MERGED' : 'CLOSED'}</span></>
+                                    )}
+                                    {pr.locked && (
+                                      <>
+                                        {'\u00a0\u00a0'}
+                                        <span
+                                          className="pr-item__state-badge pr-item__state-badge--closed pr-item__state-badge--icon"
+                                          title="Locked for comments"
+                                          aria-label="Locked for comments"
+                                        >
+                                          <svg
+                                            viewBox="0 0 24 24"
+                                            width="12"
+                                            height="12"
+                                            aria-hidden="true"
+                                            focusable="false"
+                                          >
+                                            <path
+                                              fill="currentColor"
+                                              d="M17 9h-1V7a4 4 0 0 0-8 0v2H7a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-8a2 2 0 0 0-2-2Zm-7-2a2 2 0 1 1 4 0v2h-4V7Zm7 12H7v-8h10v8Z"
+                                            />
+                                          </svg>
+                                        </span>
+                                      </>
                                     )}
                                   </span>
                                   <span className="pr-item__meta">
@@ -8583,6 +8750,30 @@ function App() {
                 onClick={confirmDeleteReview}
               >
                 Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {submitReviewDialogMessage && (
+        <div className="modal-overlay" onClick={() => setSubmitReviewDialogMessage(null)}>
+          <div className="modal-dialog" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>Submit Review</h3>
+            </div>
+            <div className="modal-body">
+              <p>
+                {submitReviewDialogMessage}
+              </p>
+            </div>
+            <div className="modal-footer">
+              <button
+                type="button"
+                className="modal-button modal-button--secondary"
+                onClick={() => setSubmitReviewDialogMessage(null)}
+              >
+                OK
               </button>
             </div>
           </div>

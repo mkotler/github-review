@@ -235,6 +235,15 @@ pub async fn fetch_pull_request_details(
     get_pull_request(&token, owner, repo, number, current_login).await
 }
 
+pub async fn fetch_pull_request_metadata(
+    owner: &str,
+    repo: &str,
+    number: u64,
+) -> AppResult<crate::models::PullRequestMetadata> {
+    let token = require_token()?;
+    crate::github::get_pull_request_metadata(&token, owner, repo, number).await
+}
+
 pub async fn fetch_file_contents_on_demand(
     owner: &str,
     repo: &str,
