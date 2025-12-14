@@ -2437,6 +2437,26 @@ select {
   color: #0550ae;
 }
 
+.markdown-preview table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.markdown-preview th,
+.markdown-preview td {
+  padding: 6px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.markdown-preview thead tr {
+  border-bottom: 2px solid currentColor;
+}
+
+.markdown-preview tbody tr:not(:last-child) {
+  border-bottom: 1px solid rgba(175, 184, 193, 0.95);
+}
+
 .clickable-image {
   cursor: pointer;
   transition: opacity 0.2s;
