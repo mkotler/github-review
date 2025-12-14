@@ -2384,6 +2384,11 @@ select {
   background: #ffffff;
 }
 
+.markdown-preview__eof {
+  height: 1.6em;
+  pointer-events: none;
+}
+
 .markdown-preview::-webkit-scrollbar {
   width: 6px;
 }

@@ -1,3 +1,4 @@
+/* @refresh reset */
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
@@ -12,6 +13,7 @@ import { parse as parseYaml } from "yaml";
 import mermaid from "mermaid";
 import { useNetworkStatus } from "./useNetworkStatus";
 import * as offlineCache from "./offlineCache";
+import { useScrollSync } from "./useScrollSync";
 
 type AuthStatus = {
   is_authenticated: boolean;
@@ -62,6 +64,10 @@ type PullRequestDetail = {
 type RepoRef = {
   owner: string;
   repo: string;
+};
+
+type StartupOptions = {
+  localDir: string | null;
 };
 
 type PullRequestComment = {
@@ -186,7 +192,8 @@ const loadScrollCache = (): ScrollCacheState => {
     return {};
   }
   try {
-    const stored = window.localStorage.getItem(SCROLL_CACHE_KEY);
+    // Load all scroll positions from sessionStorage (session-only)
+    const stored = window.sessionStorage.getItem(SCROLL_CACHE_KEY);
     if (!stored) {
       return {};
     }
@@ -230,14 +237,51 @@ const pruneScrollCache = (cache: ScrollCacheState): ScrollCacheState => {
 
 // Global error handlers to catch crashes
 if (typeof window !== "undefined") {
-  // Store original console methods
-  const originalError = console.error;
+  const INSTALL_FLAG = "__ghreview_globalErrorHandlersInstalled";
+  if ((window as any)[INSTALL_FLAG]) {
+    // Avoid duplicate listeners/wrappers (e.g., Vite HMR can re-evaluate modules).
+  } else {
+    (window as any)[INSTALL_FLAG] = true;
 
-  // Override console.error to ensure it's always visible
+  const MAX_LOG_CHARS = 2000;
+
+  const truncateString = (value: string, maxChars: number) => {
+    if (value.length <= maxChars) return value;
+    return `${value.slice(0, maxChars)}… [truncated ${value.length - maxChars} chars]`;
+  };
+
+  const sanitizeLogArg = (arg: any) => {
+    if (typeof arg === "string") return truncateString(arg, MAX_LOG_CHARS);
+    if (arg instanceof Error) {
+      const message = typeof arg.message === "string" ? truncateString(arg.message, MAX_LOG_CHARS) : String(arg.message);
+      const stack = typeof arg.stack === "string" ? truncateString(arg.stack, MAX_LOG_CHARS) : arg.stack;
+      return {
+        name: arg.name,
+        message,
+        stack: import.meta.env.DEV ? stack : undefined,
+      };
+    }
+    if (arg && typeof arg === "object" && typeof (arg as any).message === "string") {
+      return {
+        ...(arg as any),
+        message: truncateString((arg as any).message, MAX_LOG_CHARS),
+      };
+    }
+    return arg;
+  };
+
+  // Store original console methods (only once)
+  const consoleAny = console as any;
+  const ORIGINAL_ERROR_KEY = "__ghreview_originalConsoleError";
+  if (typeof consoleAny[ORIGINAL_ERROR_KEY] !== "function") {
+    consoleAny[ORIGINAL_ERROR_KEY] = console.error;
+  }
+  const originalError: (...args: any[]) => void = consoleAny[ORIGINAL_ERROR_KEY];
+
+  // Override console.error to keep logs readable (prevents massive HTML dumps)
   console.error = (...args: any[]) => {
-    originalError.apply(console, args);
-    // Force flush to ensure it's written
-    if (typeof (console as any).flush === "function") {
+    originalError.apply(console, args.map(sanitizeLogArg));
+    if (import.meta.env.DEV && typeof (console as any).flush === "function") {
       (console as any).flush();
     }
   };
@@ -246,9 +290,8 @@ if (typeof window !== "undefined") {
     console.error("💥💥💥 UNHANDLED ERROR 💥💥💥");
     console.error("Message:", event.message);
     console.error("File:", event.filename, "Line:", event.lineno, "Col:", event.colno);
-    console.error("Error object:", event.error);
-    if (event.error?.stack) {
-      console.error("Stack trace:", event.error.stack);
+    if (event.error) {
+      console.error("Error object:", event.error);
     }
     // Prevent default to ensure we see the error
     event.preventDefault();
@@ -257,10 +300,9 @@ if (typeof window !== "undefined") {
   window.addEventListener("unhandledrejection", (event) => {
     console.error("💥💥💥 UNHANDLED PROMISE REJECTION 💥💥💥");
     console.error("Reason:", event.reason);
-    if (event.reason?.stack) {
-      console.error("Stack trace:", event.reason.stack);
+    if (import.meta.env.DEV) {
+      console.error("Promise:", event.promise);
     }
-    console.error("Promise:", event.promise);
     // Prevent default to ensure we see the error
     event.preventDefault();
   });
@@ -279,6 +321,7 @@ if (typeof window !== "undefined") {
       }
       lastHeartbeat = now;
     }, 5000);
+  }
   }
 }
 
@@ -600,6 +643,7 @@ function App() {
     return stored ? JSON.parse(stored) : {};
   });
   const [selectedPr, setSelectedPr] = useState<number | null>(null);
+  const [startupLocalDir, setStartupLocalDir] = useState<string | null>(null);
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
   const [fileNavigationHistory, setFileNavigationHistory] = useState<string[]>([]);
   const [fileNavigationIndex, setFileNavigationIndex] = useState<number>(-1);
@@ -666,6 +710,7 @@ function App() {
   const [isPrCommentsView, setIsPrCommentsView] = useState(false);
   const [isPrCommentComposerOpen, setIsPrCommentComposerOpen] = useState(false);
   const [showAllFileTypes, setShowAllFileTypes] = useState(false);
+  const [hideReviewedFiles, setHideReviewedFiles] = useState(false);
   const [paneZoomLevel, setPaneZoomLevel] = useState(PANE_ZOOM_DEFAULT);
   const [pendingAnchorId, setPendingAnchorId] = useState<string | null>(null);
   const workspaceBodyRef = useRef<HTMLDivElement | null>(null);
@@ -716,12 +761,36 @@ function App() {
   const queryClient = useQueryClient();
   const hoveredPaneRef = useRef<'source' | 'preview' | null>(null);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    invoke<StartupOptions>("cmd_get_startup_options")
+      .then((opts) => {
+        if (cancelled) return;
+        if (opts?.localDir) {
+          setStartupLocalDir(opts.localDir);
+          setRepoRef({ owner: "__local__", repo: "local" });
+          // Use a truthy synthetic PR number so UI conditionals like `selectedPr && ...` render.
+          setSelectedPr(1);
+          setPrMode("repo");
+        }
+      })
+      .catch(() => {
+        // ignore
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const persistScrollCache = useCallback((cache: ScrollCacheState) => {
     if (typeof window === "undefined") {
       return;
     }
     try {
-      window.localStorage.setItem(SCROLL_CACHE_KEY, JSON.stringify(cache));
+      // Use sessionStorage for all scroll positions (session-only)
+      window.sessionStorage.setItem(SCROLL_CACHE_KEY, JSON.stringify(cache));
     } catch (error) {
       // Silent fail
     }
@@ -856,7 +925,12 @@ function App() {
       previewTarget = scrollPercentage * previewMaxScroll;
     }
 
+    // Prevent feedback loops for the non-markdown <pre> preview (it syncs back onScroll).
+    isScrollingSyncRef.current = true;
     previewNode.scrollTop = Math.max(0, Math.min(previewMaxScroll, previewTarget));
+    setTimeout(() => {
+      isScrollingSyncRef.current = false;
+    }, 50);
   }, []);
 
   const getScrollPosition = useCallback((section: ScrollCacheSection, identifier: string | null) => {
@@ -1470,7 +1544,7 @@ function App() {
         throw error;
       }
     },
-    enabled: Boolean(repoRef && authQuery.data?.is_authenticated),
+    enabled: Boolean(repoRef && authQuery.data?.is_authenticated && !startupLocalDir),
     ...RETRY_CONFIG,
   });
 
@@ -1489,8 +1563,14 @@ function App() {
       repoRef?.repo,
       selectedPr,
       authQuery.data?.login,
+      startupLocalDir,
     ],
     queryFn: async () => {
+      if (startupLocalDir) {
+        return await invoke<PullRequestDetail>("cmd_load_local_directory", {
+          directory: startupLocalDir,
+        });
+      }
       const currentLogin = authQuery.data?.login ?? null;
       
       // Always try network first (to detect coming back online)
@@ -1542,7 +1622,10 @@ function App() {
       }
     },
     enabled:
-      Boolean(repoRef && selectedPr && authQuery.data?.is_authenticated && authQuery.data?.login),
+      Boolean(
+        (startupLocalDir && repoRef) ||
+          (repoRef && selectedPr && authQuery.data?.is_authenticated && authQuery.data?.login),
+      ),
     staleTime: 0, // Always consider data stale to force refetch
     refetchOnMount: true, // Refetch when component mounts
     refetchOnWindowFocus: true, // Refetch when window regains focus
@@ -1560,8 +1643,15 @@ function App() {
   const { refetch: refetchPullDetail } = pullDetailQuery;
   const prDetail = pullDetailQuery.data;
 
+  useEffect(() => {
+    if (pullDetailQuery.isError) {
+      console.error("Failed to load PR detail", pullDetailQuery.error);
+    }
+  }, [pullDetailQuery.isError, pullDetailQuery.error]);
+
   // Force fresh data when PR selection changes
   useEffect(() => {
+    if (startupLocalDir) return;
     if (repoRef && selectedPr) {
       // Remove query when online to force fresh fetch, invalidate when offline to preserve cached data
       if (isOnline) {
@@ -1578,6 +1668,7 @@ function App() {
 
   // Auto-cache all files when PR opens (if online)
   useEffect(() => {
+    if (startupLocalDir) return;
     if (!prDetail || !repoRef || !selectedPr || !isOnline) return;
     
     const cacheAllFiles = async () => {
@@ -2064,6 +2155,19 @@ function App() {
     return file?.language === "image";
   }, []);
 
+  const isMarkdownFile = useCallback((file: PullRequestFile | null | undefined): boolean => {
+    if (!file) return false;
+    if (file.language === "markdown") return true;
+    const path = (file.path ?? "").toLowerCase();
+    return path.endsWith(".md") || path.endsWith(".markdown") || path.endsWith(".mdx");
+  }, []);
+
+  const isFileViewed = useCallback((filePath: string): boolean => {
+    if (!repoRef || !selectedPr) return false;
+    const prKey = `${repoRef.owner}/${repoRef.repo}#${selectedPr}`;
+    return (viewedFiles[prKey] || []).includes(filePath);
+  }, [repoRef, selectedPr, viewedFiles]);
+
   const files = prDetail?.files ?? [];
 
   // Find all toc.yml files if they exist
@@ -2075,7 +2179,21 @@ function App() {
   const tocContentsQuery = useQuery({
     queryKey: ["toc-contents", repoRef?.owner, repoRef?.repo, tocFilesMetadata.map((f: PullRequestFile) => f.path).join(','), prDetail?.base_sha, prDetail?.head_sha],
     queryFn: async () => {
-      if (tocFilesMetadata.length === 0 || !prDetail || !repoRef || !selectedPr) return new Map<string, string>();
+      if (tocFilesMetadata.length === 0 || !prDetail || !repoRef) return new Map<string, string>();
+
+      // In local directory mode, TOC contents are already embedded in `head_content`.
+      if (startupLocalDir) {
+        const contentMap = new Map<string, string>();
+        for (const tocFile of tocFilesMetadata) {
+          const content = tocFile.head_content ?? "";
+          if (content) {
+            contentMap.set(tocFile.path, content);
+          }
+        }
+        return contentMap;
+      }
+
+      if (!selectedPr) return new Map<string, string>();
       
       const contentMap = new Map<string, string>();
       
@@ -2412,13 +2530,22 @@ function App() {
 
   // Apply file type filtering
   const filteredSortedFiles = useMemo(() => {
-    if (showAllFileTypes) {
-      return sortedFiles;
+    let filtered = sortedFiles;
+    
+    // Filter by file type
+    if (!showAllFileTypes) {
+      filtered = filtered.filter(f => 
+        f.language === "markdown" || f.language === "yaml"
+      );
     }
-    return sortedFiles.filter(f => 
-      f.language === "markdown" || f.language === "yaml"
-    );
-  }, [sortedFiles, showAllFileTypes]);
+    
+    // Filter out reviewed files if option is enabled
+    if (hideReviewedFiles) {
+      filtered = filtered.filter(f => !isFileViewed(f.path));
+    }
+    
+    return filtered;
+  }, [sortedFiles, showAllFileTypes, hideReviewedFiles, isFileViewed]);
 
   const visibleFiles = useMemo(() => {
     return filteredSortedFiles.slice(0, visibleFileCount);
@@ -2560,6 +2687,10 @@ function App() {
 
   // Preload file contents in the background (one at a time, in order)
   useEffect(() => {
+    if (startupLocalDir) {
+      return;
+    }
+
     if (!prDetail || visibleFiles.length === 0 || !repoRef) {
       return;
     }
@@ -2738,7 +2869,15 @@ function App() {
 
   // Fetch file contents on demand when a file is selected
   const fileContentsQuery = useQuery({
-    queryKey: ["file-contents", repoRef?.owner, repoRef?.repo, selectedFilePath, prDetail?.base_sha, prDetail?.head_sha],
+    queryKey: [
+      "file-contents",
+      repoRef?.owner,
+      repoRef?.repo,
+      selectedFilePath,
+      prDetail?.base_sha,
+      prDetail?.head_sha,
+      startupLocalDir,
+    ],
     queryFn: async () => {
       if (!selectedFileMetadata || !prDetail || !repoRef || !selectedPr) return null;
       
@@ -2804,7 +2943,7 @@ function App() {
         throw error;
       }
     },
-    enabled: Boolean(selectedFileMetadata && prDetail && repoRef),
+    enabled: Boolean(selectedFileMetadata && prDetail && repoRef && !startupLocalDir),
     staleTime: Infinity, // File contents don't change for a given SHA
     retry: (failureCount, error) => {
       // Don't retry if offline and no cache available
@@ -2826,6 +2965,96 @@ function App() {
       base_content: fileContentsQuery.data.baseContent,
     };
   }, [selectedFileMetadata, fileContentsQuery.data]);
+
+  // Anchor-based scroll synchronization between source and preview
+  const getEditorForScrollSync = useCallback(() => {
+    if (showDiff) {
+      return diffEditorRef.current?.getModifiedEditor?.() ?? null;
+    }
+    return editorRef.current;
+  }, [showDiff]);
+  
+  const {
+    syncSourceToPreview,
+    syncPreviewToSource,
+    rebuildAnchors,
+    triggerInitialSync,
+    scheduleSourceScrollEndSync,
+    schedulePreviewScrollEndSync,
+  } = useScrollSync({
+    sourceContent: selectedFile?.head_content ?? null,
+    previewRef: previewViewerRef,
+    getEditor: getEditorForScrollSync,
+    isEnabled: isMarkdownFile(selectedFile),
+    zoomLevel: paneZoomLevel,
+  });
+
+  // Monaco event subscriptions are created once in `onMount` and can otherwise capture stale
+  // versions of these callbacks (e.g., after switching between non-markdown and markdown files).
+  // Keep refs to the latest implementations so scroll sync stays live in PR mode.
+  const syncSourceToPreviewRef = useRef(syncSourceToPreview);
+  const scheduleSourceScrollEndSyncRef = useRef(scheduleSourceScrollEndSync);
+  useEffect(() => {
+    syncSourceToPreviewRef.current = syncSourceToPreview;
+  }, [syncSourceToPreview]);
+  useEffect(() => {
+    scheduleSourceScrollEndSyncRef.current = scheduleSourceScrollEndSync;
+  }, [scheduleSourceScrollEndSync]);
+
+  const isMarkdownSelectedRef = useRef(false);
+  useEffect(() => {
+    isMarkdownSelectedRef.current = isMarkdownFile(selectedFile);
+  }, [selectedFile, isMarkdownFile]);
+
+  const syncPreviewToEditorRef = useRef(syncPreviewToEditor);
+  useEffect(() => {
+    syncPreviewToEditorRef.current = syncPreviewToEditor;
+  }, [syncPreviewToEditor]);
+
+  const syncPreviewToSourceRef = useRef(syncPreviewToSource);
+  useEffect(() => {
+    syncPreviewToSourceRef.current = syncPreviewToSource;
+  }, [syncPreviewToSource]);
+
+  const syncPreviewToSourceNonMarkdown = useCallback((previewScrollTop: number) => {
+    const previewNode = previewViewerRef.current;
+    if (!previewNode) return;
+
+    const editor = getEditorForScrollSync();
+    if (!editor) return;
+
+    const previewMaxScroll = Math.max(0, previewNode.scrollHeight - previewNode.clientHeight);
+    const scrollPercent = previewMaxScroll > 0 ? previewScrollTop / previewMaxScroll : 0;
+
+    const editorScrollHeight = editor.getScrollHeight?.() ?? 0;
+    const layoutInfo = editor.getLayoutInfo?.();
+    const editorClientHeight = layoutInfo?.height ?? 0;
+    const editorMaxScroll = Math.max(0, editorScrollHeight - editorClientHeight);
+    const targetEditorScrollTop = scrollPercent * editorMaxScroll;
+
+    editor.setScrollTop?.(Math.max(0, Math.min(editorMaxScroll, targetEditorScrollTop)));
+  }, [getEditorForScrollSync]);
+
+  // Trigger initial sync when file changes (after scroll position is restored)
+  useEffect(() => {
+    if (isMarkdownFile(selectedFile) && selectedFile?.head_content) {
+      // Delay to ensure preview has rendered and source scroll is restored
+      const timeout = setTimeout(() => {
+        triggerInitialSync();
+      }, 200);
+      return () => clearTimeout(timeout);
+    }
+  }, [selectedFilePath, selectedFile, isMarkdownFile, triggerInitialSync]);
+
+  // Rebuild anchors when zoom changes
+  useEffect(() => {
+    if (isMarkdownFile(selectedFile)) {
+      const timeout = setTimeout(() => {
+        rebuildAnchors();
+      }, 100);
+      return () => clearTimeout(timeout);
+    }
+  }, [paneZoomLevel, selectedFile, isMarkdownFile, rebuildAnchors]);
 
   // CRITICAL: Eagerly capture scroll position BEFORE React unmounts Monaco editor
   // This must run synchronously in useLayoutEffect before any DOM changes
@@ -4058,12 +4287,6 @@ function App() {
       return { ...prev, [prKey]: updated };
     });
   }, [repoRef, selectedPr]);
-
-  const isFileViewed = useCallback((filePath: string): boolean => {
-    if (!repoRef || !selectedPr) return false;
-    const prKey = `${repoRef.owner}/${repoRef.repo}#${selectedPr}`;
-    return (viewedFiles[prKey] || []).includes(filePath);
-  }, [repoRef, selectedPr, viewedFiles]);
 
   // Navigation functions for file history
   const canNavigateBack = fileNavigationIndex > 0;
@@ -6878,6 +7101,30 @@ function App() {
                                   Show only markdown
                                 </button>
                               )}
+                              {!isPrCommentsView && !hideReviewedFiles && (
+                                <button
+                                  type="button"
+                                  className="source-menu__item"
+                                  onClick={() => {
+                                    setHideReviewedFiles(true);
+                                    setShowFilesMenu(false);
+                                  }}
+                                >
+                                  Hide reviewed files
+                                </button>
+                              )}
+                              {!isPrCommentsView && hideReviewedFiles && (
+                                <button
+                                  type="button"
+                                  className="source-menu__item"
+                                  onClick={() => {
+                                    setHideReviewedFiles(false);
+                                    setShowFilesMenu(false);
+                                  }}
+                                >
+                                  Show reviewed files
+                                </button>
+                              )}
                               {!isPrCommentsView && files && files.length > 0 && (
                                 <button
                                   type="button"
@@ -7346,7 +7593,49 @@ function App() {
                                 return;
                               }
                               persistSourceScrollPosition(fileKey, scrollTop, "scroll", { allowZero: true });
+
+                              if (isMarkdownSelectedRef.current) {
+                                // Anchor-based sync for markdown files
+                                const lineHeight = Number(modifiedEditor.getOption?.(66)) || 19; // LINE_HEIGHT option
+                                syncSourceToPreviewRef.current(scrollTop, lineHeight);
+                                scheduleSourceScrollEndSyncRef.current();
+                              } else {
+                                // Percent-based sync for non-markdown
+                                syncPreviewToEditorRef.current(modifiedEditor);
+                              }
                             });
+
+                            // If the editor can't scroll further (EOF/BOF), let mouse wheel keep the preview moving.
+                            const modifiedDomNode = modifiedEditor.getDomNode?.();
+                            if (modifiedDomNode) {
+                              const handleWheel = (e: WheelEvent) => {
+                                if (!isMarkdownSelectedRef.current) {
+                                  return;
+                                }
+                                const preview = previewViewerRef.current;
+                                if (!preview) {
+                                  return;
+                                }
+
+                                const editorScrollTop = modifiedEditor.getScrollTop();
+                                const editorMaxScroll = Math.max(0, modifiedEditor.getScrollHeight() - modifiedEditor.getLayoutInfo().height);
+                                const previewMaxScroll = Math.max(0, preview.scrollHeight - preview.clientHeight);
+
+                                const atTop = editorScrollTop <= 1;
+                                const atBottom = editorMaxScroll > 0 && editorScrollTop >= editorMaxScroll - 1;
+
+                                if (e.deltaY < 0 && atTop && preview.scrollTop > 0) {
+                                  preview.scrollTop = Math.max(0, preview.scrollTop + e.deltaY);
+                                } else if (e.deltaY > 0 && atBottom && preview.scrollTop < previewMaxScroll) {
+                                  preview.scrollTop = Math.min(previewMaxScroll, preview.scrollTop + e.deltaY);
+                                }
+                              };
+
+                              modifiedDomNode.addEventListener("wheel", handleWheel, { passive: true });
+                              modifiedEditor.onDidDispose(() => {
+                                modifiedDomNode.removeEventListener("wheel", handleWheel);
+                              });
+                            }
                           }
                           
                           const hoveredLineRef = { current: null as number | null };
@@ -7411,7 +7700,7 @@ function App() {
                             }
                           });
                           
-                          // Scroll synchronization
+                          // Scroll synchronization (anchor-based for markdown)
                           editor.onDidScrollChange(() => {
                             if (!previewViewerRef.current) return;
                             
@@ -7453,34 +7742,49 @@ function App() {
                                 persistSourceScrollPosition(fileKey, editorScrollTop, "scroll", { allowZero: true });
                               }
                             }
-                            const editorScrollHeight = editor.getScrollHeight();
-                            const editorClientHeight = editor.getLayoutInfo().height;
-                            const editorMaxScroll = editorScrollHeight - editorClientHeight;
                             
-                            // Calculate scroll percentage based on actual scroll position
-                            const scrollPercentage = editorMaxScroll > 0 ? editorScrollTop / editorMaxScroll : 0;
-                            
-                            // Check if we're at the edge
-                            const atTop = editorScrollTop <= 1;
-                            const atBottom = editorScrollTop >= editorMaxScroll - 1;
-                            
-                            // Only block sync events if we're not at an edge AND not currently syncing
-                            if (!atTop && !atBottom && isScrollingSyncRef.current) return;
-                            
-                            // Apply percentage-based scrolling to preview
-                            const previewMaxScroll = previewViewerRef.current.scrollHeight - previewViewerRef.current.clientHeight;
-                            const targetScroll = scrollPercentage * previewMaxScroll;
-                            
-                            // Only set sync flag if not at edges (allow continued scrolling at edges)
-                            if (!atTop && !atBottom) {
-                              isScrollingSyncRef.current = true;
-                              setTimeout(() => {
-                                isScrollingSyncRef.current = false;
-                              }, 50);
+                            if (isMarkdownSelectedRef.current) {
+                              // Anchor-based sync for markdown files
+                              const lineHeight = Number(editor.getOption?.(66)) || 19; // LINE_HEIGHT option
+                              syncSourceToPreviewRef.current(editorScrollTop, lineHeight);
+                              scheduleSourceScrollEndSyncRef.current();
+                            } else {
+                              // Percent-based sync for non-markdown
+                              syncPreviewToEditorRef.current(editor);
                             }
-                            
-                            previewViewerRef.current.scrollTop = targetScroll;
                           });
+
+                          // If the editor can't scroll further (EOF/BOF), let mouse wheel keep the preview moving.
+                          const domNode = editor.getDomNode?.();
+                          if (domNode) {
+                            const handleWheel = (e: WheelEvent) => {
+                              if (!isMarkdownSelectedRef.current) {
+                                return;
+                              }
+                              const preview = previewViewerRef.current;
+                              if (!preview) {
+                                return;
+                              }
+
+                              const editorScrollTop = editor.getScrollTop();
+                              const editorMaxScroll = Math.max(0, editor.getScrollHeight() - editor.getLayoutInfo().height);
+                              const previewMaxScroll = Math.max(0, preview.scrollHeight - preview.clientHeight);
+
+                              const atTop = editorScrollTop <= 1;
+                              const atBottom = editorMaxScroll > 0 && editorScrollTop >= editorMaxScroll - 1;
+
+                              if (e.deltaY < 0 && atTop && preview.scrollTop > 0) {
+                                preview.scrollTop = Math.max(0, preview.scrollTop + e.deltaY);
+                              } else if (e.deltaY > 0 && atBottom && preview.scrollTop < previewMaxScroll) {
+                                preview.scrollTop = Math.min(previewMaxScroll, preview.scrollTop + e.deltaY);
+                              }
+                            };
+
+                            domNode.addEventListener("wheel", handleWheel, { passive: true });
+                            editor.onDidDispose(() => {
+                              domNode.removeEventListener("wheel", handleWheel);
+                            });
+                          }
 
                           // Handle mouse move for line hover detection
                           editor.onMouseMove((e) => {
@@ -7729,49 +8033,14 @@ function App() {
                           <div className="empty-state">Loading image...</div>
                         )}
                       </div>
-                    ) : selectedFile.language === "markdown" ? (
+                    ) : isMarkdownFile(selectedFile) ? (
                       <div 
                         className="markdown-preview" 
                         ref={previewViewerRef as React.RefObject<HTMLDivElement>}
                         onScroll={(e) => {
-                          if (!editorRef.current) return;
-                          
-                          const target = e.currentTarget;
-                          const model = editorRef.current.getModel();
-                          if (!model) return;
-                          
-                          const maxScroll = target.scrollHeight - target.clientHeight;
-                          let scrollPercentage = maxScroll > 0 ? target.scrollTop / maxScroll : 0;
-                          const totalLines = model.getLineCount();
-                          
-                          // Check if we're at the edge
-                          const atTop = target.scrollTop <= 1;
-                          const atBottom = target.scrollTop >= maxScroll - 1;
-                          
-                          // Only block sync events if we're not at an edge AND currently syncing
-                          if (!atTop && !atBottom && isScrollingSyncRef.current) return;
-                          
-                          // Handle edge cases
-                          if (atTop) {
-                            scrollPercentage = 0;
-                          }
-                          
-                          if (atBottom) {
-                            scrollPercentage = 1.0;
-                          }
-                          
-                          // Calculate target line based on scroll percentage
-                          const targetLine = Math.max(1, Math.min(Math.round(scrollPercentage * totalLines), totalLines));
-                          
-                          // Only set sync flag if not at edges (allow continued scrolling at edges)
-                          if (!atTop && !atBottom) {
-                            isScrollingSyncRef.current = true;
-                            setTimeout(() => {
-                              isScrollingSyncRef.current = false;
-                            }, 50);
-                          }
-                          
-                          editorRef.current.revealLineInCenter(targetLine);
+                          // Use anchor-based sync for markdown files
+                          syncPreviewToSource(e.currentTarget.scrollTop);
+                          schedulePreviewScrollEndSync(e.currentTarget.scrollTop);
                         }}
                       >
                         <ReactMarkdown 
@@ -7956,6 +8225,9 @@ function App() {
                         >
                           {selectedFile.head_content ?? ""}
                         </ReactMarkdown>
+                        <div className="markdown-preview__eof" aria-hidden="true">
+                          <br />
+                        </div>
                       </div>
                     ) : (
                       <pre 
@@ -7963,33 +8235,14 @@ function App() {
                         ref={previewViewerRef as React.RefObject<HTMLPreElement>}
                         onScroll={(e) => {
                           if (isScrollingSyncRef.current) return;
-                          if (!editorRef.current) return;
-                          
-                          const target = e.currentTarget;
-                          const maxScroll = target.scrollHeight - target.clientHeight;
-                          const scrollPercentage = maxScroll > 0 ? target.scrollTop / maxScroll : 0;
-                          
-                          const model = editorRef.current.getModel();
-                          if (!model) return;
-                          
-                          const totalLines = model.getLineCount();
-                          let targetLine = Math.floor(scrollPercentage * totalLines);
-                          
-                          // If preview is at bottom, scroll editor to bottom
-                          if (target.scrollTop >= maxScroll - 1) {
-                            targetLine = totalLines;
-                          }
-                          
-                          targetLine = Math.max(1, Math.min(targetLine, totalLines));
-                          
                           isScrollingSyncRef.current = true;
-                          editorRef.current.revealLineInCenter(targetLine);
+                          syncPreviewToSourceNonMarkdown(e.currentTarget.scrollTop);
                           setTimeout(() => {
                             isScrollingSyncRef.current = false;
                           }, 50);
                         }}
                       >
-                        <code>{selectedFile.head_content ?? ""}</code>
+                        <code>{(selectedFile.head_content ?? "") + "\n"}</code>
                       </pre>
                     )
                   ) : (

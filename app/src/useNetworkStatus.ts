@@ -5,18 +5,25 @@ export function useNetworkStatus() {
     typeof navigator !== 'undefined' ? navigator.onLine : true
   );
 
+  const debugLog = useCallback((...args: unknown[]) => {
+    if (import.meta.env.DEV) {
+      // eslint-disable-next-line no-console
+      console.log(...args);
+    }
+  }, []);
+
   useEffect(() => {
     if (typeof window === 'undefined') {
       return;
     }
 
     const handleOnline = () => {
-      console.log('🌐 Network: Online');
+      debugLog('🌐 Network: Online');
       setIsOnline(true);
     };
 
     const handleOffline = () => {
-      console.log('🌐 Network: Offline');
+      debugLog('🌐 Network: Offline');
       setIsOnline(false);
     };
 
@@ -31,17 +38,17 @@ export function useNetworkStatus() {
 
   const markOffline = useCallback(() => {
     if (isOnline) {
-      console.log('🌐 Network: Detected as offline (network error)');
+      debugLog('🌐 Network: Detected as offline (network error)');
       setIsOnline(false);
     }
-  }, [isOnline]);
+  }, [isOnline, debugLog]);
 
   const markOnline = useCallback(() => {
     if (!isOnline) {
-      console.log('🌐 Network: Detected as online (successful request)');
+      debugLog('🌐 Network: Detected as online (successful request)');
       setIsOnline(true);
     }
-  }, [isOnline]);
+  }, [isOnline, debugLog]);
 
   return { isOnline, markOffline, markOnline };
 }

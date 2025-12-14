@@ -3,7 +3,7 @@ use reqwest::StatusCode;
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use tauri::Emitter;
-use tracing::warn;
+use tracing::{debug, info, warn};
 
 use crate::error::{AppError, AppResult};
 use crate::models::{
@@ -15,6 +15,27 @@ const API_BASE: &str = "https://api.github.com";
 const USER_AGENT_VALUE: &str = "github-review-app/0.1";
 const API_VERSION_HEADER: &str = "x-github-api-version";
 const API_VERSION_VALUE: &str = "2022-11-28";
+
+// Prevent enormous HTML/JSON bodies from flooding the terminal.
+const LOG_BODY_SNIPPET_CHARS: usize = 800;
+const ERROR_BODY_SNIPPET_CHARS: usize = 400;
+
+fn body_snippet(body: &str, max_chars: usize) -> String {
+    let mut snippet = String::new();
+    let mut iter = body.chars();
+
+    for _ in 0..max_chars {
+        match iter.next() {
+            Some(ch) => snippet.push(ch),
+            None => return snippet,
+        }
+    }
+
+    if iter.next().is_some() {
+        snippet.push('…');
+    }
+    snippet
+}
 
 struct SsoHeaderInfo {
     organization: Option<String>,
@@ -80,13 +101,15 @@ async fn ensure_success(
     }
 
     let body = response.text().await.unwrap_or_default();
+    let log_snippet = body_snippet(&body, LOG_BODY_SNIPPET_CHARS);
 
-    // Log the raw error response for debugging
+    // Log only a short snippet of the response to avoid dumping entire HTML pages.
     warn!(
         context = context,
         status = status.as_u16(),
-        response_body = body.as_str(),
-        "GitHub API error response"
+        response_body_len = body.len(),
+        response_body_snippet = %log_snippet,
+        "GitHub API request returned an error"
     );
 
     if let Ok(api_error) = serde_json::from_str::<GitHubApiError>(&body) {
@@ -133,16 +156,11 @@ async fn ensure_success(
     }
 
     if !body.is_empty() {
-        warn!(
-            context = context,
-            status = status.as_u16(),
-            response_body = %body,
-            "GitHub API request failed"
-        );
+        let user_snippet = body_snippet(&body, ERROR_BODY_SNIPPET_CHARS);
         return Err(AppError::Api(format!(
-            "{context} failed with status {}. Response: {}",
+            "{context} failed with status {}. Response (truncated): {}",
             status.as_u16(),
-            body
+            user_snippet
         )));
     }
 
@@ -1459,8 +1477,8 @@ pub async fn create_review_with_comments(
     let client = build_client(token)?;
     
     let total = comments.len();
-    warn!("Submitting {} comments to {}/{} PR #{}", total, owner, repo, number);
-    warn!("Using commit_id: {}", commit_id);
+    info!("Submitting {} comments to {}/{} PR #{}", total, owner, repo, number);
+    debug!("Using commit_id: {}", commit_id);
     
     // Get the PR file list to validate comments
     let pr_files_response = client
@@ -1473,7 +1491,7 @@ pub async fn create_review_with_comments(
             let file_paths: Vec<String> = files_json.iter()
                 .filter_map(|f| f.get("filename").and_then(|n| n.as_str()).map(String::from))
                 .collect();
-            warn!("PR contains {} files: {:?}", file_paths.len(), file_paths);
+            debug!("PR contains {} files", file_paths.len());
             
             // Check if any comments reference files not in the PR
             for comment in comments {
@@ -1499,17 +1517,22 @@ pub async fn create_review_with_comments(
 
         if comment.line_number == 0 {
             comment_obj.insert("subject_type".into(), Value::String("file".to_string()));
-            warn!("Posting file-level comment to {}: {}", comment.file_path, comment.body);
+            debug!("Posting file-level comment to {}", comment.file_path);
         } else {
             comment_obj.insert("line".into(), Value::Number(comment.line_number.into()));
             comment_obj.insert("side".into(), Value::String(comment.side.clone()));
-            warn!("Posting comment to {}:{} (side: {}): {}", comment.file_path, comment.line_number, comment.side, comment.body);
+            debug!("Posting comment to {}:{} (side: {})", comment.file_path, comment.line_number, comment.side);
         }
 
         let comment_payload = Value::Object(comment_obj);
         
-        // Log the full payload for debugging
-        warn!("Comment payload: {}", serde_json::to_string_pretty(&comment_payload).unwrap_or_default());
+        // Payload can be large; keep it out of production logs.
+        if tracing::enabled!(tracing::Level::DEBUG) {
+            debug!(
+                payload = %serde_json::to_string_pretty(&comment_payload).unwrap_or_default(),
+                "Comment payload"
+            );
+        }
 
         // Emit progress event
         let _ = app.emit("comment-submit-progress", serde_json::json!({
@@ -1558,7 +1581,11 @@ pub async fn create_review_with_comments(
                 .and_then(|s| s.parse::<u64>().ok());
 
             if body.to_lowercase().contains("rate limit") {
-                warn!("GitHub rate limit exceeded (403 Forbidden). Body: {}", body);
+                warn!(
+                    body_len = body.len(),
+                    body_snippet = %body_snippet(&body, LOG_BODY_SNIPPET_CHARS),
+                    "GitHub rate limit exceeded (403 Forbidden)"
+                );
 
                 let mut pause_ms = if let Some(secs) = retry_after_header {
                     warn!("Pausing for Retry-After header: waiting {} seconds", secs);
@@ -1601,11 +1628,12 @@ pub async fn create_review_with_comments(
                 cloned_headers = response.headers().clone();
             } else {
                 failed += 1;
+                let user_snippet = body_snippet(&body, ERROR_BODY_SNIPPET_CHARS);
                 let error_msg = format!(
                     "Forbidden when posting comment to {}:{} - body: {}",
                     comment.file_path,
                     comment.line_number,
-                    body
+                    user_snippet
                 );
                 warn!("✗ {}", error_msg);
                 errors.push(error_msg);
@@ -1663,7 +1691,7 @@ pub async fn create_review_with_comments(
         let (should_retry_as_file_level, response_body_copy) = if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
             let should_retry = body.contains("pull_request_review_thread.line") && comment.line_number > 0;
-            (should_retry, body)
+            (should_retry, body_snippet(&body, ERROR_BODY_SNIPPET_CHARS))
         } else {
             (false, String::new())
         };
@@ -1672,7 +1700,7 @@ pub async fn create_review_with_comments(
         if status.is_success() {
             succeeded += 1;
             succeeded_ids.push(comment.id);
-            warn!("✓ Comment posted successfully");
+            debug!("Comment posted successfully");
         } else if should_retry_as_file_level {
             // Retry as file-level comment with line number prefix
             warn!("⚠️  Line {} could not be resolved, retrying as file-level comment with line prefix", comment.line_number);
@@ -1685,7 +1713,12 @@ pub async fn create_review_with_comments(
             file_comment_obj.insert("subject_type".into(), Value::String("file".to_string()));
             
             let file_comment_payload = Value::Object(file_comment_obj);
-            warn!("Retry payload: {}", serde_json::to_string_pretty(&file_comment_payload).unwrap_or_default());
+            if tracing::enabled!(tracing::Level::DEBUG) {
+                debug!(
+                    payload = %serde_json::to_string_pretty(&file_comment_payload).unwrap_or_default(),
+                    "Retry payload"
+                );
+            }
             
             let retry_response = client
                 .post(format!("{API_BASE}/repos/{owner}/{repo}/pulls/{number}/comments"))
@@ -1704,7 +1737,7 @@ pub async fn create_review_with_comments(
                         Ok(_) => {
                             succeeded += 1;
                             succeeded_ids.push(comment.id);
-                            warn!("✓ Comment posted successfully as file-level with line prefix");
+                            debug!("Comment posted successfully as file-level with line prefix");
                         }
                         Err(retry_err) => {
                             failed += 1;
@@ -1739,7 +1772,7 @@ pub async fn create_review_with_comments(
         }
     }
     
-    warn!("Submission complete: {} succeeded, {} failed", succeeded, failed);
+    info!("Submission complete: {} succeeded, {} failed", succeeded, failed);
     
     if failed > 0 {
         let error_summary = if succeeded > 0 {
@@ -1792,8 +1825,17 @@ pub async fn fetch_file_content(
     
     if !status.is_success() {
         let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
-        warn!("Error response body: {}", error_text);
-        return Err(AppError::Api(format!("Failed to fetch file ({}): {}", status, error_text)));
+        warn!(
+            status = status.as_u16(),
+            body_len = error_text.len(),
+            body_snippet = %body_snippet(&error_text, LOG_BODY_SNIPPET_CHARS),
+            "Failed to fetch file content"
+        );
+        return Err(AppError::Api(format!(
+            "Failed to fetch file ({}): {}",
+            status,
+            body_snippet(&error_text, ERROR_BODY_SNIPPET_CHARS)
+        )));
     }
     
     let content_json: Value = response.json().await?;
@@ -1804,7 +1846,10 @@ pub async fn fetch_file_content(
         let cleaned = content.chars().filter(|c| !c.is_whitespace()).collect();
         Ok(cleaned)
     } else {
-        warn!("Content field not found in response: {:?}", content_json);
+        warn!(
+            response_type = ?content_json.get("type").and_then(|v| v.as_str()),
+            "File content missing from GitHub response"
+        );
         Err(AppError::Api("File content not found in response".to_string()))
     }
 }
@@ -1818,7 +1863,7 @@ pub async fn delete_review(
 ) -> AppResult<()> {
     let client = build_client(token)?;
     
-    warn!("Deleting review {} for {}/{} PR #{}", review_id, owner, repo, number);
+    info!("Deleting review {} for {}/{} PR #{}", review_id, owner, repo, number);
     
     let response = client
         .delete(format!("{API_BASE}/repos/{owner}/{repo}/pulls/{number}/reviews/{review_id}"))
@@ -1831,7 +1876,7 @@ pub async fn delete_review(
     )
     .await?;
     
-    warn!("Successfully deleted review {}", review_id);
+    info!("Successfully deleted review {}", review_id);
     
     Ok(())
 }
