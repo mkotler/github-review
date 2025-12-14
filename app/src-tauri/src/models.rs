@@ -10,6 +10,7 @@ pub struct PrUnderReview {
     pub has_pending_review: bool,
     pub viewed_count: usize,
     pub total_count: usize,
+    pub local_folder: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

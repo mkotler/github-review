@@ -31,6 +31,7 @@ pub struct ReviewMetadata {
     pub pr_number: u64,
     pub commit_id: String,
     pub body: Option<String>,
+    pub local_folder: Option<String>,
     pub created_at: String,
     pub log_file_index: i32,
 }
@@ -57,12 +58,19 @@ impl ReviewStorage {
                 pr_number INTEGER NOT NULL,
                 commit_id TEXT NOT NULL,
                 body TEXT,
+                local_folder TEXT,
                 created_at TEXT NOT NULL,
                 log_file_index INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (owner, repo, pr_number)
             )",
             [],
         )?;
+
+        // Migration: Add local_folder column if it doesn't exist
+        let _ = conn.execute(
+            "ALTER TABLE review_metadata ADD COLUMN local_folder TEXT",
+            [],
+        );
         
         conn.execute(
             "CREATE TABLE IF NOT EXISTS review_comments (
@@ -120,6 +128,7 @@ impl ReviewStorage {
         pr_number: u64,
         commit_id: &str,
         body: Option<&str>,
+        local_folder: Option<&str>,
     ) -> AppResult<ReviewMetadata> {
         tracing::info!("Starting review for {}/{}#{}", owner, repo, pr_number);
         let conn = self.conn.lock().map_err(|_| AppError::Internal("Lock poisoned".into()))?;
@@ -127,7 +136,7 @@ impl ReviewStorage {
         // Check if review already exists
         let existing: Option<ReviewMetadata> = conn
             .query_row(
-                "SELECT owner, repo, pr_number, commit_id, body, created_at, log_file_index 
+                "SELECT owner, repo, pr_number, commit_id, body, local_folder, created_at, log_file_index 
                  FROM review_metadata 
                  WHERE owner = ?1 AND repo = ?2 AND pr_number = ?3",
                 params![owner, repo, pr_number],
@@ -138,14 +147,24 @@ impl ReviewStorage {
                         pr_number: row.get(2)?,
                         commit_id: row.get(3)?,
                         body: row.get(4)?,
-                        created_at: row.get(5)?,
-                        log_file_index: row.get(6)?,
+                        local_folder: row.get(5)?,
+                        created_at: row.get(6)?,
+                        log_file_index: row.get(7)?,
                     })
                 },
             )
             .optional()?;
         
-        if let Some(metadata) = existing {
+        if let Some(mut metadata) = existing {
+            if let Some(local_folder) = local_folder {
+                if metadata.local_folder.as_deref() != Some(local_folder) {
+                    conn.execute(
+                        "UPDATE review_metadata SET local_folder = ?1 WHERE owner = ?2 AND repo = ?3 AND pr_number = ?4",
+                        params![local_folder, owner, repo, pr_number],
+                    )?;
+                    metadata.local_folder = Some(local_folder.to_string());
+                }
+            }
             return Ok(metadata);
         }
         
@@ -153,12 +172,12 @@ impl ReviewStorage {
         let created_at = Utc::now().to_rfc3339();
         
         // Find the next available log file index by checking existing files
-        let log_file_index = self.find_next_log_index(owner, repo, pr_number);
+        let log_file_index = self.find_next_log_index(owner, repo, pr_number, local_folder);
         
         conn.execute(
-            "INSERT INTO review_metadata (owner, repo, pr_number, commit_id, body, created_at, log_file_index)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![owner, repo, pr_number, commit_id, body, &created_at, log_file_index],
+            "INSERT INTO review_metadata (owner, repo, pr_number, commit_id, body, local_folder, created_at, log_file_index)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![owner, repo, pr_number, commit_id, body, local_folder, &created_at, log_file_index],
         )?;
         
         Ok(ReviewMetadata {
@@ -167,6 +186,7 @@ impl ReviewStorage {
             pr_number,
             commit_id: commit_id.to_string(),
             body: body.map(String::from),
+            local_folder: local_folder.map(String::from),
             created_at,
             log_file_index,
         })
@@ -186,7 +206,7 @@ impl ReviewStorage {
         // Check if review exists
         let existing: Option<ReviewMetadata> = conn
             .query_row(
-                "SELECT owner, repo, pr_number, commit_id, body, created_at, log_file_index 
+                "SELECT owner, repo, pr_number, commit_id, body, local_folder, created_at, log_file_index 
                  FROM review_metadata 
                  WHERE owner = ?1 AND repo = ?2 AND pr_number = ?3",
                 params![owner, repo, pr_number],
@@ -197,8 +217,9 @@ impl ReviewStorage {
                         pr_number: row.get(2)?,
                         commit_id: row.get(3)?,
                         body: row.get(4)?,
-                        created_at: row.get(5)?,
-                        log_file_index: row.get(6)?,
+                        local_folder: row.get(5)?,
+                        created_at: row.get(6)?,
+                        log_file_index: row.get(7)?,
                     })
                 },
             )
@@ -219,7 +240,7 @@ impl ReviewStorage {
         
         // Return updated metadata
         let metadata = conn.query_row(
-            "SELECT owner, repo, pr_number, commit_id, body, created_at, log_file_index 
+            "SELECT owner, repo, pr_number, commit_id, body, local_folder, created_at, log_file_index 
              FROM review_metadata 
              WHERE owner = ?1 AND repo = ?2 AND pr_number = ?3",
             params![owner, repo, pr_number],
@@ -230,8 +251,9 @@ impl ReviewStorage {
                     pr_number: row.get(2)?,
                     commit_id: row.get(3)?,
                     body: row.get(4)?,
-                    created_at: row.get(5)?,
-                    log_file_index: row.get(6)?,
+                    local_folder: row.get(5)?,
+                    created_at: row.get(6)?,
+                    log_file_index: row.get(7)?,
                 })
             },
         )?;
@@ -454,7 +476,7 @@ impl ReviewStorage {
         
         let metadata = conn
             .query_row(
-                "SELECT owner, repo, pr_number, commit_id, body, created_at, log_file_index
+                "SELECT owner, repo, pr_number, commit_id, body, local_folder, created_at, log_file_index
                  FROM review_metadata
                  WHERE owner = ?1 AND repo = ?2 AND pr_number = ?3",
                 params![owner, repo, pr_number],
@@ -465,8 +487,9 @@ impl ReviewStorage {
                         pr_number: row.get(2)?,
                         commit_id: row.get(3)?,
                         body: row.get(4)?,
-                        created_at: row.get(5)?,
-                        log_file_index: row.get(6)?,
+                        local_folder: row.get(5)?,
+                        created_at: row.get(6)?,
+                        log_file_index: row.get(7)?,
                     })
                 },
             )
@@ -480,7 +503,7 @@ impl ReviewStorage {
         let conn = self.conn.lock().map_err(|_| AppError::Internal("Lock poisoned".into()))?;
         
         let mut stmt = conn.prepare(
-            "SELECT owner, repo, pr_number, commit_id, body, created_at, log_file_index
+            "SELECT owner, repo, pr_number, commit_id, body, local_folder, created_at, log_file_index
              FROM review_metadata"
         )?;
         
@@ -491,8 +514,9 @@ impl ReviewStorage {
                 pr_number: row.get(2)?,
                 commit_id: row.get(3)?,
                 body: row.get(4)?,
-                created_at: row.get(5)?,
-                log_file_index: row.get(6)?,
+                local_folder: row.get(5)?,
+                created_at: row.get(6)?,
+                log_file_index: row.get(7)?,
             })
         })?;
         
@@ -516,7 +540,7 @@ impl ReviewStorage {
             
             let metadata: Option<ReviewMetadata> = conn
                 .query_row(
-                    "SELECT owner, repo, pr_number, commit_id, body, created_at, log_file_index
+                    "SELECT owner, repo, pr_number, commit_id, body, local_folder, created_at, log_file_index
                      FROM review_metadata
                      WHERE owner = ?1 AND repo = ?2 AND pr_number = ?3",
                     params![owner, repo, pr_number],
@@ -527,8 +551,9 @@ impl ReviewStorage {
                             pr_number: row.get(2)?,
                             commit_id: row.get(3)?,
                             body: row.get(4)?,
-                            created_at: row.get(5)?,
-                            log_file_index: row.get(6)?,
+                            local_folder: row.get(5)?,
+                            created_at: row.get(6)?,
+                            log_file_index: row.get(7)?,
                         })
                     },
                 )
@@ -539,7 +564,7 @@ impl ReviewStorage {
         
         if let Some(meta) = metadata {
             // Mark log file as abandoned
-            let log_path = self.get_log_path(owner, repo, pr_number, meta.log_file_index);
+            let log_path = self.get_log_path(owner, repo, pr_number, meta.log_file_index, meta.local_folder.as_deref());
             if log_path.exists() {
                 let abandoned_time = Utc::now().to_rfc3339();
                 let header = format!(
@@ -576,7 +601,7 @@ impl ReviewStorage {
             
             let metadata: Option<ReviewMetadata> = conn
                 .query_row(
-                    "SELECT owner, repo, pr_number, commit_id, body, created_at, log_file_index
+                    "SELECT owner, repo, pr_number, commit_id, body, local_folder, created_at, log_file_index
                      FROM review_metadata
                      WHERE owner = ?1 AND repo = ?2 AND pr_number = ?3",
                     params![owner, repo, pr_number],
@@ -587,8 +612,9 @@ impl ReviewStorage {
                             pr_number: row.get(2)?,
                             commit_id: row.get(3)?,
                             body: row.get(4)?,
-                            created_at: row.get(5)?,
-                            log_file_index: row.get(6)?,
+                            local_folder: row.get(5)?,
+                            created_at: row.get(6)?,
+                            log_file_index: row.get(7)?,
                         })
                     },
                 )
@@ -599,7 +625,7 @@ impl ReviewStorage {
         
         if let Some(meta) = metadata {
             // Mark log file as submitted
-            let log_path = self.get_log_path(owner, repo, pr_number, meta.log_file_index);
+            let log_path = self.get_log_path(owner, repo, pr_number, meta.log_file_index, meta.local_folder.as_deref());
             if log_path.exists() {
                 let submitted_time = Utc::now().to_rfc3339();
                 let header = format!(
@@ -635,7 +661,7 @@ impl ReviewStorage {
             
             let metadata: Option<ReviewMetadata> = conn
                 .query_row(
-                    "SELECT owner, repo, pr_number, commit_id, body, created_at, log_file_index
+                    "SELECT owner, repo, pr_number, commit_id, body, local_folder, created_at, log_file_index
                      FROM review_metadata
                      WHERE owner = ?1 AND repo = ?2 AND pr_number = ?3",
                     params![owner, repo, pr_number],
@@ -646,8 +672,9 @@ impl ReviewStorage {
                             pr_number: row.get(2)?,
                             commit_id: row.get(3)?,
                             body: row.get(4)?,
-                            created_at: row.get(5)?,
-                            log_file_index: row.get(6)?,
+                            local_folder: row.get(5)?,
+                            created_at: row.get(6)?,
+                            log_file_index: row.get(7)?,
                         })
                     },
                 )
@@ -658,7 +685,7 @@ impl ReviewStorage {
         
         if let Some(meta) = metadata {
             // Mark log file as deleted
-            let log_path = self.get_log_path(owner, repo, pr_number, meta.log_file_index);
+            let log_path = self.get_log_path(owner, repo, pr_number, meta.log_file_index, meta.local_folder.as_deref());
             if log_path.exists() {
                 let deleted_time = Utc::now().to_rfc3339();
                 let header = format!(
@@ -682,19 +709,54 @@ impl ReviewStorage {
         Ok(())
     }
     
-    fn get_log_path(&self, owner: &str, repo: &str, pr_number: u64, index: i32) -> PathBuf {
-        let filename = if index == 0 {
+    fn get_log_path(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: u64,
+        index: i32,
+        local_folder: Option<&str>,
+    ) -> PathBuf {
+        let is_local_folder = owner == "__local__" && repo == "local";
+
+        let filename = if is_local_folder {
+            let folder_name = local_folder
+                .and_then(|path| Path::new(path).file_name().and_then(|name| name.to_str()))
+                .unwrap_or("local-folder");
+
+            let safe_folder_name: String = folder_name
+                .chars()
+                .map(|c| match c {
+                    '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '-',
+                    _ => c,
+                })
+                .collect();
+
+            let safe_folder_name = safe_folder_name.trim();
+            let safe_folder_name = if safe_folder_name.is_empty() {
+                "local-folder"
+            } else {
+                safe_folder_name
+            };
+
+            if index == 0 {
+                format!("{}.log", safe_folder_name)
+            } else {
+                format!("{}-{}.log", safe_folder_name, index)
+            }
+        } else if index == 0 {
             format!("{}-{}-{}.log", owner, repo, pr_number)
         } else {
             format!("{}-{}-{}-{}.log", owner, repo, pr_number, index)
         };
+
         self.log_dir.join(filename)
     }
     
-    fn find_next_log_index(&self, owner: &str, repo: &str, pr_number: u64) -> i32 {
+    fn find_next_log_index(&self, owner: &str, repo: &str, pr_number: u64, local_folder: Option<&str>) -> i32 {
         let mut index = 0;
         loop {
-            let log_path = self.get_log_path(owner, repo, pr_number, index);
+            let log_path = self.get_log_path(owner, repo, pr_number, index, local_folder);
             if !log_path.exists() {
                 return index;
             }
@@ -734,7 +796,7 @@ impl ReviewStorage {
             let conn = self.conn.lock().map_err(|_| AppError::Internal("Lock poisoned".into()))?;
             
             let metadata: ReviewMetadata = conn.query_row(
-                "SELECT owner, repo, pr_number, commit_id, body, created_at, log_file_index
+                "SELECT owner, repo, pr_number, commit_id, body, local_folder, created_at, log_file_index
                  FROM review_metadata
                  WHERE owner = ?1 AND repo = ?2 AND pr_number = ?3",
                 params![owner, repo, pr_number],
@@ -745,8 +807,9 @@ impl ReviewStorage {
                         pr_number: row.get(2)?,
                         commit_id: row.get(3)?,
                         body: row.get(4)?,
-                        created_at: row.get(5)?,
-                        log_file_index: row.get(6)?,
+                        local_folder: row.get(5)?,
+                        created_at: row.get(6)?,
+                        log_file_index: row.get(7)?,
                     })
                 },
             )?;
@@ -781,21 +844,40 @@ impl ReviewStorage {
             (metadata, comments)
         };
         
-        let log_path = self.get_log_path(owner, repo, pr_number, metadata.log_file_index);
+        let log_path = self.get_log_path(owner, repo, pr_number, metadata.log_file_index, metadata.local_folder.as_deref());
         
-        // Fetch PR title from GitHub
-        let pr_title = self.fetch_pr_title(owner, repo, pr_number).await.unwrap_or_else(|_| String::new());
+        let is_local_folder = owner == "__local__" && repo == "local";
+
+        // Fetch PR title from GitHub (skip for local folder mode)
+        let pr_title = if is_local_folder {
+            String::new()
+        } else {
+            self.fetch_pr_title(owner, repo, pr_number)
+                .await
+                .unwrap_or_else(|_| String::new())
+        };
         
         let mut content = String::new();
-        if pr_title.is_empty() {
+        if is_local_folder {
+            content.push_str("# Review\n");
+            if let Some(local_folder) = &metadata.local_folder {
+                content.push_str(&format!("# Local folder: {}\n", local_folder));
+            } else {
+                content.push_str("# Local folder: \n");
+            }
+        } else if pr_title.is_empty() {
             content.push_str(&format!("# Review for PR #{}\n", pr_number));
+            content.push_str(&format!("# URL: https://github.com/{}/{}/pull/{}\n", owner, repo, pr_number));
+            content.push_str(&format!("# Repository: {}/{}\n", owner, repo));
         } else {
             content.push_str(&format!("# Review for PR #{}: {}\n", pr_number, pr_title));
+            content.push_str(&format!("# URL: https://github.com/{}/{}/pull/{}\n", owner, repo, pr_number));
+            content.push_str(&format!("# Repository: {}/{}\n", owner, repo));
         }
-        content.push_str(&format!("# URL: https://github.com/{}/{}/pull/{}\n", owner, repo, pr_number));
-        content.push_str(&format!("# Repository: {}/{}\n", owner, repo));
         content.push_str(&format!("# Created: {}\n", metadata.created_at));
-        content.push_str(&format!("# Commit: {}\n", metadata.commit_id));
+        if !is_local_folder {
+            content.push_str(&format!("# Commit: {}\n", metadata.commit_id));
+        }
         if let Some(body) = &metadata.body {
             content.push_str(&format!("# Review Body: {}\n", body));
         }

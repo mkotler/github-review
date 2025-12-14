@@ -3,6 +3,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkFrontmatter from "remark-frontmatter";
@@ -13,7 +14,7 @@ import { parse as parseYaml } from "yaml";
 import mermaid from "mermaid";
 import { useNetworkStatus } from "./useNetworkStatus";
 import * as offlineCache from "./offlineCache";
-import { useScrollSync } from "./useScrollSync";
+import { useScrollSync } from "./useScrollSync.ts";
 
 type AuthStatus = {
   is_authenticated: boolean;
@@ -66,10 +67,6 @@ type RepoRef = {
   repo: string;
 };
 
-type StartupOptions = {
-  localDir: string | null;
-};
-
 type PullRequestComment = {
   id: number;
   body: string;
@@ -110,6 +107,7 @@ type PrUnderReview = {
   total_count: number;
   state?: string;
   merged?: boolean;
+  local_folder?: string | null;
 };
 
 const AUTH_QUERY_KEY = ["auth-status"] as const;
@@ -643,7 +641,11 @@ function App() {
     return stored ? JSON.parse(stored) : {};
   });
   const [selectedPr, setSelectedPr] = useState<number | null>(null);
-  const [startupLocalDir, setStartupLocalDir] = useState<string | null>(null);
+  const [activeLocalDir, setActiveLocalDir] = useState<string | null>(null);
+  const [localDirMRU, setLocalDirMRU] = useState<string[]>(() => {
+    const stored = localStorage.getItem('local-dir-mru');
+    return stored ? JSON.parse(stored) : [];
+  });
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
   const [fileNavigationHistory, setFileNavigationHistory] = useState<string[]>([]);
   const [fileNavigationIndex, setFileNavigationIndex] = useState<number>(-1);
@@ -761,28 +763,54 @@ function App() {
   const queryClient = useQueryClient();
   const hoveredPaneRef = useRef<'source' | 'preview' | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
+  const isLocalRepo = repoRef?.owner === "__local__" && repoRef?.repo === "local";
+  const isLocalDirectoryMode = Boolean(activeLocalDir);
 
-    invoke<StartupOptions>("cmd_get_startup_options")
-      .then((opts) => {
-        if (cancelled) return;
-        if (opts?.localDir) {
-          setStartupLocalDir(opts.localDir);
-          setRepoRef({ owner: "__local__", repo: "local" });
-          // Use a truthy synthetic PR number so UI conditionals like `selectedPr && ...` render.
-          setSelectedPr(1);
-          setPrMode("repo");
-        }
-      })
-      .catch(() => {
-        // ignore
-      });
-
-    return () => {
-      cancelled = true;
-    };
+  const formatLocalDirDisplay = useCallback((path: string) => {
+    const normalized = path.replace(/\//g, "\\");
+    const parts = normalized.split("\\").filter(Boolean);
+    if (parts.length <= 2) {
+      return normalized;
+    }
+    return `...\\${parts[parts.length - 2]}\\${parts[parts.length - 1]}`;
   }, []);
+
+  const rememberLocalDir = useCallback((directory: string) => {
+    setLocalDirMRU((prev) => {
+      const next = [directory, ...prev.filter((p) => p !== directory)].slice(0, 10);
+      localStorage.setItem('local-dir-mru', JSON.stringify(next));
+      return next;
+    });
+  }, []);
+
+  const enterLocalDirectoryMode = useCallback((directory: string) => {
+    setActiveLocalDir(directory);
+    rememberLocalDir(directory);
+    setRepoInput(formatLocalDirDisplay(directory));
+    setRepoRef({ owner: "__local__", repo: "local" });
+    setSelectedPr(1);
+    setSelectedFilePath(null);
+    setPrSearchFilter("");
+    setPrMode("repo");
+  }, [formatLocalDirDisplay, rememberLocalDir]);
+
+  const exitLocalDirectoryMode = useCallback(() => {
+    if (!isLocalDirectoryMode) return;
+    setActiveLocalDir(null);
+  }, [isLocalDirectoryMode]);
+
+  const handlePickLocalFolder = useCallback(async () => {
+    try {
+      const result = await openDialog({ directory: true, multiple: false });
+      const selected = typeof result === "string" ? result : null;
+      if (!selected) {
+        return;
+      }
+      enterLocalDirectoryMode(selected);
+    } catch (error) {
+      console.error("Failed to open folder picker", error);
+    }
+  }, [enterLocalDirectoryMode]);
 
   const persistScrollCache = useCallback((cache: ScrollCacheState) => {
     if (typeof window === "undefined") {
@@ -1544,7 +1572,7 @@ function App() {
         throw error;
       }
     },
-    enabled: Boolean(repoRef && authQuery.data?.is_authenticated && !startupLocalDir),
+    enabled: Boolean(repoRef && authQuery.data?.is_authenticated && !isLocalDirectoryMode && !isLocalRepo),
     ...RETRY_CONFIG,
   });
 
@@ -1563,13 +1591,16 @@ function App() {
       repoRef?.repo,
       selectedPr,
       authQuery.data?.login,
-      startupLocalDir,
+      activeLocalDir,
     ],
     queryFn: async () => {
-      if (startupLocalDir) {
+      if (activeLocalDir) {
         return await invoke<PullRequestDetail>("cmd_load_local_directory", {
-          directory: startupLocalDir,
+          directory: activeLocalDir,
         });
+      }
+      if (isLocalRepo) {
+        throw new Error("No local folder selected. Use Signed in → Open Local Folder…");
       }
       const currentLogin = authQuery.data?.login ?? null;
       
@@ -1623,8 +1654,8 @@ function App() {
     },
     enabled:
       Boolean(
-        (startupLocalDir && repoRef) ||
-          (repoRef && selectedPr && authQuery.data?.is_authenticated && authQuery.data?.login),
+        (activeLocalDir && repoRef) ||
+          (!isLocalRepo && repoRef && selectedPr && authQuery.data?.is_authenticated && authQuery.data?.login),
       ),
     staleTime: 0, // Always consider data stale to force refetch
     refetchOnMount: true, // Refetch when component mounts
@@ -1651,7 +1682,7 @@ function App() {
 
   // Force fresh data when PR selection changes
   useEffect(() => {
-    if (startupLocalDir) return;
+    if (isLocalDirectoryMode) return;
     if (repoRef && selectedPr) {
       // Remove query when online to force fresh fetch, invalidate when offline to preserve cached data
       if (isOnline) {
@@ -1668,7 +1699,7 @@ function App() {
 
   // Auto-cache all files when PR opens (if online)
   useEffect(() => {
-    if (startupLocalDir) return;
+    if (isLocalDirectoryMode) return;
     if (!prDetail || !repoRef || !selectedPr || !isOnline) return;
     
     const cacheAllFiles = async () => {
@@ -1967,7 +1998,7 @@ function App() {
               line: lc.line_number === 0 ? null : lc.line_number,
               side: lc.side,
               is_review_comment: true,
-              is_draft: true,
+              is_draft: !isLocalDirectoryMode,
               state: null,
               is_mine: true,
               review_id: prDetail.number,
@@ -2042,7 +2073,7 @@ function App() {
         line: lc.line_number === 0 ? null : lc.line_number,
         side: lc.side,
         is_review_comment: true,
-        is_draft: true, // Local comments are drafts
+        is_draft: !isLocalDirectoryMode,
         state: null,
         is_mine: true,
         review_id: effectiveReviewId,
@@ -2182,7 +2213,7 @@ function App() {
       if (tocFilesMetadata.length === 0 || !prDetail || !repoRef) return new Map<string, string>();
 
       // In local directory mode, TOC contents are already embedded in `head_content`.
-      if (startupLocalDir) {
+      if (isLocalDirectoryMode) {
         const contentMap = new Map<string, string>();
         for (const tocFile of tocFilesMetadata) {
           const content = tocFile.head_content ?? "";
@@ -2687,7 +2718,7 @@ function App() {
 
   // Preload file contents in the background (one at a time, in order)
   useEffect(() => {
-    if (startupLocalDir) {
+    if (isLocalDirectoryMode) {
       return;
     }
 
@@ -2791,7 +2822,7 @@ function App() {
             line: lc.line_number === 0 ? null : lc.line_number,
             side: lc.side,
             is_review_comment: true,
-            is_draft: true,
+            is_draft: !isLocalDirectoryMode,
             state: null,
             is_mine: true,
             review_id: localReview.id,
@@ -2876,7 +2907,7 @@ function App() {
       selectedFilePath,
       prDetail?.base_sha,
       prDetail?.head_sha,
-      startupLocalDir,
+      activeLocalDir,
     ],
     queryFn: async () => {
       if (!selectedFileMetadata || !prDetail || !repoRef || !selectedPr) return null;
@@ -2943,7 +2974,7 @@ function App() {
         throw error;
       }
     },
-    enabled: Boolean(selectedFileMetadata && prDetail && repoRef && !startupLocalDir),
+    enabled: Boolean(selectedFileMetadata && prDetail && repoRef && !isLocalDirectoryMode),
     staleTime: Infinity, // File contents don't change for a given SHA
     retry: (failureCount, error) => {
       // Don't retry if offline and no cache available
@@ -3462,7 +3493,12 @@ function App() {
 
   const shouldShowFileCommentComposer = isFileCommentComposerVisible;
   const noCommentsDueToFilters = fileComments.length === 0 && (showOnlyMyComments || hasHiddenOutdatedComments);
-  const formattedRepo = repoRef ? `${repoRef.owner}/${repoRef.repo}` : "";
+  const formattedRepo = activeLocalDir
+    ? formatLocalDirDisplay(activeLocalDir)
+    : repoRef
+      ? `${repoRef.owner}/${repoRef.repo}`
+      : "";
+  const formattedRepoTitle = activeLocalDir ? activeLocalDir : formattedRepo;
 
   // Load drafts from localStorage on mount
   useEffect(() => {
@@ -3920,11 +3956,14 @@ function App() {
       const trimmed = repoInput.trim();
       const match = /^([\w.-]+)\/([\w.-]+)$/.exec(trimmed);
       if (!match) {
-        setRepoError("Use the format owner/repo");
+        if (!isLocalDirectoryMode) {
+          setRepoError("Use the format owner/repo");
+        }
         return;
       }
       const owner = match[1];
       const repository = match[2];
+      exitLocalDirectoryMode();
       if (repoRef && repoRef.owner === owner && repoRef.repo === repository) {
         setRepoError(null);
         void refetchPulls();
@@ -3937,7 +3976,7 @@ function App() {
       setPrSearchFilter("");
       queryClient.removeQueries({ queryKey: ["pull-request"] });
     },
-    [repoInput, repoRef, queryClient, refetchPulls],
+    [repoInput, repoRef, queryClient, refetchPulls, exitLocalDirectoryMode, isLocalDirectoryMode],
   );
 
   // Enhance PRs under review with viewed file counts and check for pending reviews
@@ -4126,11 +4165,17 @@ function App() {
         }
       }
       
-      // Only show if it meets the criteria
-      const showPr = 
-        pr.has_local_review || 
-        hasPendingReview || 
-        (viewedCount > 0 && totalCount > 0 && viewedCount < totalCount);
+      const isLocalFolderEntry = pr.owner === "__local__" && pr.repo === "local";
+      const hasLocalFolderPath = Boolean(pr.local_folder);
+
+      // Only show local-folder entries based on review progress.
+      const showPr = isLocalFolderEntry
+        ? (hasLocalFolderPath && totalCount > 0 && viewedCount < totalCount)
+        : (
+          pr.has_local_review ||
+          hasPendingReview ||
+          (viewedCount > 0 && totalCount > 0 && viewedCount < totalCount)
+        );
       
       return showPr ? {
         owner: pr.owner,
@@ -4143,6 +4188,7 @@ function App() {
         total_count: totalCount,
         state,
         merged,
+        local_folder: pr.local_folder ?? null,
       } as PrUnderReview : null;
     }).filter((pr): pr is NonNullable<typeof pr> => pr !== null);
   }, [prsUnderReviewQuery.data, viewedFiles, prFileCounts, prTitles, prMetadata, queryClient, authQuery.data?.login, repoMRU, mruOpenPrsQueries, mruClosedPrsQueries, showAllFileTypes]);
@@ -4159,6 +4205,9 @@ function App() {
     // Immediately fetch PRs with local reviews that lack titles (high priority)
     prsWithLocalReviews.forEach(pr => {
       if (!pr.title || pr.title === "") {
+        if (pr.owner === "__local__" && pr.repo === "local") {
+          return;
+        }
         // Use fetchQuery instead of prefetchQuery to get results immediately
         void queryClient.fetchQuery({
           queryKey: ["pull-request", pr.owner, pr.repo, pr.number, authQuery.data?.login],
@@ -4178,6 +4227,9 @@ function App() {
     // Prefetch other PRs in the background (lower priority)
     otherPrs.forEach(pr => {
       if (!pr.title || pr.title === "") {
+        if (pr.owner === "__local__" && pr.repo === "local") {
+          return;
+        }
         void queryClient.prefetchQuery({
           queryKey: ["pull-request", pr.owner, pr.repo, pr.number, authQuery.data?.login],
           queryFn: async () => {
@@ -4239,6 +4291,15 @@ function App() {
   }, [prTitles]);
 
   useEffect(() => {
+    const element = commentContextMenuRef.current;
+    if (!element || !commentContextMenu) {
+      return;
+    }
+    element.style.top = `${commentContextMenu.y}px`;
+    element.style.left = `${commentContextMenu.x}px`;
+  }, [commentContextMenu]);
+
+  useEffect(() => {
     localStorage.setItem('pr-metadata', JSON.stringify(prMetadata));
   }, [prMetadata]);
 
@@ -4262,6 +4323,15 @@ function App() {
 
   // Handler for selecting a PR from the under-review list
   const handleSelectPrUnderReview = useCallback((pr: PrUnderReview) => {
+    const isLocalUnderReview = pr.owner === "__local__" && pr.repo === "local" && !!pr.local_folder;
+
+    if (isLocalUnderReview && pr.local_folder) {
+      enterLocalDirectoryMode(pr.local_folder);
+      setIsPrCommentsView(false);
+      setIsPrCommentComposerOpen(false);
+      return;
+    }
+
     // Set the repo
     const repoString = `${pr.owner}/${pr.repo}`;
     setRepoInput(repoString);
@@ -4274,7 +4344,7 @@ function App() {
     setIsPrCommentComposerOpen(false);
     
     // Keep the current PR mode (stay in "under-review" if already there)
-  }, []);
+  }, [enterLocalDirectoryMode]);
 
   const toggleFileViewed = useCallback((filePath: string) => {
     if (!repoRef || !selectedPr) return;
@@ -4433,6 +4503,23 @@ function App() {
     }) => {
       if (!repoRef || !prDetail || !selectedFilePath) {
         throw new Error("Select a file before commenting.");
+      }
+
+      // Local folder mode: always save to local review/log storage.
+      if (isLocalDirectoryMode) {
+        await invoke("cmd_local_add_comment", {
+          owner: repoRef.owner,
+          repo: repoRef.repo,
+          prNumber: prDetail.number,
+          filePath: selectedFilePath,
+          lineNumber: line,
+          side,
+          body,
+          commitId: prDetail.head_sha,
+          inReplyToId: null,
+          localFolder: activeLocalDir ?? null,
+        });
+        return;
       }
 
       // For review mode (local storage)
@@ -5391,6 +5478,17 @@ function App() {
                   <button
                     type="button"
                     className="user-menu__item"
+                    onClick={() => {
+                      closeUserMenu();
+                      void handlePickLocalFolder();
+                    }}
+                    role="menuitem"
+                  >
+                    Open Local Folder…
+                  </button>
+                  <button
+                    type="button"
+                    className="user-menu__item"
                     onClick={handleOpenLogFolder}
                     role="menuitem"
                   >
@@ -5706,7 +5804,9 @@ function App() {
                                 className="comment-submit"
                                 disabled={updateCommentMutation.isPending}
                               >
-                                {updateCommentMutation.isPending ? "Updating…" : "Update Comment"}
+                                {updateCommentMutation.isPending
+                                  ? "Updating…"
+                                  : (isLocalDirectoryMode ? "Update (log file)" : "Update Comment")}
                               </button>
                               <button
                                 type="button"
@@ -5724,7 +5824,7 @@ function App() {
                                   Submit or delete the pending GitHub review to be able to add a comment to a new review.
                                 </div>
                               )}
-                              {!isOnline && (
+                              {!isOnline && !isLocalDirectoryMode && (
                                 <div className="comment-panel__info-note comment-panel__info-note--warning">
                                   ⚠️ Offline - Direct comments disabled. Use "Start review" to save comments locally.
                                 </div>
@@ -5732,26 +5832,57 @@ function App() {
                               <button
                                 type="submit"
                                 className={`comment-submit${fileCommentDefaultMode === "review" ? " comment-submit--secondary" : ""}`}
-                                disabled={submitFileCommentMutation.isPending || !isOnline}
+                                disabled={submitFileCommentMutation.isPending || (!isOnline && !isLocalDirectoryMode)}
                                 data-submit-mode="single"
                                 ref={fileCommentPostButtonRef}
-                                title={!isOnline ? "Direct comments are disabled while offline" : ""}
+                                title={
+                                  isLocalDirectoryMode
+                                    ? "Saved locally to log files"
+                                    : !isOnline
+                                      ? "Direct comments are disabled while offline"
+                                      : ""
+                                }
                               >
-                                {submitFileCommentMutation.isPending && fileCommentSubmittingMode === "single" ? "Sending…" : "Post comment"}
+                                {submitFileCommentMutation.isPending && fileCommentSubmittingMode === "single"
+                                  ? (isLocalDirectoryMode ? "Saving…" : "Sending…")
+                                  : (isLocalDirectoryMode ? "Save comment (log file)" : "Post comment")}
                               </button>
-                              {effectiveFileCommentMode === "review" ? (
-                                pendingReview ? (
-                                  hasLocalPendingReview ? (
+                              {!isLocalDirectoryMode && (
+                                effectiveFileCommentMode === "review" ? (
+                                  pendingReview ? (
+                                    hasLocalPendingReview ? (
+                                      <button
+                                        type="submit"
+                                        className={`comment-submit${fileCommentDefaultMode === "review" ? "" : " comment-submit--secondary"}`}
+                                        disabled={submitFileCommentMutation.isPending}
+                                        data-submit-mode="review"
+                                        ref={fileCommentReviewButtonRef}
+                                      >
+                                        {submitFileCommentMutation.isPending && fileCommentSubmittingMode === "review"
+                                          ? "Saving…"
+                                          : "Add to review"}
+                                      </button>
+                                    ) : null
+                                  ) : (
                                     <button
-                                      type="submit"
-                                      className={`comment-submit${fileCommentDefaultMode === "review" ? "" : " comment-submit--secondary"}`}
-                                      disabled={submitFileCommentMutation.isPending}
-                                      data-submit-mode="review"
-                                      ref={fileCommentReviewButtonRef}
+                                      type="button"
+                                      className="comment-submit comment-submit--secondary"
+                                      disabled={startReviewMutation.isPending}
+                                      onClick={(e) => {
+                                        e.preventDefault();
+                                        setFileCommentMode("review");
+                                        if (localComments.length > 0) {
+                                          handleShowReviewClick();
+                                        } else {
+                                          handleStartReviewWithComment();
+                                        }
+                                      }}
                                     >
-                                      {submitFileCommentMutation.isPending && fileCommentSubmittingMode === "review" ? "Saving…" : "Add to review"}
+                                      {startReviewMutation.isPending
+                                        ? "Starting…"
+                                        : (localComments.length > 0 ? "Show review" : "Start review")}
                                     </button>
-                                  ) : null
+                                  )
                                 ) : (
                                   <button
                                     type="button"
@@ -5760,36 +5891,21 @@ function App() {
                                     onClick={(e) => {
                                       e.preventDefault();
                                       setFileCommentMode("review");
+                                      console.log("Start/Show review button clicked, localComments.length:", localComments.length, "fileCommentDraft:", fileCommentDraft);
                                       if (localComments.length > 0) {
+                                        console.log("Calling handleShowReviewClick (show existing review)");
                                         handleShowReviewClick();
                                       } else {
+                                        console.log("Calling handleStartReviewWithComment (new review)");
                                         handleStartReviewWithComment();
                                       }
                                     }}
                                   >
-                                    {startReviewMutation.isPending ? "Starting…" : (localComments.length > 0 ? "Show review" : "Start review")}
+                                    {startReviewMutation.isPending
+                                      ? "Starting…"
+                                      : (localComments.length > 0 ? "Show review" : "Start review")}
                                   </button>
                                 )
-                              ) : (
-                                <button
-                                  type="button"
-                                  className="comment-submit comment-submit--secondary"
-                                  disabled={startReviewMutation.isPending}
-                                  onClick={(e) => {
-                                    e.preventDefault();
-                                    setFileCommentMode("review");
-                                    console.log("Start/Show review button clicked, localComments.length:", localComments.length, "fileCommentDraft:", fileCommentDraft);
-                                    if (localComments.length > 0) {
-                                      console.log("Calling handleShowReviewClick (show existing review)");
-                                      handleShowReviewClick();
-                                    } else {
-                                      console.log("Calling handleStartReviewWithComment (new review)");
-                                      handleStartReviewWithComment();
-                                    }
-                                  }}
-                                >
-                                  {startReviewMutation.isPending ? "Starting…" : (localComments.length > 0 ? "Show review" : "Start review")}
-                                </button>
                               )}
                             </div>
                           )}
@@ -5833,8 +5949,8 @@ function App() {
                         {/* eslint-disable-next-line react/no-children-prop */}
                         <ul className="comment-panel__list">
                           {commentThreads.map((thread) => (
-                            <CommentThreadItem
-                              key={thread.parent.id}
+                            <li key={thread.parent.id}>
+                              <CommentThreadItem
                               thread={thread}
                               collapsedComments={collapsedComments}
                               setCollapsedComments={setCollapsedComments}
@@ -6088,7 +6204,7 @@ function App() {
                                       <div className="comment-panel__error">{replyError}</div>
                                     )}
                                     {replySuccess && (
-                                      <div className="comment-panel__success">Reply posted!</div>
+                                      <div className="comment-panel__success">{isLocalDirectoryMode ? "Reply saved" : "Reply posted!"}</div>
                                     )}
                                     <div
                                       className="comment-panel__reply-actions"
@@ -6103,8 +6219,14 @@ function App() {
                                       <button
                                         type="button"
                                         className={`comment-submit${replyDefaultMode === "review" ? " comment-submit--secondary" : ""}`}
-                                        disabled={!isOnline}
-                                        title={!isOnline ? "Direct comment replies are disabled while offline" : ""}
+                                        disabled={!isOnline && !isLocalDirectoryMode}
+                                        title={
+                                          isLocalDirectoryMode
+                                            ? "Saved locally to log files"
+                                            : !isOnline
+                                              ? "Direct comment replies are disabled while offline"
+                                              : ""
+                                        }
                                         ref={replyPostButtonRef}
                                         onClick={async () => {
                                           if (!replyDraft.trim()) {
@@ -6115,24 +6237,53 @@ function App() {
                                             setReplyError("No PR details available");
                                             return;
                                           }
+                                          if (!selectedFilePath) {
+                                            setReplyError("No file selected");
+                                            return;
+                                          }
                                           try {
                                             setReplyError(null);
-                                            await invoke("cmd_submit_file_comment", {
-                                              args: {
+
+                                            if (isLocalDirectoryMode) {
+                                              await invoke("cmd_local_add_comment", {
                                                 owner: repoRef.owner,
                                                 repo: repoRef.repo,
-                                                number: prDetail.number,
-                                                path: selectedFilePath,
+                                                prNumber: prDetail.number,
+                                                filePath: selectedFilePath,
+                                                lineNumber: parentComment.line || null,
+                                                side: parentComment.side || "LEFT",
                                                 body: replyDraft,
-                                                commit_id: prDetail.head_sha,
-                                                line: parentComment.line || null,
-                                                side: parentComment.side || null,
-                                                subject_type: parentComment.line ? null : "file",
-                                                mode: "single",
-                                                pending_review_id: pendingReview?.id || null,
-                                                in_reply_to: parentComment.id,
-                                              },
-                                            });
+                                                commitId: prDetail.head_sha,
+                                                inReplyToId: parentComment.id,
+                                                localFolder: activeLocalDir ?? null,
+                                              });
+                                              await loadLocalComments();
+                                            } else {
+                                              await invoke("cmd_submit_file_comment", {
+                                                args: {
+                                                  owner: repoRef.owner,
+                                                  repo: repoRef.repo,
+                                                  number: prDetail.number,
+                                                  path: selectedFilePath,
+                                                  body: replyDraft,
+                                                  commit_id: prDetail.head_sha,
+                                                  line: parentComment.line || null,
+                                                  side: parentComment.side || null,
+                                                  subject_type: parentComment.line ? null : "file",
+                                                  mode: "single",
+                                                  pending_review_id: pendingReview?.id || null,
+                                                  in_reply_to: parentComment.id,
+                                                },
+                                              });
+                                              // Refetch comments
+                                              await queryClient.refetchQueries({
+                                                queryKey: ["pr-comments", repoRef.owner, repoRef.repo, selectedPr]
+                                              });
+                                              await queryClient.refetchQueries({
+                                                queryKey: ["pull-request", repoRef.owner, repoRef.repo, selectedPr]
+                                              });
+                                            }
+
                                             setReplyDraft("");
                                             setReplyingToCommentId(null);
                                             if (selectedFilePath) {
@@ -6147,26 +6298,19 @@ function App() {
                                                 return newDrafts;
                                               });
                                             }
-                                            // Refetch comments
-                                            await queryClient.refetchQueries({ 
-                                              queryKey: ["pr-comments", repoRef.owner, repoRef.repo, selectedPr] 
-                                            });
-                                            await queryClient.refetchQueries({ 
-                                              queryKey: ["pull-request", repoRef.owner, repoRef.repo, selectedPr] 
-                                            });
                                           } catch (err) {
                                             setReplyError(err instanceof Error ? err.message : String(err));
                                           }
                                         }}
                                       >
-                                        Post comment
+                                        {isLocalDirectoryMode ? "Save reply (log file)" : "Post comment"}
                                       </button>
-                                      {!isOnline && (
+                                      {!isOnline && !isLocalDirectoryMode && (
                                         <div className="comment-panel__info-note comment-panel__info-note--warning">
                                           ⚠️ Offline - Use "Add to review" to save replies locally
                                         </div>
                                       )}
-                                      {hasLocalPendingReview ? (
+                                      {!isLocalDirectoryMode && hasLocalPendingReview ? (
                                         <button
                                           type="button"
                                           className={`comment-submit${replyDefaultMode === "review" ? "" : " comment-submit--secondary"}`}
@@ -6223,7 +6367,7 @@ function App() {
                                         >
                                           Add to review
                                         </button>
-                                      ) : !pendingReview ? (
+                                      ) : (!isLocalDirectoryMode && !pendingReview) ? (
                                         <button
                                           type="button"
                                           className="comment-submit comment-submit--secondary"
@@ -6238,15 +6382,6 @@ function App() {
                                             }
                                             try {
                                               setReplyError(null);
-                                              // Start a review first
-                                              await invoke("cmd_local_start_review", {
-                                                owner: repoRef.owner,
-                                                repo: repoRef.repo,
-                                                prNumber: prDetail.number,
-                                                commitId: prDetail.head_sha,
-                                                body: null,
-                                              });
-
                                               // Add reply to local review
                                               await invoke("cmd_local_add_comment", {
                                                 owner: repoRef.owner,
@@ -6314,7 +6449,8 @@ function App() {
                                 )}
                                 </>
                               )}
-                            </CommentThreadItem>
+                              </CommentThreadItem>
+                            </li>
                           ))}
                         </ul>
                         {/* Inline new comment composer */}
@@ -6423,7 +6559,7 @@ function App() {
                             {inlineCommentError && (
                               <div className="comment-panel__error">{inlineCommentError}</div>
                             )}
-                            {!isOnline && (
+                            {!isOnline && !isLocalDirectoryMode && (
                               <div className="comment-panel__info-note comment-panel__info-note--warning">
                                 ⚠️ Offline - Direct comments disabled. Use "Add to review" to save comments locally.
                               </div>
@@ -6432,8 +6568,14 @@ function App() {
                               <button
                                 type="button"
                                 className={`comment-submit${inlineDefaultMode === "review" ? " comment-submit--secondary" : ""}`}
-                                disabled={!isOnline}
-                                title={!isOnline ? "Direct comments are disabled while offline" : ""}
+                                disabled={!isOnline && !isLocalDirectoryMode}
+                                title={
+                                  isLocalDirectoryMode
+                                    ? "Saved locally to log files"
+                                    : !isOnline
+                                      ? "Direct comments are disabled while offline"
+                                      : ""
+                                }
                                 ref={inlineCommentPostButtonRef}
                                 onClick={async () => {
                                   if (!inlineCommentDraft.trim()) {
@@ -6448,22 +6590,45 @@ function App() {
                                     setInlineCommentError(null);
                                     const lineNum = inlineCommentLine.trim() ? parseInt(inlineCommentLine.trim(), 10) : null;
                                     const hasLine = lineNum !== null && !isNaN(lineNum) && lineNum > 0;
-                                    await invoke("cmd_submit_file_comment", {
-                                      args: {
+
+                                    if (isLocalDirectoryMode) {
+                                      await invoke("cmd_local_add_comment", {
                                         owner: repoRef.owner,
                                         repo: repoRef.repo,
-                                        number: prDetail.number,
-                                        path: selectedFilePath,
+                                        prNumber: prDetail.number,
+                                        filePath: selectedFilePath,
+                                        lineNumber: hasLine ? lineNum : null,
+                                        side: hasLine ? "RIGHT" : "LEFT",
                                         body: inlineCommentDraft,
-                                        commit_id: prDetail.head_sha,
-                                        line: hasLine ? lineNum : null,
-                                        side: hasLine ? "RIGHT" : null,
-                                        subject_type: hasLine ? null : "file",
-                                        mode: "single",
-                                        pending_review_id: null,
-                                        in_reply_to: null,
-                                      },
-                                    });
+                                        commitId: prDetail.head_sha,
+                                        inReplyToId: null,
+                                        localFolder: activeLocalDir ?? null,
+                                      });
+                                      await loadLocalComments();
+                                    } else {
+                                      await invoke("cmd_submit_file_comment", {
+                                        args: {
+                                          owner: repoRef.owner,
+                                          repo: repoRef.repo,
+                                          number: prDetail.number,
+                                          path: selectedFilePath,
+                                          body: inlineCommentDraft,
+                                          commit_id: prDetail.head_sha,
+                                          line: hasLine ? lineNum : null,
+                                          side: hasLine ? "RIGHT" : null,
+                                          subject_type: hasLine ? null : "file",
+                                          mode: "single",
+                                          pending_review_id: null,
+                                          in_reply_to: null,
+                                        },
+                                      });
+                                      await queryClient.refetchQueries({
+                                        queryKey: ["pr-comments", repoRef.owner, repoRef.repo, selectedPr]
+                                      });
+                                      await queryClient.refetchQueries({
+                                        queryKey: ["pull-request", repoRef.owner, repoRef.repo, selectedPr]
+                                      });
+                                    }
                                     setInlineCommentDraft("");
                                     setInlineCommentLine("");
                                     setIsAddingInlineComment(false);
@@ -6479,20 +6644,14 @@ function App() {
                                         return newDrafts;
                                       });
                                     }
-                                    await queryClient.refetchQueries({ 
-                                      queryKey: ["pr-comments", repoRef.owner, repoRef.repo, selectedPr] 
-                                    });
-                                    await queryClient.refetchQueries({ 
-                                      queryKey: ["pull-request", repoRef.owner, repoRef.repo, selectedPr] 
-                                    });
                                   } catch (err) {
                                     setInlineCommentError(err instanceof Error ? err.message : String(err));
                                   }
                                 }}
                               >
-                                Post comment
+                                {isLocalDirectoryMode ? "Save comment (log file)" : "Post comment"}
                               </button>
-                              {hasLocalPendingReview ? (
+                              {!isLocalDirectoryMode && hasLocalPendingReview ? (
                                 <button
                                   type="button"
                                   className={`comment-submit${inlineDefaultMode === "review" ? "" : " comment-submit--secondary"}`}
@@ -6554,7 +6713,7 @@ function App() {
                                 >
                                   Add to review
                                 </button>
-                              ) : !pendingReview ? (
+                              ) : (!isLocalDirectoryMode && !pendingReview) ? (
                                 <button
                                   type="button"
                                   className="comment-submit comment-submit--secondary"
@@ -6569,15 +6728,6 @@ function App() {
                                     }
                                     try {
                                       setInlineCommentError(null);
-                                      // Start review first
-                                      await invoke("cmd_local_start_review", {
-                                        owner: repoRef.owner,
-                                        repo: repoRef.repo,
-                                        prNumber: prDetail.number,
-                                        commitId: prDetail.head_sha,
-                                        body: null,
-                                      });
-
                                       // Parse line number
                                       const lineNum = inlineCommentLine.trim() ? parseInt(inlineCommentLine.trim(), 10) : null;
                                       const hasLine = lineNum !== null && !isNaN(lineNum) && lineNum > 0;
@@ -6660,7 +6810,7 @@ function App() {
                               >
                                 Add comment
                               </button>
-                              {!pendingReview && (pendingReviewFromServer || localComments.length > 0) && (
+                              {!pendingReview && !isLocalDirectoryMode && (pendingReviewFromServer || localComments.length > 0) && (
                                 <button
                                   type="button"
                                   className="comment-panel__action-button comment-panel__action-button--secondary"
@@ -6680,7 +6830,7 @@ function App() {
                     <div className="comment-panel__empty">Select a file to leave feedback.</div>
                   )}
                 </div>
-                {pendingReview && (
+                {pendingReview && !isLocalDirectoryMode && (
                   <div className="pr-comments-view__footer">
                     {submissionProgress && (
                       <div className="comment-panel__progress">
@@ -6694,7 +6844,15 @@ function App() {
                         onClick={handleSubmitReviewClick}
                         disabled={submitReviewMutation.isPending || localComments.length === 0}
                       >
-                        {submitReviewMutation.isPending ? "Submitting…" : "Submit review"}
+                        {submitReviewMutation.isPending
+                          ? (isLocalDirectoryMode ? "Saving…" : "Submitting…")
+                          : (isLocalDirectoryMode ? (
+                            <>
+                              Save review
+                              <br />
+                              (log file)
+                            </>
+                          ) : "Submit review")}
                       </button>
                       <button
                         type="button"
@@ -6732,12 +6890,12 @@ function App() {
                       </span>
                       <span className="panel__title-text">Repository</span>
                       {repoRef && (
-                        <span className="panel__summary panel__summary--inline" title={formattedRepo}>
+                        <span className="panel__summary panel__summary--inline" title={formattedRepoTitle}>
                           {formattedRepo}
                         </span>
                       )}
                     </button>
-                    {repoRef && (
+                    {repoRef && !isLocalDirectoryMode && (
                       <button
                         type="button"
                         className="panel__icon-button panel__icon-button--icon-only"
@@ -6769,7 +6927,7 @@ function App() {
                             placeholder="docs/handbook"
                             onChange={(event) => setRepoInput(event.target.value)}
                           />
-                          {repoMRU.filter(r => r !== formattedRepo).length > 0 && (
+                          {(repoMRU.length > 0 || localDirMRU.length > 0) && (
                             <div className="repo-form__dropdown-wrapper">
                               <button
                                 type="button"
@@ -6795,6 +6953,7 @@ function App() {
                                           const owner = match[1];
                                           const repository = match[2];
                                           setRepoError(null);
+                                          exitLocalDirectoryMode();
                                           setRepoRef({ owner, repo: repository });
                                           setSelectedPr(null);
                                           setSelectedFilePath(null);
@@ -6807,6 +6966,22 @@ function App() {
                                       {repo}
                                     </button>
                                   ))}
+                                  {localDirMRU
+                                    .filter((dir) => dir && dir !== activeLocalDir)
+                                    .map((dir) => (
+                                      <button
+                                        key={dir}
+                                        type="button"
+                                        className="repo-form__mru-item"
+                                        onClick={() => {
+                                          setShowRepoMRU(false);
+                                          enterLocalDirectoryMode(dir);
+                                        }}
+                                        title={dir}
+                                      >
+                                        {formatLocalDirDisplay(dir)}
+                                      </button>
+                                    ))}
                                 </div>
                               )}
                             </div>
@@ -6822,7 +6997,9 @@ function App() {
                       </form>
                       {repoError && <span className="repo-error">{repoError}</span>}
                       {formattedRepo && (
-                        <span className="chip-label repo-indicator">Viewing {formattedRepo}</span>
+                        <span className="chip-label repo-indicator">
+                          VIEWING {formattedRepo.toUpperCase()}
+                        </span>
                       )}
                     </div>
                   )}
@@ -6842,7 +7019,7 @@ function App() {
                       type="button"
                       className="panel__title-button panel__title-button--inline"
                       onClick={handleTogglePrPanel}
-                      disabled={prMode === "under-review" ? !enhancedPrsUnderReview.length : !pullRequests.length}
+                      disabled={!isLocalDirectoryMode && (prMode === "under-review" ? !enhancedPrsUnderReview.length : !pullRequests.length)}
                       {...prPanelAriaProps}
                     >
                       <span className="panel__expando-icon" aria-hidden="true">
@@ -6951,9 +7128,19 @@ function App() {
                               No PRs under review.
                             </div>
                           ) : (
-                            enhancedPrsUnderReview.map((pr) => (
+                            enhancedPrsUnderReview.map((pr) => {
+                              const isLocalUnderReview = pr.owner === "__local__" && pr.repo === "local" && !!pr.local_folder;
+                              const localFolder = pr.local_folder ?? "";
+                              const localFolderParts = localFolder.replace(/\//g, "\\").split("\\").filter(Boolean);
+                              const localFolderLeaf = localFolderParts.length > 0 ? localFolderParts[localFolderParts.length - 1] : "Local folder";
+                              const prTitleLabel = isLocalUnderReview ? localFolderLeaf : `#${pr.number} · ${pr.title || `${pr.owner}/${pr.repo}#${pr.number}`}`;
+                              const prRepoLabel = isLocalUnderReview && pr.local_folder
+                                ? formatLocalDirDisplay(pr.local_folder)
+                                : `${pr.owner}/${pr.repo}`;
+
+                              return (
                               <button
-                                key={`${pr.owner}/${pr.repo}/${pr.number}`}
+                                key={`${pr.owner}/${pr.repo}/${pr.number}/${pr.local_folder ?? ""}`}
                                 type="button"
                                 className={`pr-item pr-item--compact${
                                   selectedPr === pr.number && repoRef?.owner === pr.owner && repoRef?.repo === pr.repo
@@ -6964,8 +7151,8 @@ function App() {
                               >
                                 <div className="pr-item__header">
                                   <span className="pr-item__title">
-                                    #{pr.number} · {pr.title || `${pr.owner}/${pr.repo}#${pr.number}`}
-                                    {pr.state && pr.state.toLowerCase() !== 'open' && (
+                                    {prTitleLabel}
+                                    {!isLocalUnderReview && pr.state && pr.state.toLowerCase() !== 'open' && (
                                       <>{'\u00a0\u00a0'}<span className={`pr-item__state-badge ${pr.merged ? 'pr-item__state-badge--merged' : 'pr-item__state-badge--closed'}`}>{pr.merged ? 'MERGED' : 'CLOSED'}</span></>
                                     )}
                                   </span>
@@ -6976,9 +7163,10 @@ function App() {
                                     {pr.viewed_count} / {pr.total_count || "?"}
                                   </span>
                                 </div>
-                                <span className="pr-item__repo">{pr.owner}/{pr.repo}</span>
+                                <span className="pr-item__repo">{prRepoLabel}</span>
                               </button>
-                            ))
+                              );
+                            })
                           )
                         ) : (
                           <>
@@ -7142,6 +7330,7 @@ function App() {
                         </div>
                       </div>
                     </div>
+
                     {isPrCommentsView ? (
                       <div className="panel__body panel__body--flush">
                         <div className="pr-comments-view">
@@ -7164,7 +7353,11 @@ function App() {
                                   rows={4}
                                   onKeyDown={(event) =>
                                     handleCtrlEnter(event, () => {
-                                      if (isOnline && !submitCommentMutation.isPending) {
+                                      if (
+                                        isOnline &&
+                                        !isLocalDirectoryMode &&
+                                        !submitCommentMutation.isPending
+                                      ) {
                                         prCommentFormRef.current?.requestSubmit();
                                       }
                                     })
@@ -7175,7 +7368,12 @@ function App() {
                                     {commentError && (
                                       <span className="comment-status comment-status--error">{commentError}</span>
                                     )}
-                                    {!isOnline && (
+                                    {isLocalDirectoryMode && (
+                                      <span className="comment-status comment-status--warning">
+                                        PR comments aren&apos;t available in local folder mode
+                                      </span>
+                                    )}
+                                    {!isLocalDirectoryMode && !isOnline && (
                                       <span className="comment-status comment-status--warning">
                                         ⚠️ Offline - PR comments disabled
                                       </span>
@@ -7184,8 +7382,14 @@ function App() {
                                   <button
                                     type="submit"
                                     className="comment-submit"
-                                    disabled={submitCommentMutation.isPending || !isOnline}
-                                    title={!isOnline ? "PR comments are disabled while offline" : ""}
+                                    disabled={submitCommentMutation.isPending || !isOnline || isLocalDirectoryMode}
+                                    title={
+                                      isLocalDirectoryMode
+                                        ? "PR comments aren't available in local folder mode"
+                                        : !isOnline
+                                          ? "PR comments are disabled while offline"
+                                          : ""
+                                    }
                                   >
                                     {submitCommentMutation.isPending ? "Posting…" : "Post comment"}
                                   </button>
@@ -7195,9 +7399,7 @@ function App() {
                           ) : (
                             <>
                               {prLevelComments.length === 0 ? (
-                                <div className="empty-state empty-state--subtle">
-                                  No PR comments yet.
-                                </div>
+                                <div className="empty-state empty-state--subtle">No PR comments yet.</div>
                               ) : (
                                 <div className="pr-comments-list">
                                   {prLevelComments.map((comment: PullRequestComment) => (
@@ -7223,6 +7425,12 @@ function App() {
                                     setCommentSuccess(false);
                                     setIsPrCommentComposerOpen(true);
                                   }}
+                                  disabled={isLocalDirectoryMode}
+                                  title={
+                                    isLocalDirectoryMode
+                                      ? "PR comments aren't available in local folder mode"
+                                      : ""
+                                  }
                                 >
                                   Add PR Comment
                                 </button>
@@ -7233,102 +7441,105 @@ function App() {
                       </div>
                     ) : (
                       <div className="panel__body panel__body--flush">
-                          {pullDetailQuery.isLoading || (tocFilesMetadata.length > 0 && tocContentsQuery.isLoading) ? (
-                            <div className="empty-state empty-state--subtle">Loading files…</div>
-                          ) : !prDetail ? (
-                            <div className="empty-state empty-state--subtle">Select a pull request.</div>
-                          ) : sortedFiles.length === 0 ? (
-                            <div className="empty-state empty-state--subtle">
-                              No files in this pull request.
-                            </div>
-                          ) : filteredSortedFiles.length === 0 ? (
-                            <div className="empty-state empty-state--subtle">
-                              No Markdown or YAML files in this pull request.
-                            </div>
-                          ) : (
-                            <>
+                        {pullDetailQuery.isLoading ||
+                        (tocFilesMetadata.length > 0 && tocContentsQuery.isLoading) ? (
+                          <div className="empty-state empty-state--subtle">Loading files…</div>
+                        ) : !prDetail ? (
+                          <div className="empty-state empty-state--subtle">Select a pull request.</div>
+                        ) : sortedFiles.length === 0 ? (
+                          <div className="empty-state empty-state--subtle">No files in this pull request.</div>
+                        ) : filteredSortedFiles.length === 0 ? (
+                          <div className="empty-state empty-state--subtle">
+                            No Markdown or YAML files in this pull request.
+                          </div>
+                        ) : (
+                          <>
                             <ul className="file-list file-list--compact" ref={fileListScrollRef}>
-                          {visibleFiles.map((file) => {
-                            const displayName = formatFileLabel(file.path, tocFileNameMap);
-                            const tooltip = formatFileTooltip(file);
-                            const commentCount = getFileCommentCount(file.path);
-                            const viewed = isFileViewed(file.path);
-                            return (
-                              <li key={file.path} className="file-list__item">
-                                <input
-                                  type="checkbox"
-                                  className="file-list__checkbox"
-                                  checked={viewed}
-                                  onChange={() => toggleFileViewed(file.path)}
-                                  onClick={(e) => e.stopPropagation()}
-                                  title="Viewed"
-                                  aria-label="Mark as viewed"
-                                />
-                                <button
-                                  type="button"
-                                  className={`file-list__button${
-                                    selectedFilePath === file.path ? " file-list__button--active" : ""
-                                  }`}
-                                  onClick={() => setSelectedFilePath(file.path)}
-                                  title={tooltip}
-                                >
-                                  <span className="file-list__name">{displayName}</span>
-                                  <span className="file-list__badge-wrapper">
-                                    {commentCount > 0 ? (
-                                      <span 
-                                        className={`file-list__badge${fileHasPendingComments(file.path) ? ' file-list__badge--pending' : ''}${fileHasDraftsInProgress(file.path) ? ' file-list__badge--draft' : ''}${!fileHasPendingComments(file.path) && !fileHasDraftsInProgress(file.path) && fileHasRepliedComments(file.path) ? ' file-list__badge--replied' : ''}`}
-                                        title={`${commentCount} comment${commentCount !== 1 ? 's' : ''}${fileHasDraftsInProgress(file.path) ? ' (comment in progress)' : ''}${!fileHasPendingComments(file.path) && !fileHasDraftsInProgress(file.path) && fileHasRepliedComments(file.path) ? ' (has replies)' : ''}`}
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          if (selectedFilePath !== file.path) {
-                                            setSelectedFilePath(file.path);
-                                          }
-                                          setIsInlineCommentOpen(true);
-                                        }}
-                                      >
-                                        {commentCount}
+                              {visibleFiles.map((file) => {
+                                const displayName = formatFileLabel(file.path, tocFileNameMap);
+                                const tooltip = formatFileTooltip(file);
+                                const commentCount = getFileCommentCount(file.path);
+                                const viewed = isFileViewed(file.path);
+
+                                return (
+                                  <li key={file.path} className="file-list__item">
+                                    <input
+                                      type="checkbox"
+                                      className="file-list__checkbox"
+                                      checked={viewed}
+                                      onChange={() => toggleFileViewed(file.path)}
+                                      onClick={(e) => e.stopPropagation()}
+                                      title="Viewed"
+                                      aria-label="Mark as viewed"
+                                    />
+                                    <button
+                                      type="button"
+                                      className={`file-list__button${
+                                        selectedFilePath === file.path ? " file-list__button--active" : ""
+                                      }`}
+                                      onClick={() => setSelectedFilePath(file.path)}
+                                      title={tooltip}
+                                    >
+                                      <span className="file-list__name">{displayName}</span>
+                                      <span className="file-list__badge-wrapper">
+                                        {commentCount > 0 ? (
+                                          <span
+                                            className={`file-list__badge${fileHasPendingComments(file.path) ? " file-list__badge--pending" : ""}${fileHasDraftsInProgress(file.path) ? " file-list__badge--draft" : ""}${!fileHasPendingComments(file.path) && !fileHasDraftsInProgress(file.path) && fileHasRepliedComments(file.path) ? " file-list__badge--replied" : ""}`}
+                                            title={`${commentCount} comment${commentCount !== 1 ? "s" : ""}${fileHasDraftsInProgress(file.path) ? " (comment in progress)" : ""}${!fileHasPendingComments(file.path) && !fileHasDraftsInProgress(file.path) && fileHasRepliedComments(file.path) ? " (has replies)" : ""}`}
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              if (selectedFilePath !== file.path) {
+                                                setSelectedFilePath(file.path);
+                                              }
+                                              setIsInlineCommentOpen(true);
+                                            }}
+                                          >
+                                            {commentCount}
+                                          </span>
+                                        ) : (
+                                          <span
+                                            role="button"
+                                            tabIndex={0}
+                                            className="file-list__badge file-list__badge--add"
+                                            aria-label={`Add comment to ${displayName}`}
+                                            title="Add file comment"
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              if (selectedFilePath !== file.path) {
+                                                setSelectedFilePath(file.path);
+                                              }
+                                              void openInlineComment(file.path);
+                                              handleAddCommentClick(file.path);
+                                            }}
+                                            onKeyDown={(e) => {
+                                              if (e.key === "Enter" || e.key === " ") {
+                                                e.preventDefault();
+                                                e.stopPropagation();
+                                                if (selectedFilePath !== file.path) {
+                                                  setSelectedFilePath(file.path);
+                                                }
+                                                void openInlineComment(file.path);
+                                                handleAddCommentClick(file.path);
+                                              }
+                                            }}
+                                          >
+                                            +
+                                          </span>
+                                        )}
                                       </span>
-                                    ) : (
-                                      <span
-                                        role="button"
-                                        tabIndex={0}
-                                        className="file-list__badge file-list__badge--add"
-                                        aria-label={`Add comment to ${displayName}`}
-                                        title="Add file comment"
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          if (selectedFilePath !== file.path) {
-                                            setSelectedFilePath(file.path);
-                                          }
-                                          void openInlineComment(file.path);
-                                          handleAddCommentClick(file.path);
-                                        }}
-                                        onKeyDown={(e) => {
-                                          if (e.key === "Enter" || e.key === " ") {
-                                            e.preventDefault();
-                                            e.stopPropagation();
-                                            if (selectedFilePath !== file.path) {
-                                              setSelectedFilePath(file.path);
-                                            }
-                                            void openInlineComment(file.path);
-                                            handleAddCommentClick(file.path);
-                                          }
-                                        }}
-                                      >
-                                        +
-                                      </span>
-                                    )}
-                                  </span>
-                                </button>
-                              </li>
-                            );
-                          })}
+                                    </button>
+                                  </li>
+                                );
+                              })}
                             </ul>
-                            {pendingReview && (
+
+                            {pendingReview && !isLocalDirectoryMode && (
                               <div className="pr-comments-view__footer">
                                 {submissionProgress && (
                                   <div className="comment-panel__progress">
-                                    Submitting comment {submissionProgress.current} of {submissionProgress.total}...
+                                    {isLocalDirectoryMode
+                                      ? `Saving comment ${submissionProgress.current} of ${submissionProgress.total}...`
+                                      : `Submitting comment ${submissionProgress.current} of ${submissionProgress.total}...`}
                                   </div>
                                 )}
                                 <div className="pr-comments-view__footer-buttons">
@@ -7338,7 +7549,19 @@ function App() {
                                     onClick={handleSubmitReviewClick}
                                     disabled={submitReviewMutation.isPending || localComments.length === 0}
                                   >
-                                    {submitReviewMutation.isPending ? "Submitting…" : "Submit review"}
+                                    {submitReviewMutation.isPending
+                                      ? isLocalDirectoryMode
+                                        ? "Saving…"
+                                        : "Submitting…"
+                                      : isLocalDirectoryMode
+                                        ? (
+                                          <>
+                                            Save review
+                                            <br />
+                                            (log file)
+                                          </>
+                                        )
+                                        : "Submit review"}
                                   </button>
                                   <button
                                     type="button"
@@ -7351,10 +7574,10 @@ function App() {
                                 </div>
                               </div>
                             )}
-                            </>
-                          )}
-                        </div>
-                      )}
+                          </>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
               </>
@@ -7528,10 +7751,16 @@ function App() {
                       <button
                         type="submit"
                         className="comment-submit"
-                        disabled={submitCommentMutation.isPending || !isOnline}
-                        title={!isOnline ? "PR comments are disabled while offline" : ""}
+                        disabled={submitCommentMutation.isPending || !isOnline || isLocalDirectoryMode}
+                        title={
+                          isLocalDirectoryMode
+                            ? "PR comments aren't available in local folder mode"
+                            : (!isOnline ? "PR comments are disabled while offline" : "")
+                        }
                       >
-                        {submitCommentMutation.isPending ? "Sending…" : "Post comment"}
+                        {isLocalDirectoryMode
+                          ? "Unavailable (local folder)"
+                          : (submitCommentMutation.isPending ? "Sending…" : "Post comment")}
                       </button>
                     </div>
                   </form>
@@ -8366,10 +8595,6 @@ function App() {
         <div
           ref={commentContextMenuRef}
           className="source-menu source-menu--context"
-          style={{
-            top: `${commentContextMenu.y}px`,
-            left: `${commentContextMenu.x}px`
-          }}
         >
           {commentContextMenu.comment ? (
             <>

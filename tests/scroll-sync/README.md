@@ -9,12 +9,11 @@ This folder contains a progression of Markdown files designed to make scroll-syn
    - Preview ➜ Source: scroll the preview; editor should track.
 
 ### Local directory mode
-If you don't want to push a PR just to test scroll-sync, you can load this folder from disk using local directory mode.
+If you don't want to push a PR just to test scroll-sync, you can load this folder from disk.
 
-- Example: run the app pointing at this folder: `--local-dir=tests/scroll-sync`
-- Note: when running via `npm run tauri dev`, you may need an extra `--` to forward args through Cargo (see the main project README).
-   - From `github-review/app`: `npm run tauri dev -- -- -- --local-dir ../tests/scroll-sync`
-   - From repo root: `npm run tauri dev -- -- -- --local-dir ./tests/scroll-sync`
+1. Run the app.
+2. In the **Signed in** menu, choose **Open Local Folder…**
+3. Select this folder (`tests/scroll-sync`).
 
 ## How to report a bug precisely
 When you see a mismatch, capture these 4 things:

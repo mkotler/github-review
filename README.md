@@ -75,18 +75,15 @@ npm run tauri dev
 
 This starts the Vite dev server and launches the Tauri application window.
 
-### Local Directory Mode (no PR required)
+### Local Folder Mode (no PR required)
 
-You can launch the app and load a local directory of markdown files as if it were a PR file list (useful for `tests/scroll-sync/`):
+You can load a local directory of markdown files and review it in the app (useful for the scroll-sync fixtures in `tests/scroll-sync/`).
 
-```bash
-# from github-review/app
-npm run tauri dev -- -- -- --local-dir ../tests/scroll-sync
-```
+1. Launch the app: `npm run tauri dev`
+2. In the **Signed in** menu, choose **Open Local Folder…**
+3. Select a folder (e.g., the repo's `tests/scroll-sync/` directory)
 
-This supports both `--local-dir <path>` and `--local-dir=<path>`.
-
-If you see `error: unexpected argument '--local-dir' found`, it means Cargo is interpreting `--local-dir` as a `cargo run` flag. The extra `--` above forces Cargo to forward subsequent args to the app binary.
+The selected directory appears in the **Repository** panel and behaves like a normal repo selection (you can load a GitHub repo afterward to switch away from it, and re-open a local folder via the Signed in menu).
 
 ### Configuring Log Levels
 

@@ -13,48 +13,9 @@ use auth::{
 };
 use models::{AuthStatus, PullRequestDetail, PullRequestReview, PullRequestSummary};
 use review_storage::{ReviewComment, ReviewMetadata};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use tauri::Manager;
 use tracing::{error, info};
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct StartupOptions {
-    local_dir: Option<String>,
-}
-
-fn parse_startup_options_from_args() -> StartupOptions {
-    let mut local_dir: Option<String> = None;
-
-    let mut args = std::env::args();
-    // skip executable
-    let _ = args.next();
-
-    while let Some(arg) = args.next() {
-        if let Some(value) = arg.strip_prefix("--local-dir=") {
-            if !value.trim().is_empty() {
-                local_dir = Some(value.to_string());
-            }
-            continue;
-        }
-        if let Some(value) = arg.strip_prefix("--localDir=") {
-            if !value.trim().is_empty() {
-                local_dir = Some(value.to_string());
-            }
-            continue;
-        }
-
-        if arg == "--local-dir" || arg == "--localDir" {
-            if let Some(value) = args.next() {
-                if !value.trim().is_empty() {
-                    local_dir = Some(value);
-                }
-            }
-        }
-    }
-
-    StartupOptions { local_dir }
-}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -87,11 +48,6 @@ fn init_logging() {
         .try_init();
 }
 
-#[tauri::command]
-fn cmd_get_startup_options(options: tauri::State<StartupOptions>) -> StartupOptions {
-    options.inner().clone()
-}
-
 fn normalize_rel_path(base: &std::path::Path, path: &std::path::Path) -> String {
     let rel = path.strip_prefix(base).unwrap_or(path);
     rel.to_string_lossy().replace('\\', "/")
@@ -105,7 +61,7 @@ fn resolve_local_directory_path(input: &str) -> std::path::PathBuf {
 
     // In dev, the Rust process often runs with CWD = `app/src-tauri`.
     // Users tend to provide paths relative to `app/` or the repo root.
-    // Try a small set of sensible bases to make `--local-dir ../tests/scroll-sync` work.
+    // Try a small set of sensible bases to make relative paths work in dev.
     if let Ok(cwd) = std::env::current_dir() {
         let candidates = [
             cwd.join(&raw),
@@ -274,6 +230,9 @@ async fn cmd_list_pull_requests(
     state: Option<String>,
     current_login: Option<String>,
 ) -> Result<Vec<PullRequestSummary>, String> {
+    if owner == "__local__" || repo == "local" {
+        return Err("Local folder mode does not support listing GitHub pull requests".to_string());
+    }
     info!("cmd_list_pull_requests: owner={}, repo={}, state={:?}", owner, repo, state);
     match list_repo_pull_requests(&owner, &repo, state.as_deref(), current_login.as_deref()).await {
         Ok(prs) => {
@@ -294,6 +253,9 @@ async fn cmd_get_pull_request(
     number: u64,
     current_login: Option<String>,
 ) -> Result<PullRequestDetail, String> {
+    if owner == "__local__" || repo == "local" {
+        return Err("Local folder mode does not support fetching GitHub pull request details".to_string());
+    }
     info!("cmd_get_pull_request: owner={}, repo={}, pr={}", owner, repo, number);
     match fetch_pull_request_details(&owner, &repo, number, current_login.as_deref()).await {
         Ok(pr) => {
@@ -440,10 +402,18 @@ async fn cmd_local_start_review(
     pr_number: u64,
     commit_id: String,
     body: Option<String>,
+    local_folder: Option<String>,
 ) -> Result<ReviewMetadata, String> {
     let storage = review_storage::get_storage().map_err(|e| e.to_string())?;
     storage
-        .start_review(&owner, &repo, pr_number, &commit_id, body.as_deref())
+        .start_review(
+            &owner,
+            &repo,
+            pr_number,
+            &commit_id,
+            body.as_deref(),
+            local_folder.as_deref(),
+        )
         .map_err(|e| e.to_string())
 }
 
@@ -458,8 +428,22 @@ async fn cmd_local_add_comment(
     body: String,
     commit_id: String,
     in_reply_to_id: Option<i64>,
+    local_folder: Option<String>,
 ) -> Result<ReviewComment, String> {
     let storage = review_storage::get_storage().map_err(|e| e.to_string())?;
+
+    // Ensure there is review metadata for log output, and persist the local folder path if provided.
+    storage
+        .start_review(
+            &owner,
+            &repo,
+            pr_number,
+            &commit_id,
+            None,
+            local_folder.as_deref(),
+        )
+        .map_err(|e| e.to_string())?;
+
     storage
         .add_comment(
             &owner,
@@ -755,15 +739,34 @@ fn cmd_get_prs_under_review() -> Result<Vec<models::PrUnderReview>, String> {
     
     let prs_under_review: Vec<models::PrUnderReview> = all_reviews
         .into_iter()
-        .map(|metadata| models::PrUnderReview {
-            owner: metadata.owner.clone(),
-            repo: metadata.repo.clone(),
-            number: metadata.pr_number,
-            title: String::new(), // Will be filled in by frontend
-            has_local_review: true,
-            has_pending_review: false,
-            viewed_count: 0,
-            total_count: 0,
+        .map(|metadata| {
+            let is_local_folder = metadata.owner == "__local__" && metadata.repo == "local";
+            let total_count = if is_local_folder {
+                if let Some(local_folder) = metadata.local_folder.as_deref() {
+                    let base = resolve_local_directory_path(local_folder);
+                    let mut files: Vec<std::path::PathBuf> = Vec::new();
+                    match collect_markdown_files(&base, &mut files) {
+                        Ok(()) => files.len(),
+                        Err(_) => 0,
+                    }
+                } else {
+                    0
+                }
+            } else {
+                0
+            };
+
+            models::PrUnderReview {
+                owner: metadata.owner.clone(),
+                repo: metadata.repo.clone(),
+                number: metadata.pr_number,
+                title: String::new(), // Will be filled in by frontend
+                has_local_review: true,
+                has_pending_review: false,
+                viewed_count: 0,
+                total_count,
+                local_folder: metadata.local_folder.clone(),
+            }
         })
         .collect();
     
@@ -821,11 +824,9 @@ async fn cmd_open_url(url: String) -> Result<(), String> {
 pub fn run() {
     dotenvy::dotenv().ok();
     init_logging();
-
-    let startup_options = parse_startup_options_from_args();
     
     tauri::Builder::default()
-        .manage(startup_options)
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             // Initialize review storage
@@ -891,7 +892,6 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            cmd_get_startup_options,
             cmd_load_local_directory,
             cmd_start_github_oauth,
             cmd_check_auth_status,
