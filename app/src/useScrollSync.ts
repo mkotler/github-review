@@ -23,6 +23,7 @@ type ParsedSource = {
 
 const SCROLL_ANIMATION_DURATION = 50;
 const SCROLL_END_DEBOUNCE_MS = 120;
+const SOURCE_END_SYNC_SUPPRESS_MS = SCROLL_END_DEBOUNCE_MS + SCROLL_ANIMATION_DURATION + 30;
 
 function slugifyHeadingText(text: string): string {
   // Keep consistent with heading id generation in `App.tsx`.
@@ -387,6 +388,7 @@ export function useScrollSync({
   const lastPreviewScrollTopForDebounceRef = useRef<number>(0);
   const sourceScrollEndTimerRef = useRef<number | null>(null);
   const previewScrollEndTimerRef = useRef<number | null>(null);
+  const suppressSourceScrollEndSyncUntilRef = useRef<number>(0);
 
   const buildMatchedAnchors = useCallback(
     (
@@ -597,12 +599,22 @@ export function useScrollSync({
 
   const scheduleSourceScrollEndSync = useCallback(() => {
     if (!isEnabled) return;
+
+    // If the editor scroll position was recently driven by preview->source syncing,
+    // don't schedule a "settle" sync back to preview (this causes small counter-scroll nudges).
+    if (Date.now() < suppressSourceScrollEndSyncUntilRef.current) {
+      return;
+    }
+
     if (sourceScrollEndTimerRef.current !== null) {
       window.clearTimeout(sourceScrollEndTimerRef.current);
     }
 
     sourceScrollEndTimerRef.current = window.setTimeout(() => {
       sourceScrollEndTimerRef.current = null;
+      if (Date.now() < suppressSourceScrollEndSyncUntilRef.current) {
+        return;
+      }
       // Use current positions at time of debounce firing.
       syncSourceToPreview(0, 0);
     }, SCROLL_END_DEBOUNCE_MS);
@@ -701,6 +713,9 @@ export function useScrollSync({
       if (previewDelta < 0 && targetEditorScrollTop > currentEditorScrollTop + 2) {
         return;
       }
+
+      // Prevent the editor's subsequent debounced "scroll end" sync from nudging the preview.
+      suppressSourceScrollEndSyncUntilRef.current = Date.now() + SOURCE_END_SYNC_SUPPRESS_MS;
 
       isApplyingEditorScrollRef.current = true;
       editor.setScrollTop(targetEditorScrollTop);
