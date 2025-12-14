@@ -13,9 +13,48 @@ use auth::{
 };
 use models::{AuthStatus, PullRequestDetail, PullRequestReview, PullRequestSummary};
 use review_storage::{ReviewComment, ReviewMetadata};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tauri::Manager;
 use tracing::{error, info};
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StartupOptions {
+    local_dir: Option<String>,
+}
+
+fn parse_startup_options_from_args() -> StartupOptions {
+    let mut local_dir: Option<String> = None;
+
+    let mut args = std::env::args();
+    // skip executable
+    let _ = args.next();
+
+    while let Some(arg) = args.next() {
+        if let Some(value) = arg.strip_prefix("--local-dir=") {
+            if !value.trim().is_empty() {
+                local_dir = Some(value.to_string());
+            }
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--localDir=") {
+            if !value.trim().is_empty() {
+                local_dir = Some(value.to_string());
+            }
+            continue;
+        }
+
+        if arg == "--local-dir" || arg == "--localDir" {
+            if let Some(value) = args.next() {
+                if !value.trim().is_empty() {
+                    local_dir = Some(value);
+                }
+            }
+        }
+    }
+
+    StartupOptions { local_dir }
+}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -46,6 +85,161 @@ fn init_logging() {
         .with_env_filter(filter)
         .with_target(false)
         .try_init();
+}
+
+#[tauri::command]
+fn cmd_get_startup_options(options: tauri::State<StartupOptions>) -> StartupOptions {
+    options.inner().clone()
+}
+
+fn normalize_rel_path(base: &std::path::Path, path: &std::path::Path) -> String {
+    let rel = path.strip_prefix(base).unwrap_or(path);
+    rel.to_string_lossy().replace('\\', "/")
+}
+
+fn resolve_local_directory_path(input: &str) -> std::path::PathBuf {
+    let raw = std::path::PathBuf::from(input);
+    if raw.is_absolute() {
+        return raw;
+    }
+
+    // In dev, the Rust process often runs with CWD = `app/src-tauri`.
+    // Users tend to provide paths relative to `app/` or the repo root.
+    // Try a small set of sensible bases to make `--local-dir ../tests/scroll-sync` work.
+    if let Ok(cwd) = std::env::current_dir() {
+        let candidates = [
+            cwd.join(&raw),
+            cwd.parent().map(|p| p.join(&raw)).unwrap_or_else(|| cwd.join(&raw)),
+            cwd.parent()
+                .and_then(|p| p.parent())
+                .map(|p| p.join(&raw))
+                .unwrap_or_else(|| cwd.join(&raw)),
+        ];
+
+        for candidate in candidates {
+            if candidate.exists() {
+                return candidate;
+            }
+        }
+    }
+
+    raw
+}
+
+fn collect_markdown_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) -> Result<(), String> {
+    let entries = std::fs::read_dir(dir)
+        .map_err(|e| format!("Failed to read directory {}: {}", dir.display(), e))?;
+
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("Failed to read directory entry in {}: {}", dir.display(), e))?;
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .map_err(|e| format!("Failed to get file type for {}: {}", path.display(), e))?;
+
+        if file_type.is_dir() {
+            collect_markdown_files(&path, out)?;
+            continue;
+        }
+
+        if !file_type.is_file() {
+            continue;
+        }
+
+        let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
+        if ext == "md" || ext == "markdown" || ext == "mdx" {
+            out.push(path);
+        }
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn cmd_load_local_directory(directory: String) -> Result<PullRequestDetail, String> {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine;
+    use sha2::{Digest, Sha256};
+
+    let base = resolve_local_directory_path(&directory);
+    if !base.exists() {
+        let cwd = std::env::current_dir().ok();
+        return Err(format!(
+            "Local directory does not exist: {} (resolved to: {}). CWD: {}",
+            directory,
+            base.display(),
+            cwd.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "<unknown>".into())
+        ));
+    }
+    if !base.is_dir() {
+        return Err(format!(
+            "Local path is not a directory: {} (resolved to: {})",
+            directory,
+            base.display()
+        ));
+    }
+
+    info!(
+        "cmd_load_local_directory: input_dir='{}', resolved_dir='{}'",
+        directory,
+        base.display()
+    );
+
+    let mut hasher = Sha256::new();
+    hasher.update(directory.as_bytes());
+    let digest = hasher.finalize();
+    let id = URL_SAFE_NO_PAD.encode(&digest[..12]);
+    let sha = format!("LOCAL-{}", id);
+
+    // Walk directory (blocking), then read contents (async)
+    let mut files: Vec<std::path::PathBuf> = Vec::new();
+    collect_markdown_files(&base, &mut files)?;
+    files.sort();
+
+    info!(
+        "cmd_load_local_directory: found {} markdown-like files",
+        files.len()
+    );
+
+    let mut pr_files = Vec::with_capacity(files.len());
+
+    for path in files {
+        let rel_path = normalize_rel_path(&base, &path);
+        let content = tokio::fs::read_to_string(&path)
+            .await
+            .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
+
+        pr_files.push(models::PullRequestFile {
+            path: rel_path,
+            status: "modified".to_string(),
+            additions: 0,
+            deletions: 0,
+            patch: None,
+            head_content: Some(content),
+            base_content: None,
+            language: "markdown".to_string(),
+            previous_filename: None,
+        });
+    }
+
+    let title = base
+        .file_name()
+        .and_then(|s| s.to_str())
+        .map(|s| format!("Local: {}", s))
+        .unwrap_or_else(|| format!("Local: {}", directory));
+
+    Ok(PullRequestDetail {
+        number: 1,
+        title,
+        body: Some(format!("Local directory mode: {}", directory)),
+        author: "local".to_string(),
+        head_sha: sha.clone(),
+        base_sha: sha,
+        files: pr_files,
+        comments: Vec::new(),
+        my_comments: Vec::new(),
+        reviews: Vec::new(),
+    })
 }
 
 #[tauri::command]
@@ -627,8 +821,11 @@ async fn cmd_open_url(url: String) -> Result<(), String> {
 pub fn run() {
     dotenvy::dotenv().ok();
     init_logging();
+
+    let startup_options = parse_startup_options_from_args();
     
     tauri::Builder::default()
+        .manage(startup_options)
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             // Initialize review storage
@@ -694,6 +891,8 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            cmd_get_startup_options,
+            cmd_load_local_directory,
             cmd_start_github_oauth,
             cmd_check_auth_status,
             cmd_logout,

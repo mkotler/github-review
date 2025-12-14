@@ -75,6 +75,19 @@ npm run tauri dev
 
 This starts the Vite dev server and launches the Tauri application window.
 
+### Local Directory Mode (no PR required)
+
+You can launch the app and load a local directory of markdown files as if it were a PR file list (useful for `tests/scroll-sync/`):
+
+```bash
+# from github-review/app
+npm run tauri dev -- -- -- --local-dir ../tests/scroll-sync
+```
+
+This supports both `--local-dir <path>` and `--local-dir=<path>`.
+
+If you see `error: unexpected argument '--local-dir' found`, it means Cargo is interpreting `--local-dir` as a `cargo run` flag. The extra `--` above forces Cargo to forward subsequent args to the app binary.
+
 ### Configuring Log Levels
 
 The Rust backend uses the `tracing` framework for logging. By default, only warnings and errors are displayed to keep terminal output clean during development.
