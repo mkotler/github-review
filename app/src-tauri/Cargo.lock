@@ -935,6 +935,7 @@ dependencies = [
  "keyring",
  "open",
  "rand 0.8.5",
+ "raw-window-handle",
  "reqwest",
  "rusqlite",
  "serde",
@@ -949,6 +950,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

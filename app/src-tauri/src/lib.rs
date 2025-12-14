@@ -17,6 +17,55 @@ use serde::Deserialize;
 use tauri::Manager;
 use tracing::{error, info};
 
+#[cfg(all(windows, debug_assertions))]
+fn set_windows_dev_titlebar_color(window: &tauri::WebviewWindow) {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use std::mem::size_of;
+
+    // These attributes are supported starting with Windows 11 Build 22000.
+    const DWMWA_BORDER_COLOR: u32 = 34;
+    const DWMWA_CAPTION_COLOR: u32 = 35;
+    const DWMWA_TEXT_COLOR: u32 = 36;
+
+    fn colorref(r: u8, g: u8, b: u8) -> u32 {
+        // COLORREF is 0x00BBGGRR
+        (b as u32) << 16 | (g as u32) << 8 | (r as u32)
+    }
+
+    let hwnd = match window.window_handle() {
+        Ok(handle) => match handle.as_raw() {
+            RawWindowHandle::Win32(h) => h.hwnd.get() as windows_sys::Win32::Foundation::HWND,
+            _ => return,
+        },
+        Err(_) => return,
+    };
+
+    // Match the common Windows accent blue for a clear dev indicator.
+    let caption_color: u32 = colorref(0x00, 0x78, 0xD7);
+    let text_color: u32 = colorref(0xFF, 0xFF, 0xFF);
+
+    unsafe {
+        let _ = windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_CAPTION_COLOR,
+            &caption_color as *const _ as _,
+            size_of::<u32>() as u32,
+        );
+        let _ = windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_TEXT_COLOR,
+            &text_color as *const _ as _,
+            size_of::<u32>() as u32,
+        );
+        let _ = windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_BORDER_COLOR,
+            &caption_color as *const _ as _,
+            size_of::<u32>() as u32,
+        );
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SubmitFileCommentArgs {
@@ -888,6 +937,16 @@ pub fn run() {
             }));
             
             eprintln!("🚀 Application starting - if crash occurs, check crash.log in log folder");
+
+            #[cfg(debug_assertions)]
+            {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.set_title("DocReviewer (Preview)");
+
+                    #[cfg(windows)]
+                    set_windows_dev_titlebar_color(&window);
+                }
+            }
             
             Ok(())
         })
