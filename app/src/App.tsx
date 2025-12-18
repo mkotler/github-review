@@ -680,7 +680,7 @@ function App() {
   const [inlineCommentDraft, setInlineCommentDraft] = useState("");
   const [inlineCommentLine, setInlineCommentLine] = useState("");
   const [inlineCommentError, setInlineCommentError] = useState<string | null>(null);
-  const [draftsByFile, setDraftsByFile] = useState<Record<string, { reply?: Record<number, string>, inline?: string }>>({})
+  const [draftsByFile, setDraftsByFile] = useState<Record<string, { reply?: Record<number, string>, inline?: string, fileLevel?: string }>>({})
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isRepoPanelCollapsed, setIsRepoPanelCollapsed] = useState(false);
   const [isPrPanelCollapsed, setIsPrPanelCollapsed] = useState(false);
@@ -706,6 +706,7 @@ function App() {
   const [submissionProgress, setSubmissionProgress] = useState<{ current: number; total: number; file: string } | null>(null);
   const commentPanelBodyRef = useRef<HTMLDivElement>(null);
   const commentPanelLastScrollTopRef = useRef<number | null>(null);
+  const preserveScrollPositionRef = useRef<number | null>(null);
   const [isLoadingPendingComments, setIsLoadingPendingComments] = useState(false);
   const [editingCommentId, setEditingCommentId] = useState<number | null>(null);
   const [editingComment, setEditingComment] = useState<PullRequestComment | null>(null);
@@ -1012,9 +1013,11 @@ function App() {
   // Auto-focus textarea when comment composer opens
   useEffect(() => {
     if (isFileCommentComposerVisible && fileCommentTextareaRef.current) {
-      fileCommentTextareaRef.current.focus();
+      // When editing an existing comment, prevent focus from scrolling
+      // When creating a new comment, allow scrolling to make the composer visible
+      fileCommentTextareaRef.current.focus({ preventScroll: editingCommentId !== null });
     }
-  }, [isFileCommentComposerVisible]);
+  }, [isFileCommentComposerVisible, editingCommentId]);
 
   useEffect(() => {
     const pruned = pruneScrollCache(scrollCacheRef.current);
@@ -3461,7 +3464,10 @@ function App() {
     };
 
     const restore = () => {
-      const stored = storedPosition;
+      // Check if we should preserve a specific scroll position (e.g., after delete)
+      const preservePosition = preserveScrollPositionRef.current;
+      const stored = preservePosition !== null ? preservePosition : storedPosition;
+      
       if (stored !== null && Math.abs(panel.scrollTop - stored) > 1) {
         panel.scrollTop = stored;
         if (Math.abs(panel.scrollTop - stored) <= 1) {
@@ -3479,6 +3485,8 @@ function App() {
         if (stored === null) {
           persistSnapshot(panel.scrollTop, "restore", { allowZero: true });
         }
+        // Clear the preserve flag after restoration is complete
+        preserveScrollPositionRef.current = null;
       }
     };
 
@@ -3499,6 +3507,29 @@ function App() {
     getScrollPosition,
     saveScrollPosition,
   ]);
+
+  // Force scroll position preservation after delete
+  useEffect(() => {
+    if (preserveScrollPositionRef.current !== null && commentPanelBodyRef.current) {
+      const targetScroll = preserveScrollPositionRef.current;
+      commentPanelBodyRef.current.scrollTop = targetScroll;
+      
+      // Also update the stored position
+      if (selectedFileCacheKey) {
+        saveScrollPosition("fileComments", selectedFileCacheKey, targetScroll);
+        commentPanelLastScrollTopRef.current = targetScroll;
+      }
+      
+      // Run again after a delay to catch any late scroll resets
+      const timer = setTimeout(() => {
+        if (commentPanelBodyRef.current && preserveScrollPositionRef.current !== null) {
+          commentPanelBodyRef.current.scrollTop = preserveScrollPositionRef.current;
+        }
+      }, 100);
+      
+      return () => clearTimeout(timer);
+    }
+  }, [commentThreads.length, isFileCommentComposerVisible, selectedFileCacheKey, saveScrollPosition]);
 
   const shouldShowFileCommentComposer = isFileCommentComposerVisible;
   const noCommentsDueToFilters = fileComments.length === 0 && (showOnlyMyComments || hasHiddenOutdatedComments);
@@ -3579,6 +3610,32 @@ function App() {
       }
     }
   }, [selectedFilePath, draftsByFile, isAddingInlineComment]);
+
+  // Save file-level comment draft immediately when it changes
+  useEffect(() => {
+    if (selectedFilePath && isFileCommentComposerVisible) {
+      setDraftsByFile(prev => ({
+        ...prev,
+        [selectedFilePath]: {
+          ...prev[selectedFilePath],
+          fileLevel: fileCommentDraft
+        }
+      }));
+    }
+  }, [selectedFilePath, fileCommentDraft, isFileCommentComposerVisible]);
+
+  // Restore file-level draft when switching files or opening composer
+  useEffect(() => {
+    if (isFileCommentComposerVisible && selectedFilePath) {
+      const draft = draftsByFile[selectedFilePath]?.fileLevel;
+      if (draft !== undefined && !editingCommentId) {
+        setFileCommentDraft(draft);
+      } else if (!editingCommentId && !draftsByFile[selectedFilePath]?.fileLevel) {
+        // Clear the draft if there's no saved draft for this file
+        setFileCommentDraft("");
+      }
+    }
+  }, [isFileCommentComposerVisible, selectedFilePath, draftsByFile, editingCommentId]);
 
   useEffect(() => {
     if (repoRef) {
@@ -4666,7 +4723,6 @@ function App() {
         queryKey: ["pull-request", repoRef?.owner, repoRef?.repo, selectedPr, authQuery.data?.login]
       });
       void refetchPullDetail();
-      void loadLocalComments(); // Reload local comments
     },
     onSettled: () => {
       setFileCommentSubmittingMode(null);
@@ -4949,7 +5005,8 @@ function App() {
       }
     },
     onSuccess: async () => {
-      console.log("Delete comment success");
+      const deletedCommentId = editingCommentId;
+      
       setFileCommentDraft("");
       setFileCommentError(null);
       setEditingCommentId(null);
@@ -4968,6 +5025,22 @@ function App() {
       if (editingComment?.url === "#" || !editingComment?.url) {
         // This was a local comment - reload local comments
         await loadLocalComments();
+        
+        // Check if there are any comments left
+        setTimeout(() => {
+          if (commentPanelBodyRef.current && selectedFilePath) {
+            const commentElements = Array.from(
+              commentPanelBodyRef.current.querySelectorAll('[id^="comment-"]')
+            ) as HTMLElement[];
+            
+            if (commentElements.length === 0) {
+              // No comments left, close the panel
+              setIsInlineCommentOpen(false);
+              preserveScrollPositionRef.current = null;
+            }
+            // The scroll restoration effect will handle restoring the position
+          }
+        }, 100);
         
         // Check if there are any local comments left after deletion
         if (repoRef && prDetail) {
@@ -6115,7 +6188,8 @@ function App() {
                                     
                                     return (
                                       <div 
-                                        key={comment.id} 
+                                        key={comment.id}
+                                        id={`comment-${comment.id}`}
                                         className={`comment-panel__thread-comment${index > 0 ? " comment-panel__thread-comment--reply" : ""}`}
                                         onContextMenu={(e) => {
                                           e.preventDefault();
@@ -6142,6 +6216,10 @@ function App() {
                                                 type="button"
                                                 className="comment-panel__item-edit"
                                                 onClick={() => {
+                                                  // Capture scroll position BEFORE opening the editor
+                                                  const currentScrollTop = commentPanelBodyRef.current?.scrollTop ?? 0;
+                                                  preserveScrollPositionRef.current = currentScrollTop;
+                                                  
                                                   setEditingCommentId(comment.id);
                                                   setEditingComment(comment);
                                                   setFileCommentDraft(comment.body);
@@ -7663,6 +7741,20 @@ function App() {
                                           >
                                             {commentCount}
                                           </span>
+                                        ) : fileHasDraftsInProgress(file.path) ? (
+                                          <span
+                                            className="file-list__badge file-list__badge--draft file-list__badge--visible"
+                                            title="Comment in progress"
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              if (selectedFilePath !== file.path) {
+                                                setSelectedFilePath(file.path);
+                                              }
+                                              setIsInlineCommentOpen(true);
+                                            }}
+                                          >
+                                            +
+                                          </span>
                                         ) : (
                                           <span
                                             role="button"
@@ -7942,6 +8034,12 @@ function App() {
                       hoveredPaneRef.current = null;
                     }
                   }}
+                  onWheel={(e) => {
+                    if (e.ctrlKey) {
+                      e.preventDefault();
+                      adjustPaneZoom(e.deltaY < 0 ? PANE_ZOOM_STEP : -PANE_ZOOM_STEP);
+                    }
+                  }}
                 >
                   {selectedFile ? (
                     showDiff ? (
@@ -7956,6 +8054,7 @@ function App() {
                           scrollBeyondLastLine: false,
                           wordWrap: "on",
                           glyphMargin: true,
+                          mouseWheelZoom: false,
                           unicodeHighlight: {
                             ambiguousCharacters: false,
                             invisibleCharacters: false,
@@ -7964,6 +8063,7 @@ function App() {
                         onMount={(editor) => {
                           diffEditorRef.current = editor;
                           applyCodeZoom(paneZoomLevel);
+                          
                           editor.onDidDispose(() => {
                             if (diffEditorRef.current === editor) {
                               diffEditorRef.current = null;
@@ -8004,6 +8104,16 @@ function App() {
                             // If the editor can't scroll further (EOF/BOF), let mouse wheel keep the preview moving.
                             const modifiedDomNode = modifiedEditor.getDomNode?.();
                             if (modifiedDomNode) {
+                              // Add Ctrl+Wheel zoom handler first (non-passive to allow preventDefault)
+                              const zoomHandler = (e: WheelEvent) => {
+                                if (e.ctrlKey) {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  adjustPaneZoom(e.deltaY < 0 ? PANE_ZOOM_STEP : -PANE_ZOOM_STEP);
+                                }
+                              };
+                              modifiedDomNode.addEventListener('wheel', zoomHandler, { passive: false });
+                              
                               const handleWheel = (e: WheelEvent) => {
                                 if (!isMarkdownSelectedRef.current) {
                                   return;
@@ -8030,6 +8140,7 @@ function App() {
                               modifiedDomNode.addEventListener("wheel", handleWheel, { passive: true });
                               modifiedEditor.onDidDispose(() => {
                                 modifiedDomNode.removeEventListener("wheel", handleWheel);
+                                modifiedDomNode.removeEventListener("wheel", zoomHandler);
                               });
                             }
                           }
@@ -8082,6 +8193,7 @@ function App() {
                           scrollBeyondLastLine: false,
                           wordWrap: "on",
                           glyphMargin: true,
+                          mouseWheelZoom: false,
                           unicodeHighlight: {
                             ambiguousCharacters: false,
                             invisibleCharacters: false,
@@ -8153,6 +8265,16 @@ function App() {
                           // If the editor can't scroll further (EOF/BOF), let mouse wheel keep the preview moving.
                           const domNode = editor.getDomNode?.();
                           if (domNode) {
+                            // Add Ctrl+Wheel zoom handler first (non-passive to allow preventDefault)
+                            const zoomHandler = (e: WheelEvent) => {
+                              if (e.ctrlKey) {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                adjustPaneZoom(e.deltaY < 0 ? PANE_ZOOM_STEP : -PANE_ZOOM_STEP);
+                              }
+                            };
+                            domNode.addEventListener('wheel', zoomHandler, { passive: false });
+                            
                             const handleWheel = (e: WheelEvent) => {
                               if (!isMarkdownSelectedRef.current) {
                                 return;
@@ -8179,6 +8301,7 @@ function App() {
                             domNode.addEventListener("wheel", handleWheel, { passive: true });
                             editor.onDidDispose(() => {
                               domNode.removeEventListener("wheel", handleWheel);
+                              domNode.removeEventListener("wheel", zoomHandler);
                             });
                           }
 
@@ -8334,7 +8457,7 @@ function App() {
               </div>
             </div>
 
-            {!maximizedPane || maximizedPane === 'media' || maximizedPane === 'source' || isImageFile(selectedFile) ? null : (
+            {maximizedPane || isImageFile(selectedFile) ? null : (
               <div
                 className={`workspace__divider${isResizing ? " workspace__divider--active" : ""}`}
                 onMouseDown={handleResizeStart}

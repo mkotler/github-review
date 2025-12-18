@@ -1154,6 +1154,12 @@ select {
   pointer-events: auto;
 }
 
+.file-list__badge--visible {
+  opacity: 1 !important;
+  transform: scale(1) !important;
+  pointer-events: auto !important;
+}
+
 .workspace {
   flex: 1;
   display: flex;
@@ -2384,11 +2390,14 @@ select {
 
 .markdown-preview {
   padding: 18px 22px;
-  overflow-y: auto;
+  overflow-y: scroll;
+  overflow-x: scroll;
   font-size: calc(14px * var(--pane-zoom-scale, 1));
   color: #24292f;
   line-height: 1.6;
   background: #ffffff;
+  height: 100% !important;
+  box-sizing: border-box;
 }
 
 .markdown-preview__eof {
@@ -2398,6 +2407,11 @@ select {
 
 .markdown-preview::-webkit-scrollbar {
   width: 6px;
+  height: 6px;
+}
+
+.markdown-preview::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 .markdown-preview::-webkit-scrollbar-thumb {
@@ -2446,7 +2460,8 @@ select {
 
 .markdown-preview table {
   border-collapse: collapse;
-  width: 100%;
+  width: max-content;
+  min-width: 100%;
 }
 
 .markdown-preview th,
@@ -2454,6 +2469,7 @@ select {
   padding: 6px 10px;
   text-align: left;
   vertical-align: top;
+  white-space: nowrap;
 }
 
 .markdown-preview thead tr {
