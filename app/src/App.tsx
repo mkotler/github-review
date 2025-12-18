@@ -5005,8 +5005,6 @@ function App() {
       }
     },
     onSuccess: async () => {
-      const deletedCommentId = editingCommentId;
-      
       setFileCommentDraft("");
       setFileCommentError(null);
       setEditingCommentId(null);
