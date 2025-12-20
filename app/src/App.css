@@ -2469,7 +2469,9 @@ select {
   padding: 6px 10px;
   text-align: left;
   vertical-align: top;
-  white-space: nowrap;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  max-width: 300px;
 }
 
 .markdown-preview thead tr {

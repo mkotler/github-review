@@ -417,6 +417,9 @@ function AsyncImage({ owner, repo, reference, path, alt, onClick, ...props }: {
   );
 }
 
+// Memoize AsyncImage to prevent re-fetching images when parent re-renders
+const MemoizedAsyncImage = React.memo(AsyncImage);
+
 // Initialize Mermaid
 mermaid.initialize({
   startOnLoad: true,
@@ -3008,6 +3011,14 @@ function App() {
       base_content: fileContentsQuery.data.baseContent,
     };
   }, [selectedFileMetadata, fileContentsQuery.data]);
+
+  // Memoize markdown preview content to prevent re-rendering on every keystroke
+  const memoizedMarkdownContent = useMemo(() => {
+    if (!selectedFile || !isMarkdownFile(selectedFile)) {
+      return null;
+    }
+    return selectedFile.head_content ?? "";
+  }, [selectedFile?.head_content, selectedFile?.path]);
 
   // Anchor-based scroll synchronization between source and preview
   const getEditorForScrollSync = useCallback(() => {
@@ -8705,7 +8716,7 @@ function App() {
                               }
                               
                               // Use AsyncImage component to handle the fetch
-                              return <AsyncImage 
+                              return <MemoizedAsyncImage 
                                 owner={repoRef.owner} 
                                 repo={repoRef.repo} 
                                 reference={prDetail.head_sha} 
@@ -8740,7 +8751,7 @@ function App() {
                             }
                           }}
                         >
-                          {selectedFile.head_content ?? ""}
+                          {memoizedMarkdownContent}
                         </ReactMarkdown>
                         <div className="markdown-preview__eof" aria-hidden="true">
                           <br />
