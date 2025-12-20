@@ -1738,6 +1738,85 @@ Re-opening the PR does not unlock the conversation; a maintainer must unlock it.
                     continue 'outer;
                 }
 
+                // If this is a "line could not be resolved" error and the comment has a line number,
+                // retry as file-level comment with line number prefix (inline instead of passing through)
+                if body.contains("pull_request_review_thread.line") && comment.line_number > 0 {
+                    warn!("⚠️  Line {} could not be resolved, retrying as file-level comment with line prefix", comment.line_number);
+                    
+                    let mut file_comment_obj = Map::new();
+                    let prefixed_body = format!("[Line {}] {}", comment.line_number, comment.body);
+                    file_comment_obj.insert("body".into(), Value::String(prefixed_body));
+                    file_comment_obj.insert("commit_id".into(), Value::String(commit_id.to_string()));
+                    file_comment_obj.insert("path".into(), Value::String(comment.file_path.clone()));
+                    file_comment_obj.insert("subject_type".into(), Value::String("file".to_string()));
+                    
+                    let file_comment_payload = Value::Object(file_comment_obj);
+                    if tracing::enabled!(tracing::Level::DEBUG) {
+                        debug!(
+                            payload = %serde_json::to_string_pretty(&file_comment_payload).unwrap_or_default(),
+                            "Retry payload"
+                        );
+                    }
+                    
+                    // Retry file-level comment with backoff for rate limiting
+                    let mut file_attempt = 0;
+                    let file_retry_result = loop {
+                        let retry_response = client
+                            .post(format!("{API_BASE}/repos/{owner}/{repo}/pulls/{number}/comments"))
+                            .json(&file_comment_payload)
+                            .send()
+                            .await;
+                        
+                        match retry_response {
+                            Ok(resp) => {
+                                if resp.status() == reqwest::StatusCode::UNPROCESSABLE_ENTITY {
+                                    let retry_body = resp.text().await.unwrap_or_default();
+                                    if is_submitted_too_quickly(&retry_body) && file_attempt < TOO_QUICK_MAX_RETRIES {
+                                        let exponent = file_attempt.min(8) as u32;
+                                        let mut backoff = TOO_QUICK_BASE_BACKOFF_MS.saturating_mul(1u64 << exponent);
+                                        if backoff > TOO_QUICK_MAX_BACKOFF_MS {
+                                            backoff = TOO_QUICK_MAX_BACKOFF_MS;
+                                        }
+                                        let jitter = next_jitter_ms(350);
+                                        let delay = backoff.saturating_add(jitter);
+                                        warn!("File-level retry also rate limited, waiting {}ms", delay);
+                                        tokio::time::sleep(tokio::time::Duration::from_millis(delay)).await;
+                                        file_attempt += 1;
+                                        continue;
+                                    }
+                                    break Err(format!("Status 422: {}", body_snippet(&retry_body, 150)));
+                                } else if resp.status().is_success() {
+                                    break Ok(());
+                                } else {
+                                    let status = resp.status();
+                                    let err_body = resp.text().await.unwrap_or_default();
+                                    break Err(format!("Status {}: {}", status, body_snippet(&err_body, 150)));
+                                }
+                            }
+                            Err(e) => break Err(e.to_string()),
+                        }
+                    };
+                    
+                    match file_retry_result {
+                        Ok(_) => {
+                            succeeded += 1;
+                            succeeded_ids.push(comment.id);
+                            debug!("Comment posted successfully as file-level with line prefix");
+                        }
+                        Err(err) => {
+                            failed += 1;
+                            let error_msg = format!(
+                                "{}:{} - {}",
+                                comment.file_path, comment.line_number, err
+                            );
+                            warn!("✗ Failed: {}", error_msg);
+                            errors.push(error_msg);
+                        }
+                    }
+                    
+                    continue 'outer;
+                }
+
                 // Not retryable; count as failure and move on.
                 failed += 1;
                 let response_body_copy = body_snippet(&body, ERROR_BODY_SNIPPET_CHARS);
@@ -1958,31 +2037,90 @@ Re-opening the PR does not unlock the conversation; a maintainer must unlock it.
     info!("Submission complete: {} succeeded, {} failed", succeeded, failed);
     
     if failed > 0 {
+        // Analyze first error to provide specific guidance
+        let (error_explanation, fix_suggestion) = if let Some(first_error) = errors.first() {
+            let err_lower = first_error.to_lowercase();
+            if err_lower.contains("pull_request_review_thread.line") && err_lower.contains("could not be resolved") {
+                (
+                    "Line numbers are not in the PR diff.",
+                    "These lines weren't changed in the PR. Refresh the PR to see if files were updated, or comment on changed lines only."
+                )
+            } else if err_lower.contains("was submitted too quickly") || err_lower.contains("pull_request_review_thread.base") && err_lower.contains("submitted too quickly") {
+                (
+                    "Comments submitted too quickly (rate limiting).",
+                    "GitHub is rate limiting comment submissions. Wait a moment and try again, or submit fewer comments at once."
+                )
+            } else if err_lower.contains("is locked") || err_lower.contains("pull_request_review_thread.issue") && err_lower.contains("locked") {
+                (
+                    "PR conversation is locked.",
+                    "Ask a repo maintainer to unlock the conversation on this PR before submitting comments."
+                )
+            } else if err_lower.contains("403") || err_lower.contains("forbidden") {
+                (
+                    "Permission denied or rate limit exceeded.",
+                    "Check your token has 'repo' scope. If rate limited, wait for rate limit reset (check X-RateLimit-Reset header)."
+                )
+            } else if err_lower.contains("401") || err_lower.contains("unauthorized") {
+                (
+                    "Authentication failed.",
+                    "Your GitHub token may be invalid or expired. Generate a new personal access token with 'repo' scope."
+                )
+            } else if err_lower.contains("not found") || err_lower.contains("404") {
+                (
+                    "File or PR not found.",
+                    "The file may have been deleted or the PR may have been closed. Refresh the PR to see current files."
+                )
+            } else if err_lower.contains("path") && err_lower.contains("invalid") {
+                (
+                    "Invalid file path.",
+                    "The file path doesn't exist in the PR. File may have been renamed or deleted. Refresh the PR."
+                )
+            } else if err_lower.contains("commit_id") || (err_lower.contains("commit") && err_lower.contains("outdated")) {
+                (
+                    "Commit ID is outdated.",
+                    "The PR was updated after you created comments. Refresh the PR to get the latest commit SHA."
+                )
+            } else if err_lower.contains("review comments is invalid") || err_lower.contains("review threads is invalid") {
+                (
+                    "Review API rate limiting or spam detection.",
+                    "GitHub detected too many review API calls. Wait a few moments before submitting more comments."
+                )
+            } else if err_lower.contains("side") && err_lower.contains("invalid") {
+                (
+                    "Invalid side parameter.",
+                    "The 'side' must be 'LEFT' (deletions) or 'RIGHT' (additions). Check your comment configuration."
+                )
+            } else if err_lower.contains("body") && (err_lower.contains("blank") || err_lower.contains("empty")) {
+                (
+                    "Comment body is empty.",
+                    "Comment text cannot be blank. Make sure all comments have content."
+                )
+            } else {
+                (
+                    "Comment submission failed.",
+                    "Check the logs for details. Common issues: PR updates, file changes, or API errors."
+                )
+            }
+        } else {
+            (
+                "Comment submission failed.",
+                "Check the logs for details."
+            )
+        };
+
         let error_summary = if succeeded > 0 {
             format!(
-                "Submitted {} of {} comments. Failed comments:\n{}\n\n\
-                💡 Common causes:\n\
-                - PR was updated after you created the comments (check commit IDs)\n\
-                - Files were renamed, moved, or deleted\n\
-                - PR conversation was locked (GitHub will report: issue is locked)\n\
-                - Comments were submitted too quickly (GitHub will report: was submitted too quickly)\n\
-                - Line numbers changed due to PR updates\n\
-                - File-level comments (line 0) don't work reliably with GitHub's API\n\n\
-                To fix: Refresh the PR and re-create comments on the latest commit.",
-                succeeded, comments.len(), errors.join("\n")
+                "Submitted {} of {} comments. {} failed.\n\n\
+                💡 Issue: {}\n\
+                To fix: {}",
+                succeeded, comments.len(), failed, error_explanation, fix_suggestion
             )
         } else {
             format!(
-                "Failed to submit all {} comments:\n{}\n\n\
-                💡 Common causes:\n\
-                - PR was updated after you created the comments (check commit IDs)\n\
-                - Files were renamed, moved, or deleted\n\
-                - PR conversation was locked (GitHub will report: issue is locked)\n\
-                - Comments were submitted too quickly (GitHub will report: was submitted too quickly)\n\
-                - Line numbers changed due to PR updates\n\
-                - File-level comments (line 0) don't work reliably with GitHub's API\n\n\
-                To fix: Refresh the PR and re-create comments on the latest commit.",
-                comments.len(), errors.join("\n")
+                "Failed to submit all {} comments.\n\n\
+                💡 Issue: {}\n\
+                To fix: {}",
+                comments.len(), error_explanation, fix_suggestion
             )
         };
         // Return succeeded_ids along with error message

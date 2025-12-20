@@ -4866,12 +4866,15 @@ function App() {
 
       const prKey = repoRef && prDetail ? `${repoRef.owner}/${repoRef.repo}#${prDetail.number}` : null;
       const knownLocked = prKey ? prMetadata[prKey]?.locked : undefined;
+      
+      // Only match the specific locked conversation error patterns from the backend.
+      // The backend returns: "Cannot submit review comments because this PR conversation is locked..."
+      // or "Cannot submit review comments because PR #{number} is locked on GitHub..."
+      // We must match exact phrases to avoid false positives with help text mentioning "is locked".
       const isLockedConversation =
         knownLocked === true ||
-        (normalized.includes("pull_request_review_thread.issue") && normalized.includes("is locked")) ||
-        normalized.includes("issue is locked") ||
-        normalized.includes("conversation is locked") ||
-        normalized.includes("pr conversation is locked on github");
+        normalized.includes("cannot submit review comments because this pr conversation is locked") ||
+        (normalized.includes("cannot submit review comments because pr #") && normalized.includes("is locked on github"));
 
       setFileCommentError(null);
 
@@ -6640,11 +6643,13 @@ function App() {
                                             setPendingReviewOverride(localReview);
                                           }
 
-                                          await prsUnderReviewQuery.refetch();                                              setTimeout(() => {
-                                                setReplyingToCommentId(null);
-                                                setReplySuccess(false);
-                                              }, 1500);
-                                            } catch (err) {
+                                          await prsUnderReviewQuery.refetch();
+                                          
+                                          setTimeout(() => {
+                                            setReplyingToCommentId(null);
+                                            setReplySuccess(false);
+                                          }, 1500);
+                                        } catch (err) {
                                               setReplyError(err instanceof Error ? err.message : String(err));
                                             }
                                           }}
