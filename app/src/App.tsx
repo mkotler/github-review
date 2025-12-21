@@ -29,6 +29,7 @@ import type {
   ScrollCacheState,
   SourceRestoreState,
   LocalComment,
+  ReviewMetadata,
 } from "./types";
 import {
   AUTH_QUERY_KEY,
@@ -4492,16 +4493,6 @@ function App() {
       // If there are local comments, load the review metadata and show the panel
       console.log("Local comments exist, loading review metadata");
       try {
-        type ReviewMetadata = {
-          owner: string;
-          repo: string;
-          pr_number: number;
-          commit_id: string;
-          body: string | null;
-          created_at: string;
-          log_file_index: number;
-        };
-
         const metadata = await invoke<ReviewMetadata | null>("cmd_local_get_review_metadata", {
           owner: repoRef.owner,
           repo: repoRef.repo,
