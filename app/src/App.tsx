@@ -51,7 +51,7 @@ import {
 } from "./constants";
 import { loadScrollCache, pruneScrollCache } from "./utils/scrollCache";
 import { parseLinePrefix, getImageMimeType } from "./utils/markdown";
-import { MemoizedAsyncImage, MermaidCode } from "./components";
+import { MemoizedAsyncImage, MermaidCode, CommentThreadItem } from "./components";
 
 type ScrollCacheSection = "fileList" | "fileComments" | "sourcePane";
 
@@ -149,152 +149,6 @@ const openDevtoolsWindow = () => {
   void invoke("cmd_open_devtools").catch((error) => {
     console.warn("Failed to open devtools", error);
   });
-};
-
-// Helper component for comment thread items with collapse functionality
-interface CommentThreadItemProps {
-  thread: { parent: PullRequestComment; replies: PullRequestComment[] };
-  collapsedComments: Set<number>;
-  setCollapsedComments: React.Dispatch<React.SetStateAction<Set<number>>>;
-  editorRef: React.RefObject<any>;
-  pendingReview: PullRequestReview | null;
-  setEditingCommentId: React.Dispatch<React.SetStateAction<number | null>>;
-  setEditingComment: React.Dispatch<React.SetStateAction<PullRequestComment | null>>;
-  setFileCommentDraft: React.Dispatch<React.SetStateAction<string>>;
-  setFileCommentLine: React.Dispatch<React.SetStateAction<string>>;
-  setFileCommentSide: React.Dispatch<React.SetStateAction<"RIGHT" | "LEFT">>;
-  setFileCommentIsFileLevel: React.Dispatch<React.SetStateAction<boolean>>;
-  setFileCommentError: React.Dispatch<React.SetStateAction<string | null>>;
-  setFileCommentSuccess: React.Dispatch<React.SetStateAction<boolean>>;
-  setIsFileCommentComposerVisible: React.Dispatch<React.SetStateAction<boolean>>;
-  setReplyingToCommentId: React.Dispatch<React.SetStateAction<number | null>>;
-  setReplyDraft: React.Dispatch<React.SetStateAction<string>>;
-  setReplyError: React.Dispatch<React.SetStateAction<string | null>>;
-  setReplySuccess: React.Dispatch<React.SetStateAction<boolean>>;
-  children: (allCommentsInThread: PullRequestComment[], isCollapsed: boolean, parentComment: PullRequestComment) => React.ReactNode;
-}
-
-const CommentThreadItem = ({ 
-  thread, 
-  collapsedComments, 
-  setCollapsedComments,
-  editorRef,
-  pendingReview: _pendingReview,
-  setEditingCommentId: _setEditingCommentId,
-  setEditingComment: _setEditingComment,
-  setFileCommentDraft: _setFileCommentDraft,
-  setFileCommentLine: _setFileCommentLine,
-  setFileCommentSide: _setFileCommentSide,
-  setFileCommentIsFileLevel: _setFileCommentIsFileLevel,
-  setFileCommentError: _setFileCommentError,
-  setFileCommentSuccess: _setFileCommentSuccess,
-  setIsFileCommentComposerVisible: _setIsFileCommentComposerVisible,
-  setReplyingToCommentId: _setReplyingToCommentId,
-  setReplyDraft: _setReplyDraft,
-  setReplyError: _setReplyError,
-  setReplySuccess: _setReplySuccess,
-  children
-}: CommentThreadItemProps) => {
-  const allCommentsInThread = [thread.parent, ...thread.replies];
-  const parentComment = thread.parent;
-  
-  // Calculate collapse state based on parent comment
-  const isCollapsed = collapsedComments.has(parentComment.id);
-  const toggleCollapse = () => {
-    setCollapsedComments((prev: Set<number>) => {
-      const next = new Set(prev);
-      if (next.has(parentComment.id)) {
-        next.delete(parentComment.id);
-      } else {
-        next.add(parentComment.id);
-      }
-      return next;
-    });
-  };
-  
-  // Use ref to measure comment height and determine if collapse button should be shown
-  const commentBodyRef = useRef<HTMLDivElement>(null);
-  const [showCollapseButton, setShowCollapseButton] = useState(false);
-  
-  useEffect(() => {
-    if (commentBodyRef.current && !isCollapsed) {
-      const height = commentBodyRef.current.offsetHeight;
-      setShowCollapseButton(height > 150);
-    }
-  }, [allCommentsInThread, isCollapsed]);
-  
-  return (
-    <li className="comment-panel__item">
-      <div className="comment-panel__item-header">
-        <div className="comment-panel__item-header-info">
-          {parentComment.line && parentComment.line > 0 && (
-            <span 
-              className="comment-panel__item-line comment-panel__item-line--clickable"
-              onClick={() => {
-                if (editorRef.current && parentComment.line) {
-                  const editor = editorRef.current;
-                  const lineNumber = parentComment.line;
-                  
-                  // Reveal the line with some context
-                  editor.revealLineInCenter(lineNumber);
-                  
-                  // Set cursor position at the line
-                  editor.setPosition({ lineNumber, column: 1 });
-                  editor.focus();
-                }
-              }}
-              title="Click to jump to line in editor"
-            >
-              #{parentComment.line}
-            </span>
-          )}
-          {/* Handle file-level comments with [Line #] prefix from fallback mechanism */}
-          {(!parentComment.line || parentComment.line === 0) && (() => {
-            const parsed = parseLinePrefix(parentComment.body);
-            if (parsed.hasLinePrefix && parsed.lineNumber) {
-              return (
-                <span 
-                  className="comment-panel__item-line comment-panel__item-line--clickable"
-                  onClick={() => {
-                    if (editorRef.current && parsed.lineNumber) {
-                      const editor = editorRef.current;
-                      
-                      // Reveal the line with some context
-                      editor.revealLineInCenter(parsed.lineNumber);
-                      
-                      // Set cursor position at the line
-                      editor.setPosition({ lineNumber: parsed.lineNumber, column: 1 });
-                      editor.focus();
-                    }
-                  }}
-                  title="Click to jump to line in editor (file-level comment)"
-                >
-                  [#{parsed.lineNumber}]
-                </span>
-              );
-            }
-            return null;
-          })()}
-        </div>
-        <div className="comment-panel__item-actions">
-          {showCollapseButton && (
-            <button
-              type="button"
-              className="comment-panel__item-collapse"
-              onClick={toggleCollapse}
-              aria-label={isCollapsed ? "Expand thread" : "Collapse thread"}
-              title={isCollapsed ? "Expand" : "Collapse"}
-            >
-              {isCollapsed ? "▼" : "▲"}
-            </button>
-          )}
-        </div>
-      </div>
-      <div ref={commentBodyRef} className={`comment-panel__item-body${isCollapsed ? " comment-panel__item-content--collapsed" : ""}`}>
-        {children(allCommentsInThread, isCollapsed, parentComment)}
-      </div>
-    </li>
-  );
 };
 
 function App() {
@@ -5883,25 +5737,11 @@ function App() {
                           {commentThreads.map((thread) => (
                             <li key={thread.parent.id}>
                               <CommentThreadItem
-                              thread={thread}
-                              collapsedComments={collapsedComments}
-                              setCollapsedComments={setCollapsedComments}
-                              editorRef={editorRef}
-                              pendingReview={pendingReview}
-                              setEditingCommentId={setEditingCommentId}
-                              setEditingComment={setEditingComment}
-                              setFileCommentDraft={setFileCommentDraft}
-                              setFileCommentLine={setFileCommentLine}
-                              setFileCommentSide={setFileCommentSide}
-                              setFileCommentIsFileLevel={setFileCommentIsFileLevel}
-                              setFileCommentError={setFileCommentError}
-                              setFileCommentSuccess={setFileCommentSuccess}
-                              setIsFileCommentComposerVisible={setIsFileCommentComposerVisible}
-                              setReplyingToCommentId={setReplyingToCommentId}
-                              setReplyDraft={setReplyDraft}
-                              setReplyError={setReplyError}
-                              setReplySuccess={setReplySuccess}
-                            >
+                                thread={thread}
+                                collapsedComments={collapsedComments}
+                                setCollapsedComments={setCollapsedComments}
+                                editorRef={editorRef}
+                              >
                               {(allCommentsInThread: PullRequestComment[], _isCollapsed: boolean, parentComment: PullRequestComment) => (
                                 <>
                                   {/* Render all comments in thread */}
