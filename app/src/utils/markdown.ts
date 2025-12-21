@@ -173,3 +173,16 @@ export function extractAnchorId(href: string): string | null {
   }
   return null;
 }
+
+/**
+ * Generates a slug ID from heading text for anchor links.
+ * Handles special characters, dashes, and normalizes whitespace.
+ */
+export function generateHeadingId(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[–—]/g, '-')      // Replace en-dash and em-dash with hyphen
+    .replace(/[^\w\s-]/g, '')    // Remove non-word characters except whitespace and hyphens
+    .replace(/\s+/g, '-')        // Replace whitespace with hyphens
+    .replace(/-{3,}/g, '--');    // Collapse 3+ consecutive hyphens to double hyphen
+}

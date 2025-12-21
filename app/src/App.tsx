@@ -45,7 +45,7 @@ import {
   MIN_CONTENT_WIDTH,
 } from "./constants";
 import { loadScrollCache, pruneScrollCache } from "./utils/scrollCache";
-import { parseLinePrefix, getImageMimeType, formatFileLabel, formatFileTooltip, formatFilePathWithLeadingEllipsis, isImageFile, isMarkdownFile } from "./utils/markdown";
+import { parseLinePrefix, getImageMimeType, formatFileLabel, formatFileTooltip, formatFilePathWithLeadingEllipsis, isImageFile, isMarkdownFile, generateHeadingId } from "./utils/markdown";
 import { MemoizedAsyncImage, MermaidCode, CommentThreadItem, MediaViewer, ConfirmDialog } from "./components";
 import type { MediaContent } from "./components";
 import { usePaneZoom, useViewedFiles, useMRUList, useLocalStorage } from "./hooks";
@@ -1201,33 +1201,27 @@ function App() {
   // Memoize ReactMarkdown components to prevent Mermaid from re-rendering
   const markdownComponents = useMemo(() => ({
     h1: ({children, ...props}: any) => {
-      const text = String(children);
-      const id = text.toLowerCase().replace(/[–—]/g, '-').replace(/[^\w\s-]/g, '').replace(/\s+/g, '-').replace(/-{3,}/g, '--');
+      const id = generateHeadingId(String(children));
       return <h1 id={id} {...props}>{children}</h1>;
     },
     h2: ({children, ...props}: any) => {
-      const text = String(children);
-      const id = text.toLowerCase().replace(/[–—]/g, '-').replace(/[^\w\s-]/g, '').replace(/\s+/g, '-').replace(/-{3,}/g, '--');
+      const id = generateHeadingId(String(children));
       return <h2 id={id} {...props}>{children}</h2>;
     },
     h3: ({children, ...props}: any) => {
-      const text = String(children);
-      const id = text.toLowerCase().replace(/[–—]/g, '-').replace(/[^\w\s-]/g, '').replace(/\s+/g, '-').replace(/-{3,}/g, '--');
+      const id = generateHeadingId(String(children));
       return <h3 id={id} {...props}>{children}</h3>;
     },
     h4: ({children, ...props}: any) => {
-      const text = String(children);
-      const id = text.toLowerCase().replace(/[–—]/g, '-').replace(/[^\w\s-]/g, '').replace(/\s+/g, '-').replace(/-{3,}/g, '--');
+      const id = generateHeadingId(String(children));
       return <h4 id={id} {...props}>{children}</h4>;
     },
     h5: ({children, ...props}: any) => {
-      const text = String(children);
-      const id = text.toLowerCase().replace(/[–—]/g, '-').replace(/[^\w\s-]/g, '').replace(/\s+/g, '-').replace(/-{3,}/g, '--');
+      const id = generateHeadingId(String(children));
       return <h5 id={id} {...props}>{children}</h5>;
     },
     h6: ({children, ...props}: any) => {
-      const text = String(children);
-      const id = text.toLowerCase().replace(/[–—]/g, '-').replace(/[^\w\s-]/g, '').replace(/\s+/g, '-').replace(/-{3,}/g, '--');
+      const id = generateHeadingId(String(children));
       return <h6 id={id} {...props}>{children}</h6>;
     },
     code: ({ className, children, ...props }: any) => {
