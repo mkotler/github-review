@@ -11,7 +11,6 @@ import rehypeRaw from "rehype-raw";
 import rehypeSanitize from "rehype-sanitize";
 import { Editor, DiffEditor } from "@monaco-editor/react";
 import { parse as parseYaml } from "yaml";
-import mermaid from "mermaid";
 import { useNetworkStatus } from "./useNetworkStatus";
 import * as offlineCache from "./offlineCache";
 import { useScrollSync } from "./useScrollSync.ts";
@@ -52,6 +51,7 @@ import {
 } from "./constants";
 import { loadScrollCache, pruneScrollCache } from "./utils/scrollCache";
 import { parseLinePrefix, getImageMimeType } from "./utils/markdown";
+import { MemoizedAsyncImage, MermaidCode } from "./components";
 
 type ScrollCacheSection = "fileList" | "fileComments" | "sourcePane";
 
@@ -149,118 +149,6 @@ const openDevtoolsWindow = () => {
   void invoke("cmd_open_devtools").catch((error) => {
     console.warn("Failed to open devtools", error);
   });
-};
-
-// Component to handle async image loading
-function AsyncImage({ owner, repo, reference, path, alt, onClick, ...props }: { 
-  owner: string; 
-  repo: string; 
-  reference: string; 
-  path: string; 
-  alt?: string;
-  onClick?: (e: React.MouseEvent<HTMLImageElement>) => void;
-  [key: string]: any;
-}) {
-  const [imageData, setImageData] = useState<string | null>(null);
-  const [error, setError] = useState<boolean>(false);
-  
-  useEffect(() => {
-    let cancelled = false;
-    
-    const fetchImage = async () => {
-      try {
-        const base64Data = await invoke<string>("cmd_fetch_file_content", {
-          owner,
-          repo,
-          reference,
-          path
-        });
-        
-        if (!cancelled) {
-          const mimeType = getImageMimeType(path);
-          
-          setImageData(`data:${mimeType};base64,${base64Data}`);
-        }
-      } catch (err) {
-        console.error('Failed to fetch image:', { path, error: err });
-        if (!cancelled) {
-          setError(true);
-        }
-      }
-    };
-    
-    fetchImage();
-    
-    return () => {
-      cancelled = true;
-    };
-  }, [owner, repo, reference, path]);
-  
-  if (error) {
-    // Image doesn't exist in the repository - just show alt text or a note
-    return <span className="image-error" title={`Image not found in repository: ${path}`}>
-      {alt ? `[${alt}]` : `[Image: ${path.split('/').pop()}]`}
-    </span>;
-  }
-  
-  if (!imageData) {
-    return null; // Don't show anything while loading to avoid flicker
-  }
-  
-  return (
-    <img 
-      src={imageData} 
-      alt={alt} 
-      onClick={onClick}
-      className={onClick ? 'clickable-image' : ''}
-      {...props} 
-    />
-  );
-}
-
-// Memoize AsyncImage to prevent re-fetching images when parent re-renders
-const MemoizedAsyncImage = React.memo(AsyncImage);
-
-// Initialize Mermaid
-mermaid.initialize({
-  startOnLoad: true,
-  theme: 'default',
-  securityLevel: 'loose',
-});
-
-// Custom component for rendering Mermaid diagrams
-const MermaidCode = ({ children }: { children: string }) => {
-  const ref = useRef<HTMLDivElement>(null);
-  const [error, setError] = useState<string | null>(null);
-  const renderedContentRef = useRef<string>('');
-
-  useEffect(() => {
-    // Skip if we've already rendered this exact content
-    if (renderedContentRef.current === children) {
-      return;
-    }
-    
-    if (ref.current && typeof children === 'string') {
-      const id = `mermaid-${Math.random().toString(36).substr(2, 9)}`;
-      mermaid.render(id, children)
-        .then(({ svg }) => {
-          if (ref.current) {
-            ref.current.innerHTML = svg;
-            renderedContentRef.current = children;
-          }
-        })
-        .catch((err) => {
-          console.error('Mermaid render error:', err);
-          setError(err.message || 'Failed to render diagram');
-        });
-    }
-  }, [children]);
-
-  if (error) {
-    return <pre className="mermaid-error">Mermaid Error: {error}</pre>;
-  }
-
-  return <div ref={ref} className="mermaid-diagram" />;
 };
 
 // Helper component for comment thread items with collapse functionality
