@@ -46,7 +46,8 @@ import {
 } from "./constants";
 import { loadScrollCache, pruneScrollCache } from "./utils/scrollCache";
 import { parseLinePrefix, getImageMimeType } from "./utils/markdown";
-import { MemoizedAsyncImage, MermaidCode, CommentThreadItem } from "./components";
+import { MemoizedAsyncImage, MermaidCode, CommentThreadItem, MediaViewer } from "./components";
+import type { MediaContent } from "./components";
 import { usePaneZoom, useViewedFiles, useMRUList, useLocalStorage } from "./hooks";
 
 type ScrollCacheSection = "fileList" | "fileComments" | "sourcePane";
@@ -232,7 +233,7 @@ function App() {
   const [showSourceMenu, setShowSourceMenu] = useState(false);
   const [maximizedPane, setMaximizedPane] = useState<'source' | 'preview' | 'media' | null>(null);
   const [savedSplitRatio, setSavedSplitRatio] = useState<string | null>(null);
-  const [mediaViewerContent, setMediaViewerContent] = useState<{ type: 'image' | 'mermaid', content: string } | null>(null);
+  const [mediaViewerContent, setMediaViewerContent] = useState<MediaContent | null>(null);
   const [showFilesMenu, setShowFilesMenu] = useState(false);
   const [isPrCommentsView, setIsPrCommentsView] = useState(false);
   const [isPrCommentComposerOpen, setIsPrCommentComposerOpen] = useState(false);
@@ -8192,42 +8193,13 @@ function App() {
 
             {/* Media Viewer Pane */}
             {maximizedPane === 'media' && mediaViewerContent && (
-              <div className="pane pane--media pane--maximized">
-                <div className="pane__header">
-                  <div className="pane__title-group">
-                    <span>Media</span>
-                  </div>
-                  <div className="pane__actions">
-                    <button
-                      type="button"
-                      className="panel__title-button"
-                      onClick={() => {
-                        setMaximizedPane(null);
-                        setMediaViewerContent(null);
-                      }}
-                      aria-label="Close media viewer"
-                      title="Close media viewer (ESC)"
-                    >
-                      ×
-                    </button>
-                  </div>
-                </div>
-                <div className="pane__content">
-                  <div className="media-viewer">
-                    {mediaViewerContent.type === 'image' ? (
-                      <img 
-                        src={mediaViewerContent.content} 
-                        alt="Media content" 
-                        className="media-viewer__image"
-                      />
-                    ) : (
-                      <div className="media-viewer__mermaid-container">
-                        <MermaidCode>{mediaViewerContent.content}</MermaidCode>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
+              <MediaViewer 
+                content={mediaViewerContent}
+                onClose={() => {
+                  setMaximizedPane(null);
+                  setMediaViewerContent(null);
+                }}
+              />
             )}
           </div>
         </div>

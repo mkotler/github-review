@@ -11,3 +11,6 @@ export type { MermaidCodeProps } from './MermaidCode';
 
 export { default as CommentThreadItem } from './CommentThreadItem';
 export type { CommentThreadItemProps, CommentThread } from './CommentThreadItem';
+
+export { MediaViewer } from './MediaViewer';
+export type { MediaContent, MediaViewerProps } from './MediaViewer';
