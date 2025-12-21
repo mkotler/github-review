@@ -5,7 +5,7 @@
 
 import React, { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { getImageMimeType } from "../utils/markdown";
+import { getImageMimeType } from "../utils/helpers";
 
 export interface AsyncImageProps {
   /** Repository owner */

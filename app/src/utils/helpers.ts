@@ -1,5 +1,6 @@
 /**
- * Markdown and file path utilities for the GitHub Review application.
+ * Helper utilities for the GitHub Review application.
+ * Includes file formatting, path handling, comment conversion, and review helpers.
  * Extracted from App.tsx for better modularity and testability.
  */
 

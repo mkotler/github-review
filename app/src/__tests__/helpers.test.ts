@@ -1,5 +1,5 @@
 /**
- * Tests for markdown utilities.
+ * Tests for helper utilities.
  */
 
 import { describe, it, expect } from "vitest";
@@ -17,10 +17,10 @@ import {
   convertLocalComment,
   convertLocalComments,
   createLocalReview,
-} from "../utils/markdown";
+} from "../utils/helpers";
 import type { PullRequestFile, LocalComment } from "../types";
 
-describe("markdown utilities", () => {
+describe("helper utilities", () => {
   describe("parseLinePrefix", () => {
     it("extracts line number from [Line #] prefix", () => {
       const result = parseLinePrefix("[Line 42] This is a comment");

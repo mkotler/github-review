@@ -5,7 +5,7 @@
 
 import { useRef, useState, useEffect } from "react";
 import type { PullRequestComment } from "../types";
-import { parseLinePrefix } from "../utils/markdown";
+import { parseLinePrefix } from "../utils/helpers";
 
 /** Thread structure with parent comment and replies */
 export interface CommentThread {
