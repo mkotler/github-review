@@ -47,7 +47,7 @@ import {
   MIN_CONTENT_WIDTH,
 } from "./constants";
 import { loadScrollCache, pruneScrollCache } from "./utils/scrollCache";
-import { parseLinePrefix, getImageMimeType, formatFileLabel, formatFileTooltip, formatFilePathWithLeadingEllipsis, isImageFile, isMarkdownFile, generateHeadingId } from "./utils/markdown";
+import { parseLinePrefix, getImageMimeType, formatFileLabel, formatFileTooltip, formatFilePathWithLeadingEllipsis, isImageFile, isMarkdownFile, generateHeadingId, convertLocalComments } from "./utils/markdown";
 import { MemoizedAsyncImage, MermaidCode, CommentThreadItem, MediaViewer, ConfirmDialog } from "./components";
 import type { MediaContent } from "./components";
 import { usePaneZoom, useViewedFiles, useMRUList, useLocalStorage } from "./hooks";
@@ -1424,24 +1424,10 @@ function App() {
 
           // Refetch PRs under review to show this PR in the list
         await prsUnderReviewQuery.refetch();          // Convert and set local comments
-          const converted: PullRequestComment[] = localCommentData.map((lc) => {
-  
-            return {
-              id: lc.id,
-              body: lc.body,
-              author: authQuery.data?.login ?? "You",
-              created_at: lc.created_at,
-              url: "#",
-              path: lc.file_path,
-              line: lc.line_number === 0 ? null : lc.line_number,
-              side: lc.side,
-              is_review_comment: true,
-              is_draft: !isLocalDirectoryMode,
-              state: null,
-              is_mine: true,
-              review_id: prDetail.number,
-              in_reply_to_id: lc.in_reply_to_id,
-            };
+          const converted = convertLocalComments(localCommentData, {
+            author: authQuery.data?.login ?? "You",
+            reviewId: prDetail.number,
+            isDraft: !isLocalDirectoryMode,
           });
   
           setLocalComments(converted);
@@ -1483,22 +1469,11 @@ function App() {
       });
 
       // Convert to PullRequestComment format
-      const converted: PullRequestComment[] = localCommentData.map((lc) => ({
-        id: lc.id,
-        body: lc.body,
+      const converted = convertLocalComments(localCommentData, {
         author: authQuery.data?.login ?? "You",
-        created_at: lc.created_at,
-        url: "#", // Local comments don't have URLs yet
-        path: lc.file_path,
-        line: lc.line_number === 0 ? null : lc.line_number,
-        side: lc.side,
-        is_review_comment: true,
-        is_draft: !isLocalDirectoryMode,
-        state: null,
-        is_mine: true,
-        review_id: effectiveReviewId,
-        in_reply_to_id: lc.in_reply_to_id,
-      }));
+        reviewId: effectiveReviewId,
+        isDraft: !isLocalDirectoryMode,
+      });
 
       setLocalComments(converted);
     } catch (error) {
@@ -2178,22 +2153,11 @@ function App() {
           }
           
           // Convert to PullRequestComment format
-          const converted: PullRequestComment[] = localCommentData.map((lc) => ({
-            id: lc.id,
-            body: lc.body,
+          const converted = convertLocalComments(localCommentData, {
             author: authQuery.data?.login ?? "You",
-            created_at: lc.created_at,
-            url: "#",
-            path: lc.file_path,
-            line: lc.line_number === 0 ? null : lc.line_number,
-            side: lc.side,
-            is_review_comment: true,
-            is_draft: !isLocalDirectoryMode,
-            state: null,
-            is_mine: true,
-            review_id: localReview.id,
-            in_reply_to_id: lc.in_reply_to_id,
-          }));
+            reviewId: localReview.id,
+            isDraft: !isLocalDirectoryMode,
+          });
           setLocalComments(converted);
           setPendingReviewOverride(localReview);
           

@@ -3,7 +3,7 @@
  * Extracted from App.tsx for better modularity and testability.
  */
 
-import type { PullRequestFile } from "../types";
+import type { PullRequestFile, LocalComment, PullRequestComment } from "../types";
 
 /**
  * Parses the [Line #] prefix from file-level comments.
@@ -185,4 +185,48 @@ export function generateHeadingId(text: string): string {
     .replace(/[^\w\s-]/g, '')    // Remove non-word characters except whitespace and hyphens
     .replace(/\s+/g, '-')        // Replace whitespace with hyphens
     .replace(/-{3,}/g, '--');    // Collapse 3+ consecutive hyphens to double hyphen
+}
+
+/**
+ * Converts a LocalComment (from Tauri backend) to a PullRequestComment.
+ * Used for displaying local review comments in the UI.
+ */
+export function convertLocalComment(
+  lc: LocalComment,
+  options: {
+    author: string;
+    reviewId: number;
+    isDraft: boolean;
+  }
+): PullRequestComment {
+  return {
+    id: lc.id,
+    body: lc.body,
+    author: options.author,
+    created_at: lc.created_at,
+    url: "#", // Local comments don't have URLs yet
+    path: lc.file_path,
+    line: lc.line_number === 0 ? null : lc.line_number,
+    side: lc.side,
+    is_review_comment: true,
+    is_draft: options.isDraft,
+    state: null,
+    is_mine: true,
+    review_id: options.reviewId,
+    in_reply_to_id: lc.in_reply_to_id,
+  };
+}
+
+/**
+ * Converts an array of LocalComment objects to PullRequestComment objects.
+ */
+export function convertLocalComments(
+  localComments: LocalComment[],
+  options: {
+    author: string;
+    reviewId: number;
+    isDraft: boolean;
+  }
+): PullRequestComment[] {
+  return localComments.map((lc) => convertLocalComment(lc, options));
 }

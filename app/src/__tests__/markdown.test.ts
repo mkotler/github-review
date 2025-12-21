@@ -14,8 +14,10 @@ import {
   resolveRelativePath,
   extractAnchorId,
   generateHeadingId,
+  convertLocalComment,
+  convertLocalComments,
 } from "../utils/markdown";
-import type { PullRequestFile } from "../types";
+import type { PullRequestFile, LocalComment } from "../types";
 
 describe("markdown utilities", () => {
   describe("parseLinePrefix", () => {
@@ -322,6 +324,150 @@ describe("markdown utilities", () => {
     it("preserves existing hyphens and underscores", () => {
       expect(generateHeadingId("hello-world")).toBe("hello-world");
       expect(generateHeadingId("hello_world")).toBe("hello_world");
+    });
+  });
+
+  describe("convertLocalComment", () => {
+    const createLocalComment = (overrides: Partial<LocalComment> = {}): LocalComment => ({
+      id: 1,
+      owner: "testowner",
+      repo: "testrepo",
+      pr_number: 123,
+      file_path: "src/test.ts",
+      line_number: 42,
+      side: "RIGHT" as const,
+      body: "Test comment",
+      commit_id: "abc123",
+      created_at: "2024-01-01T00:00:00Z",
+      updated_at: "2024-01-01T00:00:00Z",
+      in_reply_to_id: null,
+      ...overrides,
+    });
+
+    const defaultOptions = {
+      author: "testuser",
+      reviewId: 999,
+      isDraft: true,
+    };
+
+    it("converts basic local comment properties", () => {
+      const localComment = createLocalComment();
+      const result = convertLocalComment(localComment, defaultOptions);
+
+      expect(result.id).toBe(1);
+      expect(result.body).toBe("Test comment");
+      expect(result.author).toBe("testuser");
+      expect(result.path).toBe("src/test.ts");
+      expect(result.line).toBe(42);
+      expect(result.side).toBe("RIGHT");
+      expect(result.is_review_comment).toBe(true);
+      expect(result.is_mine).toBe(true);
+      expect(result.review_id).toBe(999);
+    });
+
+    it("converts line_number 0 to null", () => {
+      const localComment = createLocalComment({ line_number: 0 });
+      const result = convertLocalComment(localComment, defaultOptions);
+
+      expect(result.line).toBeNull();
+    });
+
+    it("preserves null line_number", () => {
+      const localComment = createLocalComment({ line_number: null });
+      const result = convertLocalComment(localComment, defaultOptions);
+
+      expect(result.line).toBeNull();
+    });
+
+    it("uses isDraft option correctly", () => {
+      const localComment = createLocalComment();
+      
+      const draftResult = convertLocalComment(localComment, { ...defaultOptions, isDraft: true });
+      expect(draftResult.is_draft).toBe(true);
+
+      const nonDraftResult = convertLocalComment(localComment, { ...defaultOptions, isDraft: false });
+      expect(nonDraftResult.is_draft).toBe(false);
+    });
+
+    it("preserves in_reply_to_id", () => {
+      const localComment = createLocalComment({ in_reply_to_id: 456 });
+      const result = convertLocalComment(localComment, defaultOptions);
+
+      expect(result.in_reply_to_id).toBe(456);
+    });
+
+    it("sets url to placeholder", () => {
+      const localComment = createLocalComment();
+      const result = convertLocalComment(localComment, defaultOptions);
+
+      expect(result.url).toBe("#");
+    });
+
+    it("sets state to null", () => {
+      const localComment = createLocalComment();
+      const result = convertLocalComment(localComment, defaultOptions);
+
+      expect(result.state).toBeNull();
+    });
+  });
+
+  describe("convertLocalComments", () => {
+    const createLocalComment = (id: number): LocalComment => ({
+      id,
+      owner: "testowner",
+      repo: "testrepo",
+      pr_number: 123,
+      file_path: `src/file${id}.ts`,
+      line_number: id * 10,
+      side: "RIGHT" as const,
+      body: `Comment ${id}`,
+      commit_id: "abc123",
+      created_at: "2024-01-01T00:00:00Z",
+      updated_at: "2024-01-01T00:00:00Z",
+      in_reply_to_id: null,
+    });
+
+    it("converts empty array", () => {
+      const result = convertLocalComments([], {
+        author: "testuser",
+        reviewId: 999,
+        isDraft: true,
+      });
+
+      expect(result).toEqual([]);
+    });
+
+    it("converts multiple comments", () => {
+      const localComments = [createLocalComment(1), createLocalComment(2), createLocalComment(3)];
+      const result = convertLocalComments(localComments, {
+        author: "testuser",
+        reviewId: 999,
+        isDraft: true,
+      });
+
+      expect(result).toHaveLength(3);
+      expect(result[0].id).toBe(1);
+      expect(result[1].id).toBe(2);
+      expect(result[2].id).toBe(3);
+      expect(result[0].path).toBe("src/file1.ts");
+      expect(result[1].path).toBe("src/file2.ts");
+      expect(result[2].path).toBe("src/file3.ts");
+    });
+
+    it("applies same options to all comments", () => {
+      const localComments = [createLocalComment(1), createLocalComment(2)];
+      const result = convertLocalComments(localComments, {
+        author: "sharedauthor",
+        reviewId: 555,
+        isDraft: false,
+      });
+
+      expect(result[0].author).toBe("sharedauthor");
+      expect(result[1].author).toBe("sharedauthor");
+      expect(result[0].review_id).toBe(555);
+      expect(result[1].review_id).toBe(555);
+      expect(result[0].is_draft).toBe(false);
+      expect(result[1].is_draft).toBe(false);
     });
   });
 });
