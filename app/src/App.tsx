@@ -28,6 +28,7 @@ import type {
   ScrollCacheEntry,
   ScrollCacheState,
   SourceRestoreState,
+  LocalComment,
 } from "./types";
 import {
   AUTH_QUERY_KEY,
@@ -1399,22 +1400,6 @@ function App() {
       }
 
       try {
-
-        type LocalComment = {
-          id: number;
-          owner: string;
-          repo: string;
-          pr_number: number;
-          file_path: string;
-          line_number: number | null;
-          side: "RIGHT" | "LEFT";
-          body: string;
-          commit_id: string;
-          created_at: string;
-          updated_at: string;
-          in_reply_to_id: number | null;
-        };
-
         const localCommentData = await invoke<LocalComment[]>("cmd_local_get_comments", {
           owner: repoRef.owner,
           repo: repoRef.repo,
@@ -1490,29 +1475,11 @@ function App() {
     }
 
     try {
-      type LocalComment = {
-        id: number;
-        owner: string;
-        repo: string;
-        pr_number: number;
-        file_path: string;
-        line_number: number | null;
-        side: "RIGHT" | "LEFT";
-        body: string;
-        commit_id: string;
-        created_at: string;
-        updated_at: string;
-        in_reply_to_id: number | null;
-      };
-
-  
       const localCommentData = await invoke<LocalComment[]>("cmd_local_get_comments", {
         owner: repoRef.owner,
         repo: repoRef.repo,
         prNumber: prDetail.number,
       });
-
-  
 
       // Convert to PullRequestComment format
       const converted: PullRequestComment[] = localCommentData.map((lc) => ({
@@ -1532,7 +1499,6 @@ function App() {
         in_reply_to_id: lc.in_reply_to_id,
       }));
 
-  
       setLocalComments(converted);
     } catch (error) {
       console.error("Failed to load local comments:", error);
@@ -2187,21 +2153,6 @@ function App() {
     // Load local comments if they exist
     if (repoRef && prDetail) {
       try {
-        type LocalComment = {
-          id: number;
-          owner: string;
-          repo: string;
-          pr_number: number;
-          file_path: string;
-          line_number: number | null;
-          side: "RIGHT" | "LEFT";
-          body: string;
-          commit_id: string;
-          created_at: string;
-          updated_at: string;
-          in_reply_to_id: number | null;
-        };
-
         const localCommentData = await invoke<LocalComment[]>("cmd_local_get_comments", {
           owner: repoRef.owner,
           repo: repoRef.repo,
