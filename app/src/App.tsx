@@ -46,10 +46,10 @@ import {
   MIN_CONTENT_WIDTH,
 } from "./constants";
 import { loadScrollCache, pruneScrollCache } from "./utils/scrollCache";
-import { parseLinePrefix, getImageMimeType, formatFileLabel, formatFileTooltip, formatFilePathWithLeadingEllipsis, isImageFile, isMarkdownFile, convertLocalComments, createLocalReview } from "./utils/helpers";
+import { parseLinePrefix, getImageMimeType, formatFileLabel, formatFileTooltip, formatFilePathWithLeadingEllipsis, isImageFile, isMarkdownFile } from "./utils/helpers";
 import { MemoizedAsyncImage, MermaidCode, CommentThreadItem, MediaViewer, ConfirmDialog, CommentList, CommentComposer, CommentStatus, handleCtrlEnter as handleCtrlEnterUtil } from "./components";
 import type { MediaContent } from "./components";
-import { usePaneZoom, useViewedFiles, useMRUList, useLocalStorage, useTocSortedFiles, useFileContents, useCommentFiltering, useMarkdownComponents } from "./hooks";
+import { usePaneZoom, useViewedFiles, useMRUList, useLocalStorage, useTocSortedFiles, useFileContents, useCommentFiltering, useMarkdownComponents, useCommentMutations, createLocalReview } from "./hooks";
 
 type ScrollCacheSection = "fileList" | "fileComments" | "sourcePane";
 
@@ -179,16 +179,13 @@ function App() {
   const [prMode, setPrMode] = useState<"under-review" | "repo">("under-review");
   const [prSearchFilter, setPrSearchFilter] = useState("");
   const [commentDraft, setCommentDraft] = useState("");
-  const [commentError, setCommentError] = useState<string | null>(null);
-  const [commentSuccess, setCommentSuccess] = useState(false);
+  // Note: commentError, commentSuccess come from useCommentMutations hook
   const [fileCommentDraft, setFileCommentDraft] = useState("");
   const [fileCommentLine, setFileCommentLine] = useState("");
   const [fileCommentMode, setFileCommentMode] = useState<"single" | "review">("single");
   const [fileCommentSide, setFileCommentSide] = useState<"RIGHT" | "LEFT">("RIGHT");
   const [fileCommentIsFileLevel, setFileCommentIsFileLevel] = useState(false);
-  const [fileCommentError, setFileCommentError] = useState<string | null>(null);
-  const [fileCommentSuccess, setFileCommentSuccess] = useState(false);
-  const [fileCommentSubmittingMode, setFileCommentSubmittingMode] = useState<"single" | "review" | null>(null);
+  // Note: fileCommentError, fileCommentSuccess, fileCommentSubmittingMode come from useCommentMutations hook
   const [replyingToCommentId, setReplyingToCommentId] = useState<number | null>(null);
   const [replyDraft, setReplyDraft] = useState("");
   const [replyError, setReplyError] = useState<string | null>(null);
@@ -219,7 +216,7 @@ function App() {
   const [, setReviewSummaryDraft] = useState("");
   const [, setReviewSummaryError] = useState<string | null>(null);
   const [pendingReviewOverride, setPendingReviewOverride] = useState<PullRequestReview | null>(null);
-  const [localComments, setLocalComments] = useState<PullRequestComment[]>([]);
+  // Note: localComments, setLocalComments come from useCommentMutations hook
   const [submissionProgress, setSubmissionProgress] = useState<{ current: number; total: number; file: string } | null>(null);
   const commentPanelBodyRef = useRef<HTMLDivElement>(null);
   const commentPanelLastScrollTopRef = useRef<number | null>(null);
@@ -229,7 +226,7 @@ function App() {
   const [editingComment, setEditingComment] = useState<PullRequestComment | null>(null);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showDeleteReviewConfirm, setShowDeleteReviewConfirm] = useState(false);
-  const [submitReviewDialogMessage, setSubmitReviewDialogMessage] = useState<string | null>(null);
+  // Note: submitReviewDialogMessage, setSubmitReviewDialogMessage come from useCommentMutations hook
   const [showDiff, setShowDiff] = useState(false);
   const [showSourceMenu, setShowSourceMenu] = useState(false);
   const [maximizedPane, setMaximizedPane] = useState<'source' | 'preview' | 'media' | null>(null);
@@ -1266,6 +1263,38 @@ function App() {
   // Only use pendingReviewOverride - user must explicitly click "Show Review" to load GitHub review
   const pendingReview = pendingReviewOverride;
 
+  // Comment mutations hook - provides unified API for all comment/review operations
+  const commentMutations = useCommentMutations({
+    repoRef,
+    prDetail: prDetail ?? null,
+    selectedFilePath,
+    pendingReview,
+    reviews,
+    isLocalDirectoryMode,
+    activeLocalDir,
+    authLogin: authQuery.data?.login ?? null,
+    selectedPr,
+    editingComment,
+  });
+
+  // Destructure state and functions from comment mutations hook
+  const {
+    localComments,
+    setLocalComments,
+    loadLocalComments,
+    commentError,
+    setCommentError,
+    commentSuccess,
+    setCommentSuccess,
+    fileCommentError,
+    setFileCommentError,
+    fileCommentSuccess,
+    setFileCommentSuccess,
+    fileCommentSubmittingMode,
+    submitReviewDialogMessage,
+    setSubmitReviewDialogMessage,
+  } = commentMutations;
+
   // Auto-update local review commit ID when PR is refreshed
   useEffect(() => {
     if (!prDetail || !repoRef || !selectedPr || !pendingReview) {
@@ -1356,7 +1385,6 @@ function App() {
         });
 
         if (localCommentData.length > 0) {
-  
           // Create a pending review object for the local review
           const localReview = createLocalReview({
             prNumber: prDetail.number,
@@ -1364,16 +1392,12 @@ function App() {
             commitId: prDetail.head_sha,
           });
           setPendingReviewOverride(localReview);
-
+          
           // Refetch PRs under review to show this PR in the list
-        await prsUnderReviewQuery.refetch();          // Convert and set local comments
-          const converted = convertLocalComments(localCommentData, {
-            author: authQuery.data?.login ?? "You",
-            reviewId: prDetail.number,
-            isDraft: !isLocalDirectoryMode,
-          });
-  
-          setLocalComments(converted);
+          await prsUnderReviewQuery.refetch();
+          
+          // Load comments (effect will fire when pendingReviewOverride changes)
+          await loadLocalComments(localReview.id);
         }
       } catch (error) {
         console.error("Failed to check for local review:", error);
@@ -1381,7 +1405,7 @@ function App() {
     };
 
     void checkForLocalReview();
-  }, [repoRef, prDetail, pendingReviewOverride, pendingReviewFromServer, authQuery.data?.login]);
+  }, [repoRef, prDetail, pendingReviewOverride, pendingReviewFromServer, authQuery.data?.login, prsUnderReviewQuery, loadLocalComments]);
 
   // Clear local review override if a GitHub pending review is detected
   // BUT only if the override is a LOCAL review (not the same as the server review)
@@ -1394,39 +1418,7 @@ function App() {
     }
   }, [pendingReviewFromServer, pendingReviewOverride]);
 
-  // Load local comments when we have a pending review
-  const loadLocalComments = useCallback(async (reviewId?: number) => {
-    // Use passed reviewId or fall back to pendingReview from state
-    const effectiveReviewId = reviewId ?? pendingReview?.id;
-    
-    if (!repoRef || !prDetail || !effectiveReviewId) {
-      setLocalComments([]);
-      return;
-    }
-
-    try {
-      const localCommentData = await invoke<LocalComment[]>("cmd_local_get_comments", {
-        owner: repoRef.owner,
-        repo: repoRef.repo,
-        prNumber: prDetail.number,
-      });
-
-      // Convert to PullRequestComment format
-      const converted = convertLocalComments(localCommentData, {
-        author: authQuery.data?.login ?? "You",
-        reviewId: effectiveReviewId,
-        isDraft: !isLocalDirectoryMode,
-      });
-
-      setLocalComments(converted);
-    } catch (error) {
-      console.error("Failed to load local comments:", error);
-      setLocalComments([]);
-    }
-  }, [repoRef, prDetail, pendingReview, authQuery.data?.login]);
-
-  // Debug effect to track localComments changes
-
+  // Note: loadLocalComments is now provided by useCommentMutations hook
 
   // Load local comments only when we have a pendingReviewOverride (not from server)
   useEffect(() => {
@@ -1436,7 +1428,7 @@ function App() {
     } else if (!pendingReviewOverride) {
       setLocalComments([]);
     }
-  }, [pendingReviewOverride?.id, pendingReviewFromServer]); // Only depend on the ID, not the whole callback
+  }, [pendingReviewOverride?.id, pendingReviewFromServer, loadLocalComments, setLocalComments]);
 
   // Automatically load pending review comments from GitHub when PR loads
   useEffect(() => {
@@ -1721,26 +1713,15 @@ function App() {
           let localReview = reviews.find((r: PullRequestReview) => r.id === prDetail.number);
           if (!localReview) {
             // Create a fake review object for local comments
-            localReview = {
-              id: prDetail.number,
-              state: "PENDING",
+            localReview = createLocalReview({
+              prNumber: prDetail.number,
               author: authQuery.data?.login ?? "You",
-              submitted_at: null,
-              body: null,
-              html_url: null,
-              commit_id: prDetail.head_sha,
-              is_mine: true,
-            };
+              commitId: prDetail.head_sha,
+            });
           }
           
-          // Convert to PullRequestComment format
-          const converted = convertLocalComments(localCommentData, {
-            author: authQuery.data?.login ?? "You",
-            reviewId: localReview.id,
-            isDraft: !isLocalDirectoryMode,
-          });
-          setLocalComments(converted);
           setPendingReviewOverride(localReview);
+          await loadLocalComments(localReview.id);
           
           // Refetch PRs under review to show this PR in the list
           await prsUnderReviewQuery.refetch();
@@ -1749,7 +1730,7 @@ function App() {
         console.error("Failed to load local comments:", error);
       }
     }
-  }, [selectedFilePath, repoRef, prDetail, pendingReview, authQuery.data?.login, prsUnderReviewQuery]);
+  }, [selectedFilePath, repoRef, prDetail, reviews, authQuery.data?.login, prsUnderReviewQuery, loadLocalComments, setFileCommentError, setFileCommentSuccess]);
 
   const closeInlineComment = useCallback(() => {
     setIsInlineCommentOpen(false);
@@ -3352,143 +3333,305 @@ function App() {
     await loginMutation.mutateAsync();
   }, [loginMutation]);
 
-  const submitCommentMutation = useMutation({
-    mutationFn: async ({ body }: { body: string }) => {
-      if (!repoRef || !prDetail) {
-        throw new Error("Select a pull request before commenting.");
-      }
-      await invoke("cmd_submit_review_comment", {
-        owner: repoRef.owner,
-        repo: repoRef.repo,
-        number: prDetail.number,
-        body,
-      });
-    },
-    onSuccess: async () => {
-      setCommentDraft("");
-      setCommentError(null);
-      setCommentSuccess(true);
-      setIsGeneralCommentOpen(false);
-      if (isPrCommentComposerOpen) {
-        setIsPrCommentComposerOpen(false);
-      }
-      
-      // Clear IndexedDB cache and invalidate queries
-      if (repoRef && prDetail) {
-        await offlineCache.clearPRCache(repoRef.owner, repoRef.repo, prDetail.number);
-      }
-      await queryClient.invalidateQueries({ 
-        queryKey: ["pull-request", repoRef?.owner, repoRef?.repo, selectedPr, authQuery.data?.login]
-      });
-      void refetchPullDetail();
-    },
-    onError: (error: unknown) => {
-      const message = error instanceof Error ? error.message : "Failed to submit comment.";
-      setCommentError(message);
-    },
-  });
+  // Get mutation functions from the hook (state already destructured above)
+  const {
+    submitCommentMutation: hookSubmitCommentMutation,
+    startReviewMutation: hookStartReviewMutation,
+    submitReviewMutation: hookSubmitReviewMutation,
+    deleteReviewMutation: hookDeleteReviewMutation,
+    updateCommentMutation: hookUpdateCommentMutation,
+    deleteCommentMutation: hookDeleteCommentMutation,
+  } = commentMutations;
 
-  const submitFileCommentMutation = useMutation({
-    mutationFn: async ({
-      body,
-      line,
-      side,
-      subjectType,
-      mode,
-      pendingReviewId,
-    }: {
-      body: string;
-      line: number | null;
-      side: "RIGHT" | "LEFT";
-      subjectType: "file" | null;
-      mode: "single" | "review";
-      pendingReviewId: number | null;
-    }) => {
-      if (!repoRef || !prDetail || !selectedFilePath) {
-        throw new Error("Select a file before commenting.");
-      }
+  // Create wrappers that add App-specific UI callbacks on top of the hook's mutations
+  // Hook handles: API calls, cache invalidation, error/success state
+  // Wrappers add: closing composers, clearing drafts, navigating UI
 
-      // Local folder mode: always save to local review/log storage.
-      if (isLocalDirectoryMode) {
-        await invoke("cmd_local_add_comment", {
-          owner: repoRef.owner,
-          repo: repoRef.repo,
-          prNumber: prDetail.number,
-          filePath: selectedFilePath,
-          lineNumber: line,
-          side,
-          body,
-          commitId: prDetail.head_sha,
-          inReplyToId: null,
-          localFolder: activeLocalDir ?? null,
-        });
-        return;
-      }
+  // Wrapper for submitFileCommentMutation (maps to submitCommentMutation with type: "file")
+  const submitFileCommentMutation = useMemo(() => ({
+    mutate: (
+      params: {
+        body: string;
+        line: number | null;
+        side: "RIGHT" | "LEFT";
+        subjectType: "file" | null;
+        mode: "single" | "review";
+        pendingReviewId: number | null;
+        inReplyTo?: number | null;
+        filePath?: string;
+      },
+      options?: { onSuccess?: () => void; onError?: (error: unknown) => void }
+    ) => {
+      hookSubmitCommentMutation.mutate(
+        {
+          type: "file",
+          body: params.body,
+          line: params.line,
+          side: params.side,
+          subjectType: params.subjectType,
+          mode: params.mode,
+          pendingReviewId: params.pendingReviewId,
+          inReplyTo: params.inReplyTo,
+          filePath: params.filePath,
+        },
+        {
+          onSuccess: options?.onSuccess,
+          onError: options?.onError,
+        }
+      );
+    },
+    isPending: hookSubmitCommentMutation.isPending,
+    isError: hookSubmitCommentMutation.isError,
+    error: hookSubmitCommentMutation.error,
+  }), [hookSubmitCommentMutation]);
 
-      // For review mode (local storage)
-      if (mode === "review" || pendingReviewId) {
-        await invoke("cmd_local_add_comment", {
-          owner: repoRef.owner,
-          repo: repoRef.repo,
-          prNumber: prDetail.number,
-          filePath: selectedFilePath,
-          lineNumber: line,
-          side,
-          body,
-          commitId: prDetail.head_sha,
-          inReplyToId: null,
-        });
-      } else {
-        // For single comments, use the old API
-        await invoke("cmd_submit_file_comment", {
-          args: {
-            owner: repoRef.owner,
-            repo: repoRef.repo,
-            number: prDetail.number,
-            path: selectedFilePath,
-            body,
-            commit_id: prDetail.head_sha,
-            line,
-            side: line !== null ? side : null,
-            subject_type: subjectType,
-            mode,
-            pending_review_id: pendingReviewId,
+  // Wrapper for submitCommentMutation (PR-level comments)
+  const submitCommentMutation = useMemo(() => ({
+    mutate: (
+      params: { body: string },
+      options?: { onSuccess?: () => void; onError?: (error: unknown) => void }
+    ) => {
+      hookSubmitCommentMutation.mutate(
+        {
+          type: "pr",
+          body: params.body,
+        },
+        {
+          onSuccess: () => {
+            // App-specific: clear draft and close composers
+            setCommentDraft("");
+            setIsGeneralCommentOpen(false);
+            if (isPrCommentComposerOpen) {
+              setIsPrCommentComposerOpen(false);
+            }
+            void refetchPullDetail();
+            options?.onSuccess?.();
           },
-        });
-      }
+          onError: options?.onError,
+        }
+      );
     },
-    onMutate: async ({ mode }) => {
-      setFileCommentSubmittingMode(mode);
-    },
-    onSuccess: async () => {
-      setFileCommentDraft("");
-      setFileCommentLine("");
-      setFileCommentError(null);
-      setFileCommentSuccess(true);
-      setFileCommentIsFileLevel(false);
-      setFileCommentMode(pendingReview ? "review" : "single");
-      setFileCommentSide("RIGHT");
-      setIsFileCommentComposerVisible(false);
-      
-      // Clear IndexedDB cache for this PR to force fresh fetch
-      if (repoRef && prDetail) {
-        await offlineCache.clearPRCache(repoRef.owner, repoRef.repo, prDetail.number);
-      }
-      
-      // Invalidate and refetch to get updated comments
-      await queryClient.invalidateQueries({ 
-        queryKey: ["pull-request", repoRef?.owner, repoRef?.repo, selectedPr, authQuery.data?.login]
+    isPending: hookSubmitCommentMutation.isPending,
+    isError: hookSubmitCommentMutation.isError,
+    error: hookSubmitCommentMutation.error,
+  }), [hookSubmitCommentMutation, isPrCommentComposerOpen, refetchPullDetail]);
+
+  // Wrapper for startReviewMutation
+  const startReviewMutation = useMemo(() => ({
+    mutate: (
+      _params?: void,
+      options?: { onSuccess?: (review: PullRequestReview) => void; onError?: (error: unknown) => void }
+    ) => {
+      hookStartReviewMutation.mutate(undefined, {
+        onSuccess: (review) => {
+          // App-specific: update UI state
+          setPendingReviewOverride(review);
+          void loadLocalComments(review.id);
+          setIsInlineCommentOpen(true);
+          setIsFileCommentComposerVisible(false);
+          void prsUnderReviewQuery.refetch();
+          options?.onSuccess?.(review);
+        },
+        onError: (error) => {
+          // App-specific: show file comment composer on error
+          setFileCommentMode("review");
+          setFileCommentIsFileLevel(false);
+          setIsFileCommentComposerVisible(true);
+          options?.onError?.(error);
+        },
       });
-      void refetchPullDetail();
     },
-    onSettled: () => {
-      setFileCommentSubmittingMode(null);
+    isPending: hookStartReviewMutation.isPending,
+    isError: hookStartReviewMutation.isError,
+    error: hookStartReviewMutation.error,
+  }), [hookStartReviewMutation, loadLocalComments, prsUnderReviewQuery]);
+
+  // Wrapper for submitReviewMutation
+  const submitReviewMutation = useMemo(() => ({
+    mutate: (
+      _params?: void,
+      options?: { onSuccess?: () => void; onError?: (error: unknown) => void }
+    ) => {
+      hookSubmitReviewMutation.mutate(undefined, {
+        onSuccess: () => {
+          // App-specific: clear UI state
+          setPendingReviewOverride(null);
+          setSubmissionProgress(null);
+          void refetchPullDetail();
+          void prsUnderReviewQuery.refetch();
+          options?.onSuccess?.();
+        },
+        onError: (error) => {
+          // App-specific: handle locked conversation with custom message
+          const message = (() => {
+            if (typeof error === "string") return error;
+            if (error instanceof Error) return error.message;
+            if (error && typeof error === "object" && "message" in error) {
+              const maybeMessage = (error as { message?: unknown }).message;
+              if (typeof maybeMessage === "string" && maybeMessage.trim()) return maybeMessage;
+              if (maybeMessage != null) return String(maybeMessage);
+            }
+            return "Failed to submit review.";
+          })();
+
+          const normalized = message.toLowerCase();
+          const prKey = repoRef && prDetail ? `${repoRef.owner}/${repoRef.repo}#${prDetail.number}` : null;
+          const knownLocked = prKey ? prMetadata[prKey]?.locked : undefined;
+          
+          const isLockedConversation =
+            knownLocked === true ||
+            normalized.includes("cannot submit review comments because this pr conversation is locked") ||
+            (normalized.includes("cannot submit review comments because pr #") && normalized.includes("is locked on github"));
+
+          if (isLockedConversation) {
+            setSubmitReviewDialogMessage(
+              `Unable to submit review comments because this PR conversation is locked on GitHub. Ask a repo maintainer to "Unlock conversation" on PR #${prDetail?.number ?? "?"} and then retry.`,
+            );
+          } else {
+            setSubmitReviewDialogMessage(message);
+          }
+
+          setSubmissionProgress(null);
+          void loadLocalComments();
+          options?.onError?.(error);
+        },
+      });
     },
-    onError: (error: unknown) => {
-      const message = error instanceof Error ? error.message : "Failed to submit comment.";
-      setFileCommentError(message);
+    isPending: hookSubmitReviewMutation.isPending,
+    isError: hookSubmitReviewMutation.isError,
+    error: hookSubmitReviewMutation.error,
+  }), [hookSubmitReviewMutation, repoRef, prDetail, prMetadata, loadLocalComments, prsUnderReviewQuery, refetchPullDetail, setSubmitReviewDialogMessage]);
+
+  // Wrapper for deleteReviewMutation (translates old API to new)
+  const deleteReviewMutation = useMemo(() => ({
+    mutate: (
+      reviewId: number,
+      options?: { onSuccess?: () => void; onError?: (error: unknown) => void }
+    ) => {
+      // Determine if this is a local review
+      const isLocalReview = !reviews.some((r: PullRequestReview) => r.id === reviewId && r.state === "PENDING" && r.is_mine);
+      
+      hookDeleteReviewMutation.mutate(
+        {
+          reviewId,
+          isLocal: isLocalReview,
+          prTitle: prDetail?.title ?? undefined,
+        },
+        {
+          onSuccess: () => {
+            // App-specific: clear UI state
+            setPendingReviewOverride(null);
+            void refetchPullDetail();
+            void prsUnderReviewQuery.refetch();
+            if (reviewAwareComments.length === 0) {
+              setIsInlineCommentOpen(false);
+            }
+            options?.onSuccess?.();
+          },
+          onError: options?.onError,
+        }
+      );
     },
-  });
+    isPending: hookDeleteReviewMutation.isPending,
+    isError: hookDeleteReviewMutation.isError,
+    error: hookDeleteReviewMutation.error,
+  }), [hookDeleteReviewMutation, reviews, prDetail, reviewAwareComments.length, refetchPullDetail, prsUnderReviewQuery]);
+
+  // Wrapper for updateCommentMutation
+  const updateCommentMutation = useMemo(() => ({
+    mutate: (
+      params: { commentId: number; body: string },
+      options?: { onSuccess?: () => void; onError?: (error: unknown) => void }
+    ) => {
+      hookUpdateCommentMutation.mutate(params, {
+        onSuccess: () => {
+          // App-specific: clear editing state
+          setFileCommentDraft("");
+          setEditingCommentId(null);
+          setEditingComment(null);
+          setIsFileCommentComposerVisible(false);
+          
+          if (editingComment?.url === "#" || !editingComment?.url) {
+            void loadLocalComments();
+          } else {
+            void refetchPullDetail();
+          }
+          options?.onSuccess?.();
+        },
+        onError: options?.onError,
+      });
+    },
+    isPending: hookUpdateCommentMutation.isPending,
+    isError: hookUpdateCommentMutation.isError,
+    error: hookUpdateCommentMutation.error,
+  }), [hookUpdateCommentMutation, editingComment, loadLocalComments, refetchPullDetail]);
+
+  // Wrapper for deleteCommentMutation
+  const deleteCommentMutation = useMemo(() => ({
+    mutate: (
+      commentId: number,
+      options?: { onSuccess?: () => void; onError?: (error: unknown) => void }
+    ) => {
+      hookDeleteCommentMutation.mutate(commentId, {
+        onSuccess: async () => {
+          // App-specific: clear editing state
+          setFileCommentDraft("");
+          setEditingCommentId(null);
+          setEditingComment(null);
+          setIsFileCommentComposerVisible(false);
+          
+          if (editingComment?.url === "#" || !editingComment?.url) {
+            await loadLocalComments();
+            
+            // Check if comment panel should close
+            setTimeout(() => {
+              if (commentPanelBodyRef.current && selectedFilePath) {
+                const commentElements = Array.from(
+                  commentPanelBodyRef.current.querySelectorAll('[id^="comment-"]')
+                ) as HTMLElement[];
+                
+                if (commentElements.length === 0) {
+                  setIsInlineCommentOpen(false);
+                  preserveScrollPositionRef.current = null;
+                }
+              }
+            }, 100);
+            
+            // Check if review should be cleared
+            if (repoRef && prDetail) {
+              try {
+                const remainingComments = await invoke<PullRequestComment[]>("cmd_local_get_comments", {
+                  owner: repoRef.owner,
+                  repo: repoRef.repo,
+                  prNumber: prDetail.number,
+                });
+                
+                if (remainingComments.length === 0) {
+                  await invoke("cmd_local_clear_review", {
+                    owner: repoRef.owner,
+                    repo: repoRef.repo,
+                    prNumber: prDetail.number,
+                  });
+                  
+                  setPendingReviewOverride(null);
+                  setIsInlineCommentOpen(false);
+                }
+              } catch (error) {
+                console.error("Failed to check remaining comments or delete review:", error);
+              }
+            }
+          } else {
+            void refetchPullDetail();
+          }
+          options?.onSuccess?.();
+        },
+        onError: options?.onError,
+      });
+    },
+    isPending: hookDeleteCommentMutation.isPending,
+    isError: hookDeleteCommentMutation.isError,
+    error: hookDeleteCommentMutation.error,
+  }), [hookDeleteCommentMutation, editingComment, selectedFilePath, repoRef, prDetail, loadLocalComments, refetchPullDetail]);
 
   const openFileCommentComposer = useCallback((mode: "single" | "review") => {
     setFileCommentMode(mode);
@@ -3497,349 +3640,6 @@ function App() {
     setFileCommentSuccess(false);
     setIsFileCommentComposerVisible(true);
   }, []);
-
-  const startReviewMutation = useMutation({
-    mutationFn: async () => {
-      if (!repoRef || !prDetail) {
-        throw new Error("Select a pull request before starting a review.");
-      }
-
-      // Use local storage instead of GitHub API
-      await invoke("cmd_local_start_review", {
-        owner: repoRef.owner,
-        repo: repoRef.repo,
-        prNumber: prDetail.number,
-        commitId: prDetail.head_sha,
-        body: null,
-      });
-
-      // Create a fake review object for the UI
-      const fakeReview: PullRequestReview = {
-        id: prDetail.number, // Use PR number as fake ID
-        state: "PENDING",
-        author: authQuery.data?.login ?? "You",
-        submitted_at: null,
-        body: null,
-        html_url: null,
-        commit_id: prDetail.head_sha,
-        is_mine: true,
-      };
-
-      return fakeReview;
-    },
-    onSuccess: async (review) => {
-      setPendingReviewOverride(review);
-      void loadLocalComments(review.id); // Pass review ID directly to avoid race condition
-      setIsInlineCommentOpen(true); // Show comments panel
-      setIsFileCommentComposerVisible(false); // Show list, not composer
-      setFileCommentError(null);
-      setFileCommentSuccess(false);
-      // Refetch PRs under review to show this PR in the list
-      await prsUnderReviewQuery.refetch();
-    },
-    onError: (error: unknown) => {
-      console.error("Review mutation error:", error);
-      const message = error instanceof Error ? error.message : "Failed to start review.";
-      openFileCommentComposer("review");
-      setFileCommentError(message);
-      setFileCommentSuccess(false);
-    },
-  });
-
-  const submitReviewMutation = useMutation({
-    mutationFn: async () => {
-      if (!repoRef || !prDetail) {
-        throw new Error("Select a pull request before submitting.");
-      }
-
-      // Check if there's a pending review from GitHub (not a local draft)
-      // GitHub reviews will be in the reviews array from the server with PENDING state
-      // Local reviews use PR number as ID and won't be in the server reviews array
-      const isGithubPendingReview = pendingReview && 
-        reviews.some((r: PullRequestReview) => r.id === pendingReview.id && r.state === "PENDING" && r.is_mine);
-      
-      if (isGithubPendingReview) {
-        // Submit the GitHub pending review
-        await invoke("cmd_submit_pending_review", {
-          owner: repoRef.owner,
-          repo: repoRef.repo,
-          number: prDetail.number,
-          reviewId: pendingReview.id,
-          event: "COMMENT",
-          body: null,
-        });
-      } else {
-        // Submit local review
-        await invoke("cmd_submit_local_review", {
-          owner: repoRef.owner,
-          repo: repoRef.repo,
-          prNumber: prDetail.number,
-          body: null,
-          event: "COMMENT",
-        });
-      }
-    },
-    onSuccess: async () => {
-      setPendingReviewOverride(null);
-      setLocalComments([]);
-      setFileCommentError(null);
-      setFileCommentSuccess(true);
-      setSubmissionProgress(null);
-      
-      // Remove query to force fresh fetch (we must be online to submit)
-      queryClient.removeQueries({ 
-        queryKey: ["pull-request", repoRef?.owner, repoRef?.repo, selectedPr, authQuery.data?.login]
-      });
-      
-      void refetchPullDetail();
-      void prsUnderReviewQuery.refetch();
-    },
-    onError: (error: unknown) => {
-      const message = (() => {
-        if (typeof error === "string") return error;
-        if (error instanceof Error) return error.message;
-        if (error && typeof error === "object" && "message" in error) {
-          const maybeMessage = (error as { message?: unknown }).message;
-          if (typeof maybeMessage === "string" && maybeMessage.trim()) return maybeMessage;
-          if (maybeMessage != null) return String(maybeMessage);
-        }
-        return "Failed to submit review.";
-      })();
-
-      // If the PR conversation is locked, show a clear modal dialog (same style as Delete Comment)
-      // so this failure cannot be missed.
-      const normalized = message.toLowerCase();
-
-      const prKey = repoRef && prDetail ? `${repoRef.owner}/${repoRef.repo}#${prDetail.number}` : null;
-      const knownLocked = prKey ? prMetadata[prKey]?.locked : undefined;
-      
-      // Only match the specific locked conversation error patterns from the backend.
-      // The backend returns: "Cannot submit review comments because this PR conversation is locked..."
-      // or "Cannot submit review comments because PR #{number} is locked on GitHub..."
-      // We must match exact phrases to avoid false positives with help text mentioning "is locked".
-      const isLockedConversation =
-        knownLocked === true ||
-        normalized.includes("cannot submit review comments because this pr conversation is locked") ||
-        (normalized.includes("cannot submit review comments because pr #") && normalized.includes("is locked on github"));
-
-      setFileCommentError(null);
-
-      if (isLockedConversation) {
-        setSubmitReviewDialogMessage(
-          `Unable to submit review comments because this PR conversation is locked on GitHub. Ask a repo maintainer to "Unlock conversation" on PR #${prDetail?.number ?? "?"} and then retry.`,
-        );
-      } else {
-        setSubmitReviewDialogMessage(message);
-      }
-
-      setSubmissionProgress(null);
-      // Reload local comments to show which ones are left (the ones that failed)
-      void loadLocalComments();
-    },
-  });
-
-  const deleteReviewMutation = useMutation({
-    mutationFn: async (reviewId: number) => {
-      if (!repoRef || !prDetail) {
-        throw new Error("Select a pull request before deleting.");
-      }
-
-      await invoke("cmd_delete_review", {
-        owner: repoRef.owner,
-        repo: repoRef.repo,
-        prNumber: prDetail.number,
-        reviewId,
-      });
-    },
-    onSuccess: async () => {
-      setPendingReviewOverride(null);
-      setLocalComments([]);
-      setFileCommentError(null);
-      
-      // Clear IndexedDB cache for this PR to force fresh fetch
-      if (repoRef && prDetail) {
-        await offlineCache.clearPRCache(repoRef.owner, repoRef.repo, prDetail.number);
-        console.log(`🗑️ Cleared cache for PR #${prDetail.number}`);
-      }
-      
-      // Invalidate and refetch PR detail
-      await queryClient.invalidateQueries({ 
-        queryKey: ["pull-request", repoRef?.owner, repoRef?.repo, selectedPr, authQuery.data?.login]
-      });
-      void refetchPullDetail();
-      void prsUnderReviewQuery.refetch();
-      // Only close the comment panel if there are no remaining comments
-      if (reviewAwareComments.length === 0) {
-        setIsInlineCommentOpen(false);
-      }
-    },
-    onError: (error: unknown) => {
-      const message = error instanceof Error ? error.message : "Failed to delete review.";
-      setFileCommentError(message);
-    },
-  });
-
-  const updateCommentMutation = useMutation({
-    mutationFn: async ({ commentId, body }: { commentId: number; body: string }) => {
-      console.log("Updating comment", { commentId, body, editingComment });
-      // Check if this is a local comment (local comments have url="#")
-      const isLocalComment = editingComment?.url === "#" || !editingComment?.url;
-      console.log("Is local comment:", isLocalComment, "url:", editingComment?.url);
-      
-      if (isLocalComment) {
-        // Update local comment
-        console.log("Calling cmd_local_update_comment");
-        await invoke("cmd_local_update_comment", {
-          commentId,
-          body,
-        });
-        console.log("Comment updated successfully");
-      } else {
-        // Update GitHub comment
-        console.log("Calling cmd_github_update_comment");
-        if (!repoRef) throw new Error("Repository information not available");
-        await invoke("cmd_github_update_comment", {
-          owner: repoRef.owner,
-          repo: repoRef.repo,
-          commentId,
-          body,
-        });
-        console.log("GitHub comment updated successfully");
-      }
-    },
-    onSuccess: async () => {
-      console.log("Update comment success");
-      setFileCommentDraft("");
-      setFileCommentError(null);
-      setFileCommentSuccess(true);
-      setEditingCommentId(null);
-      setEditingComment(null);
-      setIsFileCommentComposerVisible(false);
-      
-      // Clear IndexedDB cache and invalidate queries to get updated comment
-      if (repoRef && prDetail) {
-        await offlineCache.clearPRCache(repoRef.owner, repoRef.repo, prDetail.number);
-      }
-      await queryClient.invalidateQueries({ 
-        queryKey: ["pull-request", repoRef?.owner, repoRef?.repo, selectedPr, authQuery.data?.login]
-      });
-      
-      // Reload appropriate data based on comment type
-      if (editingComment?.url === "#" || !editingComment?.url) {
-        void loadLocalComments();
-      } else {
-        void refetchPullDetail();
-      }
-    },
-    onError: (error: unknown) => {
-      console.error("Update comment error:", error);
-      const message = error instanceof Error ? error.message : "Failed to update comment.";
-      setFileCommentError(message);
-    },
-  });
-
-  const deleteCommentMutation = useMutation({
-    mutationFn: async (commentId: number) => {
-      console.log("Deleting comment", { commentId, editingComment });
-      // Check if this is a local comment (local comments have url="#")
-      const isLocalComment = editingComment?.url === "#" || !editingComment?.url;
-      console.log("Is local comment:", isLocalComment, "url:", editingComment?.url);
-      
-      if (isLocalComment) {
-        // Delete local comment
-        console.log("Calling cmd_local_delete_comment");
-        await invoke("cmd_local_delete_comment", {
-          commentId,
-        });
-        console.log("Comment deleted successfully");
-      } else {
-        // Delete GitHub comment
-        console.log("Calling cmd_github_delete_comment");
-        if (!repoRef) throw new Error("Repository information not available");
-        await invoke("cmd_github_delete_comment", {
-          owner: repoRef.owner,
-          repo: repoRef.repo,
-          commentId,
-        });
-        console.log("GitHub comment deleted successfully");
-      }
-    },
-    onSuccess: async () => {
-      setFileCommentDraft("");
-      setFileCommentError(null);
-      setEditingCommentId(null);
-      setEditingComment(null);
-      setIsFileCommentComposerVisible(false);
-      
-      // Clear IndexedDB cache and invalidate queries
-      if (repoRef && prDetail) {
-        await offlineCache.clearPRCache(repoRef.owner, repoRef.repo, prDetail.number);
-      }
-      await queryClient.invalidateQueries({ 
-        queryKey: ["pull-request", repoRef?.owner, repoRef?.repo, selectedPr, authQuery.data?.login]
-      });
-      
-      // Reload appropriate data based on comment type
-      if (editingComment?.url === "#" || !editingComment?.url) {
-        // This was a local comment - reload local comments
-        await loadLocalComments();
-        
-        // Check if there are any comments left
-        setTimeout(() => {
-          if (commentPanelBodyRef.current && selectedFilePath) {
-            const commentElements = Array.from(
-              commentPanelBodyRef.current.querySelectorAll('[id^="comment-"]')
-            ) as HTMLElement[];
-            
-            if (commentElements.length === 0) {
-              // No comments left, close the panel
-              setIsInlineCommentOpen(false);
-              preserveScrollPositionRef.current = null;
-            }
-            // The scroll restoration effect will handle restoring the position
-          }
-        }, 100);
-        
-        // Check if there are any local comments left after deletion
-        if (repoRef && prDetail) {
-          console.log("Checking if local comments exist after deletion, current count:", localComments.length);
-          // localComments hasn't been updated yet, so we need to check directly
-          try {
-            const remainingComments = await invoke<PullRequestComment[]>("cmd_local_get_comments", {
-              owner: repoRef.owner,
-              repo: repoRef.repo,
-              prNumber: prDetail.number,
-            });
-            console.log("Remaining local comments after deletion:", remainingComments.length);
-            
-            if (remainingComments.length === 0) {
-              // No comments left - delete the review
-              console.log("No local comments left, deleting the review");
-              await invoke("cmd_local_clear_review", {
-                owner: repoRef.owner,
-                repo: repoRef.repo,
-                prNumber: prDetail.number,
-              });
-              console.log("Local review deleted successfully");
-              
-              // Clear the pending review override and close the panel
-              setPendingReviewOverride(null);
-              setIsInlineCommentOpen(false);
-            }
-          } catch (error) {
-            console.error("Failed to check remaining comments or delete review:", error);
-          }
-        }
-      } else {
-        void refetchPullDetail();
-      }
-    },
-    onError: (error: unknown) => {
-      console.error("Delete comment error:", error);
-      const message = error instanceof Error ? error.message : "Failed to delete comment.";
-      setFileCommentError(message);
-    },
-  });
 
   const handleAddCommentClick = useCallback((filePath?: string) => {
     const targetFilePath = filePath ?? selectedFilePath;
@@ -4237,6 +4037,17 @@ function App() {
         mode: commentMode,
         subjectType: isFileLevelComment ? "file" : null,
         pendingReviewId: commentMode === "review" && pendingReview ? pendingReview.id : null,
+      }, {
+        onSuccess: () => {
+          // Clear form fields specific to the full comment editor
+          setFileCommentDraft("");
+          setFileCommentLine("");
+          setFileCommentError(null);
+          setFileCommentIsFileLevel(false);
+          setFileCommentMode(pendingReview ? "review" : "single");
+          setFileCommentSide("RIGHT");
+          setIsFileCommentComposerVisible(false);
+        },
       });
     },
     [
@@ -5109,7 +4920,7 @@ function App() {
                                       <button
                                         type="button"
                                         className={`comment-submit${replyDefaultMode === "review" ? " comment-submit--secondary" : ""}`}
-                                        disabled={!isOnline && !isLocalDirectoryMode}
+                                        disabled={(!isOnline && !isLocalDirectoryMode) || submitFileCommentMutation.isPending}
                                         title={
                                           isLocalDirectoryMode
                                             ? "Saved locally to log files"
@@ -5118,7 +4929,7 @@ function App() {
                                               : ""
                                         }
                                         ref={replyPostButtonRef}
-                                        onClick={async () => {
+                                        onClick={() => {
                                           if (!replyDraft.trim()) {
                                             setReplyError("Reply cannot be empty");
                                             return;
@@ -5131,69 +4942,47 @@ function App() {
                                             setReplyError("No file selected");
                                             return;
                                           }
-                                          try {
-                                            setReplyError(null);
+                                          
+                                          setReplyError(null);
 
-                                            if (isLocalDirectoryMode) {
-                                              await invoke("cmd_local_add_comment", {
-                                                owner: repoRef.owner,
-                                                repo: repoRef.repo,
-                                                prNumber: prDetail.number,
-                                                filePath: selectedFilePath,
-                                                lineNumber: parentComment.line || null,
-                                                side: parentComment.side || "LEFT",
-                                                body: replyDraft,
-                                                commitId: prDetail.head_sha,
-                                                inReplyToId: parentComment.id,
-                                                localFolder: activeLocalDir ?? null,
-                                              });
-                                              await loadLocalComments();
-                                            } else {
-                                              await invoke("cmd_submit_file_comment", {
-                                                args: {
-                                                  owner: repoRef.owner,
-                                                  repo: repoRef.repo,
-                                                  number: prDetail.number,
-                                                  path: selectedFilePath,
-                                                  body: replyDraft,
-                                                  commit_id: prDetail.head_sha,
-                                                  line: parentComment.line || null,
-                                                  side: parentComment.side || null,
-                                                  subject_type: parentComment.line ? null : "file",
-                                                  mode: "single",
-                                                  pending_review_id: pendingReview?.id || null,
-                                                  in_reply_to: parentComment.id,
-                                                },
-                                              });
-                                              // Refetch comments
-                                              await queryClient.refetchQueries({
-                                                queryKey: ["pr-comments", repoRef.owner, repoRef.repo, selectedPr]
-                                              });
-                                              await queryClient.refetchQueries({
-                                                queryKey: ["pull-request", repoRef.owner, repoRef.repo, selectedPr]
-                                              });
-                                            }
-
-                                            setReplyDraft("");
-                                            setReplyingToCommentId(null);
-                                            if (selectedFilePath) {
-                                              setDraftsByFile(prev => {
-                                                const newDrafts = { ...prev };
-                                                if (newDrafts[selectedFilePath]?.reply) {
-                                                  delete newDrafts[selectedFilePath].reply![parentComment.id];
-                                                  if (shouldDeleteFileDraft(newDrafts[selectedFilePath])) {
-                                                    delete newDrafts[selectedFilePath];
+                                          submitFileCommentMutation.mutate({
+                                            body: replyDraft,
+                                            line: parentComment.line || null,
+                                            side: parentComment.side || "LEFT",
+                                            mode: "single",
+                                            subjectType: parentComment.line ? null : "file",
+                                            pendingReviewId: pendingReview?.id || null,
+                                            inReplyTo: parentComment.id,
+                                            filePath: selectedFilePath,
+                                          }, {
+                                            onSuccess: async () => {
+                                              setReplyDraft("");
+                                              setReplyingToCommentId(null);
+                                              if (selectedFilePath) {
+                                                setDraftsByFile(prev => {
+                                                  const newDrafts = { ...prev };
+                                                  if (newDrafts[selectedFilePath]?.reply) {
+                                                    delete newDrafts[selectedFilePath].reply![parentComment.id];
+                                                    if (shouldDeleteFileDraft(newDrafts[selectedFilePath])) {
+                                                      delete newDrafts[selectedFilePath];
+                                                    }
                                                   }
-                                                }
-                                                return newDrafts;
-                                              });
-                                            }
-                                          } catch (err) {
-                                            setReplyError(err instanceof Error ? err.message : String(err));
-                                          }
+                                                  return newDrafts;
+                                                });
+                                              }
+                                              if (isLocalDirectoryMode) {
+                                                await loadLocalComments();
+                                              }
+                                            },
+                                            onError: (error) => {
+                                              setReplyError(error instanceof Error ? error.message : String(error));
+                                            },
+                                          });
                                         }}
                                       >
-                                        {isLocalDirectoryMode ? "Save reply (log file)" : "Post comment"}
+                                        {submitFileCommentMutation.isPending && fileCommentSubmittingMode === "single"
+                                          ? "Sending…"
+                                          : isLocalDirectoryMode ? "Save reply (log file)" : "Post comment"}
                                       </button>
                                       {!isOnline && !isLocalDirectoryMode && (
                                         <div className="comment-panel__info-note comment-panel__info-note--warning">
@@ -5204,131 +4993,138 @@ function App() {
                                         <button
                                           type="button"
                                           className={`comment-submit${replyDefaultMode === "review" ? "" : " comment-submit--secondary"}`}
-                                          onClick={async () => {
+                                          disabled={submitFileCommentMutation.isPending}
+                                          onClick={() => {
                                             if (!replyDraft.trim()) {
                                               setReplyError("Reply cannot be empty");
                                               return;
                                             }
-                                            if (!prDetail || !repoRef) {
+                                            if (!prDetail || !repoRef || !selectedFilePath) {
                                               setReplyError("No PR details available");
                                               return;
                                             }
-                                            try {
-                                              setReplyError(null);
-                                              
-                                              // Add reply to local review
-                                              await invoke("cmd_local_add_comment", {
-                                                owner: repoRef.owner,
-                                                repo: repoRef.repo,
-                                                prNumber: prDetail.number,
-                                                filePath: selectedFilePath,
-                                                lineNumber: parentComment.line || null,
-                                                side: parentComment.side || "LEFT",
-                                                body: replyDraft,
-                                                commitId: prDetail.head_sha,
-                                                inReplyToId: parentComment.id,
-                                              });
-                                              
-                                              // Clear form
-                                              setReplyDraft("");
-                                              setReplyingToCommentId(null);
-                                              
-                                              // Clear drafts
-                                              if (selectedFilePath) {
-                                                setDraftsByFile(prev => {
-                                                  const newDrafts = { ...prev };
-                                                  if (newDrafts[selectedFilePath]?.reply) {
-                                                    delete newDrafts[selectedFilePath].reply![parentComment.id];
-                                                    if (shouldDeleteFileDraft(newDrafts[selectedFilePath])) {
-                                                      delete newDrafts[selectedFilePath];
+                                            
+                                            setReplyError(null);
+                                            
+                                            submitFileCommentMutation.mutate({
+                                              body: replyDraft,
+                                              line: parentComment.line || null,
+                                              side: parentComment.side || "LEFT",
+                                              mode: "review",
+                                              subjectType: parentComment.line ? null : "file",
+                                              pendingReviewId: null,
+                                              inReplyTo: parentComment.id,
+                                              filePath: selectedFilePath,
+                                            }, {
+                                              onSuccess: async () => {
+                                                // Clear form
+                                                setReplyDraft("");
+                                                setReplyingToCommentId(null);
+                                                
+                                                // Clear drafts
+                                                if (selectedFilePath) {
+                                                  setDraftsByFile(prev => {
+                                                    const newDrafts = { ...prev };
+                                                    if (newDrafts[selectedFilePath]?.reply) {
+                                                      delete newDrafts[selectedFilePath].reply![parentComment.id];
+                                                      if (shouldDeleteFileDraft(newDrafts[selectedFilePath])) {
+                                                        delete newDrafts[selectedFilePath];
+                                                      }
                                                     }
-                                                  }
-                                                  return newDrafts;
-                                                });
-                                              }
-                                              
-                                              // Reload local comments
-                                              await loadLocalComments();
-                                            } catch (err) {
-                                              setReplyError(err instanceof Error ? err.message : String(err));
-                                            }
+                                                    return newDrafts;
+                                                  });
+                                                }
+                                                
+                                                // Reload local comments
+                                                await loadLocalComments();
+                                              },
+                                              onError: (error) => {
+                                                setReplyError(error instanceof Error ? error.message : String(error));
+                                              },
+                                            });
                                           }}
                                           ref={replyReviewButtonRef}
                                         >
-                                          Add to review
+                                          {submitFileCommentMutation.isPending && fileCommentSubmittingMode === "review"
+                                            ? "Adding…"
+                                            : "Add to review"}
                                         </button>
                                       ) : (!isLocalDirectoryMode && !pendingReview) ? (
                                         <button
                                           type="button"
                                           className="comment-submit comment-submit--secondary"
-                                          onClick={async () => {
+                                          disabled={submitFileCommentMutation.isPending}
+                                          onClick={() => {
                                             if (!replyDraft.trim()) {
                                               setReplyError("Reply cannot be empty");
                                               return;
                                             }
-                                            if (!prDetail || !repoRef) {
+                                            if (!prDetail || !repoRef || !selectedFilePath) {
                                               setReplyError("No PR details available");
                                               return;
                                             }
-                                            try {
-                                              setReplyError(null);
-                                              // Add reply to local review
-                                              await invoke("cmd_local_add_comment", {
-                                                owner: repoRef.owner,
-                                                repo: repoRef.repo,
-                                                prNumber: prDetail.number,
-                                                filePath: selectedFilePath,
-                                                lineNumber: parentComment.line || null,
-                                                side: parentComment.side || "LEFT",
-                                                body: replyDraft,
-                                                commitId: prDetail.head_sha,
-                                                inReplyToId: parentComment.id,
-                                              });
+                                            
+                                            setReplyError(null);
+                                            
+                                            submitFileCommentMutation.mutate({
+                                              body: replyDraft,
+                                              line: parentComment.line || null,
+                                              side: parentComment.side || "LEFT",
+                                              mode: "review",
+                                              subjectType: parentComment.line ? null : "file",
+                                              pendingReviewId: null,
+                                              inReplyTo: parentComment.id,
+                                              filePath: selectedFilePath,
+                                            }, {
+                                              onSuccess: async () => {
+                                                // Clear form
+                                                setReplySuccess(true);
+                                                setReplyDraft("");
 
-                                              // Clear form
-                                              setReplySuccess(true);
-                                              setReplyDraft("");
-
-                                              // Clear drafts
-                                              if (selectedFilePath) {
-                                                setDraftsByFile(prev => {
-                                                  const newDrafts = { ...prev };
-                                                  if (newDrafts[selectedFilePath]?.reply) {
-                                                    delete newDrafts[selectedFilePath].reply![parentComment.id];
-                                                    if (shouldDeleteFileDraft(newDrafts[selectedFilePath])) {
-                                                      delete newDrafts[selectedFilePath];
+                                                // Clear drafts
+                                                if (selectedFilePath) {
+                                                  setDraftsByFile(prev => {
+                                                    const newDrafts = { ...prev };
+                                                    if (newDrafts[selectedFilePath]?.reply) {
+                                                      delete newDrafts[selectedFilePath].reply![parentComment.id];
+                                                      if (shouldDeleteFileDraft(newDrafts[selectedFilePath])) {
+                                                        delete newDrafts[selectedFilePath];
+                                                      }
                                                     }
-                                                  }
-                                                  return newDrafts;
-                                                });
-                                              }
+                                                    return newDrafts;
+                                                  });
+                                                }
 
-                                              // Reload local comments and show review panel
-                                              await loadLocalComments();
-                                              setIsInlineCommentOpen(true);
+                                                // Reload local comments and show review panel
+                                                await loadLocalComments();
+                                                setIsInlineCommentOpen(true);
 
-                                              // Create pending review override
-                                              if (prDetail && authQuery.data?.login) {
-                                                const localReview = createLocalReview({
-                                                  prNumber: prDetail.number,
-                                                  author: authQuery.data.login,
-                                                  commitId: prDetail.head_sha,
-                                                });
-                                            setPendingReviewOverride(localReview);
-                                          }
+                                                // Create pending review override
+                                                if (prDetail && authQuery.data?.login) {
+                                                  const localReview = createLocalReview({
+                                                    prNumber: prDetail.number,
+                                                    author: authQuery.data.login,
+                                                    commitId: prDetail.head_sha,
+                                                  });
+                                                  setPendingReviewOverride(localReview);
+                                                }
 
-                                          await prsUnderReviewQuery.refetch();
-                                          
-                                          setTimeout(() => {
-                                            setReplyingToCommentId(null);
-                                            setReplySuccess(false);
-                                          }, 1500);
-                                        } catch (err) {
-                                              setReplyError(err instanceof Error ? err.message : String(err));
-                                            }
+                                                await prsUnderReviewQuery.refetch();
+
+                                                setTimeout(() => {
+                                                  setReplyingToCommentId(null);
+                                                  setReplySuccess(false);
+                                                }, 1500);
+                                              },
+                                              onError: (error) => {
+                                                setReplyError(error instanceof Error ? error.message : String(error));
+                                              },
+                                            });
                                           }}
                                         >
-                                          Start review
+                                          {submitFileCommentMutation.isPending && fileCommentSubmittingMode === "review"
+                                            ? "Starting…"
+                                            : "Start review"}
                                         </button>
                                       ) : null}
                                     </div>
@@ -5445,7 +5241,7 @@ function App() {
                               <button
                                 type="button"
                                 className={`comment-submit${inlineDefaultMode === "review" ? " comment-submit--secondary" : ""}`}
-                                disabled={!isOnline && !isLocalDirectoryMode}
+                                disabled={(!isOnline && !isLocalDirectoryMode) || submitFileCommentMutation.isPending}
                                 title={
                                   isLocalDirectoryMode
                                     ? "Saved locally to log files"
@@ -5454,7 +5250,7 @@ function App() {
                                       : ""
                                 }
                                 ref={inlineCommentPostButtonRef}
-                                onClick={async () => {
+                                onClick={() => {
                                   if (!inlineCommentDraft.trim()) {
                                     setInlineCommentError("Comment cannot be empty");
                                     return;
@@ -5463,77 +5259,56 @@ function App() {
                                     setInlineCommentError("No file selected");
                                     return;
                                   }
-                                  try {
-                                    setInlineCommentError(null);
-                                    const lineNum = inlineCommentLine.trim() ? parseInt(inlineCommentLine.trim(), 10) : null;
-                                    const hasLine = lineNum !== null && !isNaN(lineNum) && lineNum > 0;
+                                  
+                                  setInlineCommentError(null);
+                                  const lineNum = inlineCommentLine.trim() ? parseInt(inlineCommentLine.trim(), 10) : null;
+                                  const hasLine = lineNum !== null && !isNaN(lineNum) && lineNum > 0;
 
-                                    if (isLocalDirectoryMode) {
-                                      await invoke("cmd_local_add_comment", {
-                                        owner: repoRef.owner,
-                                        repo: repoRef.repo,
-                                        prNumber: prDetail.number,
-                                        filePath: selectedFilePath,
-                                        lineNumber: hasLine ? lineNum : null,
-                                        side: hasLine ? "RIGHT" : "LEFT",
-                                        body: inlineCommentDraft,
-                                        commitId: prDetail.head_sha,
-                                        inReplyToId: null,
-                                        localFolder: activeLocalDir ?? null,
-                                      });
-                                      await loadLocalComments();
-                                    } else {
-                                      await invoke("cmd_submit_file_comment", {
-                                        args: {
-                                          owner: repoRef.owner,
-                                          repo: repoRef.repo,
-                                          number: prDetail.number,
-                                          path: selectedFilePath,
-                                          body: inlineCommentDraft,
-                                          commit_id: prDetail.head_sha,
-                                          line: hasLine ? lineNum : null,
-                                          side: hasLine ? "RIGHT" : null,
-                                          subject_type: hasLine ? null : "file",
-                                          mode: "single",
-                                          pending_review_id: null,
-                                          in_reply_to: null,
-                                        },
-                                      });
-                                      await queryClient.refetchQueries({
-                                        queryKey: ["pr-comments", repoRef.owner, repoRef.repo, selectedPr]
-                                      });
-                                      await queryClient.refetchQueries({
-                                        queryKey: ["pull-request", repoRef.owner, repoRef.repo, selectedPr]
-                                      });
-                                    }
-                                    setInlineCommentDraft("");
-                                    setInlineCommentLine("");
-                                    setIsAddingInlineComment(false);
-                                    setFileCommentSuccess(true);
-                                    if (selectedFilePath) {
-                                      setDraftsByFile(prev => {
-                                        const newDrafts = { ...prev };
-                                        if (newDrafts[selectedFilePath]) {
-                                          delete newDrafts[selectedFilePath].inline;
-                                          if (shouldDeleteFileDraft(newDrafts[selectedFilePath])) {
-                                            delete newDrafts[selectedFilePath];
+                                  submitFileCommentMutation.mutate({
+                                    body: inlineCommentDraft,
+                                    line: hasLine ? lineNum : null,
+                                    side: hasLine ? "RIGHT" : "LEFT",
+                                    mode: "single",
+                                    subjectType: hasLine ? null : "file",
+                                    pendingReviewId: null,
+                                    inReplyTo: null,
+                                    filePath: selectedFilePath,
+                                  }, {
+                                    onSuccess: () => {
+                                      // Clear inline comment form
+                                      setInlineCommentDraft("");
+                                      setInlineCommentLine("");
+                                      setIsAddingInlineComment(false);
+                                      setInlineCommentError(null);
+                                      if (selectedFilePath) {
+                                        setDraftsByFile(prev => {
+                                          const newDrafts = { ...prev };
+                                          if (newDrafts[selectedFilePath]) {
+                                            delete newDrafts[selectedFilePath].inline;
+                                            if (shouldDeleteFileDraft(newDrafts[selectedFilePath])) {
+                                              delete newDrafts[selectedFilePath];
+                                            }
                                           }
-                                        }
-                                        return newDrafts;
-                                      });
-                                    }
-                                  } catch (err) {
-                                    setInlineCommentError(err instanceof Error ? err.message : String(err));
-                                  }
+                                          return newDrafts;
+                                        });
+                                      }
+                                    },
+                                    onError: (error) => {
+                                      setInlineCommentError(error instanceof Error ? error.message : String(error));
+                                    },
+                                  });
                                 }}
                               >
-                                {isLocalDirectoryMode ? "Save comment (log file)" : "Post comment"}
+                                {submitFileCommentMutation.isPending && fileCommentSubmittingMode === "single" 
+                                  ? (isLocalDirectoryMode ? "Saving…" : "Sending…")
+                                  : (isLocalDirectoryMode ? "Save comment (log file)" : "Post comment")}
                               </button>
                               {!isLocalDirectoryMode && hasLocalPendingReview ? (
                                 <button
                                   type="button"
                                   className={`comment-submit${inlineDefaultMode === "review" ? "" : " comment-submit--secondary"}`}
-                                  onClick={async () => {
+                                  disabled={submitFileCommentMutation.isPending}
+                                  onClick={() => {
                                     if (!inlineCommentDraft.trim()) {
                                       setInlineCommentError("Comment cannot be empty");
                                       return;
@@ -5542,60 +5317,59 @@ function App() {
                                       setInlineCommentError("No file selected");
                                       return;
                                     }
-                                    try {
-                                      setInlineCommentError(null);
-                                      
-                                      // Parse line number
-                                      const lineNum = inlineCommentLine.trim() ? parseInt(inlineCommentLine.trim(), 10) : null;
-                                      const hasLine = lineNum !== null && !isNaN(lineNum) && lineNum > 0;
-                                      
-                                      // Add comment to local review
-                                      await invoke("cmd_local_add_comment", {
-                                        owner: repoRef.owner,
-                                        repo: repoRef.repo,
-                                        prNumber: prDetail.number,
-                                        filePath: selectedFilePath,
-                                        lineNumber: hasLine ? lineNum : null,
-                                        side: hasLine ? "RIGHT" : "LEFT",
-                                        body: inlineCommentDraft,
-                                        commitId: prDetail.head_sha,
-                                        inReplyToId: null,
-                                      });
-                                      
-                                      // Clear form
-                                      setInlineCommentDraft("");
-                                      setInlineCommentLine("");
-                                      setIsAddingInlineComment(false);
-                                      
-                                      // Clear drafts
-                                      if (selectedFilePath) {
-                                        setDraftsByFile(prev => {
-                                          const newDrafts = { ...prev };
-                                          if (newDrafts[selectedFilePath]) {
-                                            delete newDrafts[selectedFilePath].inline;
-                                            if (shouldDeleteFileDraft(newDrafts[selectedFilePath])) {
-                                              delete newDrafts[selectedFilePath];
+                                    
+                                    setInlineCommentError(null);
+                                    const lineNum = inlineCommentLine.trim() ? parseInt(inlineCommentLine.trim(), 10) : null;
+                                    const hasLine = lineNum !== null && !isNaN(lineNum) && lineNum > 0;
+                                    
+                                    submitFileCommentMutation.mutate({
+                                      body: inlineCommentDraft,
+                                      line: hasLine ? lineNum : null,
+                                      side: hasLine ? "RIGHT" : "LEFT",
+                                      mode: "review",
+                                      subjectType: hasLine ? null : "file",
+                                      pendingReviewId: pendingReview?.id ?? null,
+                                      inReplyTo: null,
+                                      filePath: selectedFilePath,
+                                    }, {
+                                      onSuccess: async () => {
+                                        // Clear inline comment form
+                                        setInlineCommentDraft("");
+                                        setInlineCommentLine("");
+                                        setIsAddingInlineComment(false);
+                                        setInlineCommentError(null);
+                                        if (selectedFilePath) {
+                                          setDraftsByFile(prev => {
+                                            const newDrafts = { ...prev };
+                                            if (newDrafts[selectedFilePath]) {
+                                              delete newDrafts[selectedFilePath].inline;
+                                              if (shouldDeleteFileDraft(newDrafts[selectedFilePath])) {
+                                                delete newDrafts[selectedFilePath];
+                                              }
                                             }
-                                          }
-                                          return newDrafts;
-                                        });
-                                      }
-                                      
-                                      // Reload local comments
-                                      await loadLocalComments();
-                                    } catch (err) {
-                                      setInlineCommentError(err instanceof Error ? err.message : String(err));
-                                    }
+                                            return newDrafts;
+                                          });
+                                        }
+                                        // Reload local comments
+                                        await loadLocalComments();
+                                      },
+                                      onError: (error) => {
+                                        setInlineCommentError(error instanceof Error ? error.message : String(error));
+                                      },
+                                    });
                                   }}
                                   ref={inlineCommentReviewButtonRef}
                                 >
-                                  Add to review
+                                  {submitFileCommentMutation.isPending && fileCommentSubmittingMode === "review" 
+                                    ? "Saving…" 
+                                    : "Add to review"}
                                 </button>
                               ) : (!isLocalDirectoryMode && !pendingReview) ? (
                                 <button
                                   type="button"
                                   className="comment-submit comment-submit--secondary"
-                                  onClick={async () => {
+                                  disabled={submitFileCommentMutation.isPending}
+                                  onClick={() => {
                                     if (!inlineCommentDraft.trim()) {
                                       setInlineCommentError("Comment cannot be empty");
                                       return;
@@ -5604,65 +5378,67 @@ function App() {
                                       setInlineCommentError("No file selected");
                                       return;
                                     }
-                                    try {
-                                      setInlineCommentError(null);
-                                      // Parse line number
-                                      const lineNum = inlineCommentLine.trim() ? parseInt(inlineCommentLine.trim(), 10) : null;
-                                      const hasLine = lineNum !== null && !isNaN(lineNum) && lineNum > 0;
+                                    
+                                    setInlineCommentError(null);
+                                    const lineNum = inlineCommentLine.trim() ? parseInt(inlineCommentLine.trim(), 10) : null;
+                                    const hasLine = lineNum !== null && !isNaN(lineNum) && lineNum > 0;
 
-                                      // Add comment to local review
-                                      await invoke("cmd_local_add_comment", {
-                                        owner: repoRef.owner,
-                                        repo: repoRef.repo,
-                                        prNumber: prDetail.number,
-                                        filePath: selectedFilePath,
-                                        lineNumber: hasLine ? lineNum : null,
-                                        side: hasLine ? "RIGHT" : "LEFT",
-                                        body: inlineCommentDraft,
-                                        commitId: prDetail.head_sha,
-                                        inReplyToId: null,
-                                      });
+                                    submitFileCommentMutation.mutate({
+                                      body: inlineCommentDraft,
+                                      line: hasLine ? lineNum : null,
+                                      side: hasLine ? "RIGHT" : "LEFT",
+                                      mode: "review",
+                                      subjectType: hasLine ? null : "file",
+                                      pendingReviewId: null,
+                                      inReplyTo: null,
+                                      filePath: selectedFilePath,
+                                    }, {
+                                      onSuccess: async () => {
+                                        // Clear form
+                                        setInlineCommentDraft("");
+                                        setInlineCommentLine("");
+                                        setIsAddingInlineComment(false);
+                                        setInlineCommentError(null);
 
-                                      // Clear form
-                                      setInlineCommentDraft("");
-                                      setInlineCommentLine("");
-                                      setIsAddingInlineComment(false);
-
-                                      // Clear drafts
-                                      if (selectedFilePath) {
-                                        setDraftsByFile(prev => {
-                                          const newDrafts = { ...prev };
-                                          if (newDrafts[selectedFilePath]) {
-                                            delete newDrafts[selectedFilePath].inline;
-                                            if (shouldDeleteFileDraft(newDrafts[selectedFilePath])) {
-                                              delete newDrafts[selectedFilePath];
+                                        // Clear drafts
+                                        if (selectedFilePath) {
+                                          setDraftsByFile(prev => {
+                                            const newDrafts = { ...prev };
+                                            if (newDrafts[selectedFilePath]) {
+                                              delete newDrafts[selectedFilePath].inline;
+                                              if (shouldDeleteFileDraft(newDrafts[selectedFilePath])) {
+                                                delete newDrafts[selectedFilePath];
+                                              }
                                             }
-                                          }
-                                          return newDrafts;
-                                        });
-                                      }
+                                            return newDrafts;
+                                          });
+                                        }
 
-                                      // Reload local comments and show review panel
-                                      await loadLocalComments();
-                                      setIsInlineCommentOpen(true);
+                                        // Reload local comments and show review panel
+                                        await loadLocalComments();
+                                        setIsInlineCommentOpen(true);
 
-                                      // Create pending review override
-                                      if (prDetail && authQuery.data?.login) {
-                                        const localReview = createLocalReview({
-                                          prNumber: prDetail.number,
-                                          author: authQuery.data.login,
-                                          commitId: prDetail.head_sha,
-                                        });
-                                        setPendingReviewOverride(localReview);
-                                      }
+                                        // Create pending review override
+                                        if (prDetail && authQuery.data?.login) {
+                                          const localReview = createLocalReview({
+                                            prNumber: prDetail.number,
+                                            author: authQuery.data.login,
+                                            commitId: prDetail.head_sha,
+                                          });
+                                          setPendingReviewOverride(localReview);
+                                        }
 
-                                      await prsUnderReviewQuery.refetch();
-                                    } catch (err) {
-                                      setInlineCommentError(err instanceof Error ? err.message : String(err));
-                                    }
+                                        await prsUnderReviewQuery.refetch();
+                                      },
+                                      onError: (error) => {
+                                        setInlineCommentError(error instanceof Error ? error.message : String(error));
+                                      },
+                                    });
                                   }}
                                 >
-                                  Start review
+                                  {submitFileCommentMutation.isPending && fileCommentSubmittingMode === "review" 
+                                    ? "Starting…" 
+                                    : "Start review"}
                                 </button>
                               ) : null}
                             </div>

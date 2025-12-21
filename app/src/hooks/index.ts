@@ -28,3 +28,11 @@ export type { UseCommentFilteringOptions, UseCommentFilteringResult, CommentThre
 
 export { useMarkdownComponents } from "./useMarkdownComponents";
 export type { UseMarkdownComponentsOptions, MarkdownComponents } from "./useMarkdownComponents";
+
+export { useCommentMutations, createLocalReview } from "./useCommentMutations";
+export type { 
+  UseCommentMutationsOptions, 
+  UseCommentMutationsReturn,
+  SubmitCommentParams,
+  DeleteReviewParams,
+} from "./useCommentMutations";
