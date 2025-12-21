@@ -17,3 +17,12 @@ export type { MediaContent, MediaViewerProps } from './MediaViewer';
 
 export { ConfirmDialog } from './ConfirmDialog';
 export type { ConfirmDialogProps } from './ConfirmDialog';
+
+export { CommentStatus, CommentStatusGroup } from './CommentStatus';
+export type { CommentStatusProps, CommentStatusGroupProps, CommentStatusType } from './CommentStatus';
+
+export { CommentDisplay, CommentList } from './CommentDisplay';
+export type { CommentDisplayProps, CommentListProps } from './CommentDisplay';
+
+export { CommentComposer, handleCtrlEnter } from './CommentComposer';
+export type { CommentComposerProps } from './CommentComposer';

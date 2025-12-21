@@ -47,7 +47,7 @@ import {
 } from "./constants";
 import { loadScrollCache, pruneScrollCache } from "./utils/scrollCache";
 import { parseLinePrefix, getImageMimeType, formatFileLabel, formatFileTooltip, formatFilePathWithLeadingEllipsis, isImageFile, isMarkdownFile, convertLocalComments, createLocalReview } from "./utils/helpers";
-import { MemoizedAsyncImage, MermaidCode, CommentThreadItem, MediaViewer, ConfirmDialog } from "./components";
+import { MemoizedAsyncImage, MermaidCode, CommentThreadItem, MediaViewer, ConfirmDialog, CommentList, CommentComposer, CommentStatus, handleCtrlEnter as handleCtrlEnterUtil } from "./components";
 import type { MediaContent } from "./components";
 import { usePaneZoom, useViewedFiles, useMRUList, useLocalStorage, useTocSortedFiles, useFileContents, useCommentFiltering, useMarkdownComponents } from "./hooks";
 
@@ -608,15 +608,8 @@ function App() {
     }
   }, [isFileCommentComposerVisible]);
 
-  const handleCtrlEnter = useCallback((
-    event: React.KeyboardEvent<HTMLTextAreaElement>,
-    action?: () => void,
-  ) => {
-    if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
-      event.preventDefault();
-      action?.();
-    }
-  }, []);
+  // Use shared handleCtrlEnter utility from components
+  const handleCtrlEnter = handleCtrlEnterUtil;
 
   const triggerFileCommentSubmit = useCallback((mode?: "single" | "review") => {
     if (!fileCommentFormRef.current) {
@@ -4720,26 +4713,11 @@ function App() {
                             )}
                           </div>
                         )}
-                        {editingCommentId === null && (
-                          <div className="comment-panel__status">
-                            {fileCommentError && (
-                              <span className="comment-status comment-status--error">{fileCommentError}</span>
-                            )}
-                            {!fileCommentError && fileCommentSuccess && (
-                              <span className="comment-status comment-status--success">Comment saved</span>
-                            )}
-                          </div>
-                        )}
-                        {editingCommentId !== null && (
-                          <div className="comment-panel__status">
-                            {fileCommentError && (
-                              <span className="comment-status comment-status--error">{fileCommentError}</span>
-                            )}
-                            {!fileCommentError && fileCommentSuccess && (
-                              <span className="comment-status comment-status--success">Comment saved</span>
-                            )}
-                          </div>
-                        )}
+                        <div className="comment-panel__status">
+                          {fileCommentError && (
+                            <span className="comment-status comment-status--error">{fileCommentError}</span>
+                          )}
+                        </div>
                         <div className="comment-panel__footer">
                           {editingCommentId !== null ? (
                             <div className="comment-panel__edit-actions">
@@ -5531,6 +5509,7 @@ function App() {
                                     setInlineCommentDraft("");
                                     setInlineCommentLine("");
                                     setIsAddingInlineComment(false);
+                                    setFileCommentSuccess(true);
                                     if (selectedFilePath) {
                                       setDraftsByFile(prev => {
                                         const newDrafts = { ...prev };
@@ -6276,85 +6255,43 @@ function App() {
                         <div className="pr-comments-view">
                           {isPrCommentComposerOpen ? (
                             <div className="pr-comment-composer">
-                              <form
+                              <CommentComposer
                                 className="comment-composer comment-composer--pr-pane"
+                                value={commentDraft}
+                                onChange={setCommentDraft}
                                 onSubmit={handleCommentSubmit}
+                                onClearStatus={() => {
+                                  setCommentError(null);
+                                  setCommentSuccess(false);
+                                }}
+                                isPending={submitCommentMutation.isPending}
+                                disabled={!isOnline || isLocalDirectoryMode}
+                                disabledReason={
+                                  isLocalDirectoryMode
+                                    ? "PR comments aren't available in local folder mode"
+                                    : !isOnline
+                                      ? "PR comments are disabled while offline"
+                                      : undefined
+                                }
+                                error={commentError}
+                                warning={
+                                  isLocalDirectoryMode
+                                    ? "PR comments aren't available in local folder mode"
+                                    : !isOnline
+                                      ? "⚠️ Offline - PR comments disabled"
+                                      : undefined
+                                }
+                                placeholder="Share your thoughts on this change…"
+                                textareaId="pr-comment-draft"
                                 ref={prCommentFormRef}
-                              >
-                                <textarea
-                                  id="pr-comment-draft"
-                                  value={commentDraft}
-                                  placeholder="Share your thoughts on this change…"
-                                  onChange={(event) => {
-                                    setCommentDraft(event.target.value);
-                                    setCommentError(null);
-                                    setCommentSuccess(false);
-                                  }}
-                                  rows={4}
-                                  onKeyDown={(event) =>
-                                    handleCtrlEnter(event, () => {
-                                      if (
-                                        isOnline &&
-                                        !isLocalDirectoryMode &&
-                                        !submitCommentMutation.isPending
-                                      ) {
-                                        prCommentFormRef.current?.requestSubmit();
-                                      }
-                                    })
-                                  }
-                                />
-                                <div className="comment-composer__actions">
-                                  <div className="comment-composer__status">
-                                    {commentError && (
-                                      <span className="comment-status comment-status--error">{commentError}</span>
-                                    )}
-                                    {isLocalDirectoryMode && (
-                                      <span className="comment-status comment-status--warning">
-                                        PR comments aren&apos;t available in local folder mode
-                                      </span>
-                                    )}
-                                    {!isLocalDirectoryMode && !isOnline && (
-                                      <span className="comment-status comment-status--warning">
-                                        ⚠️ Offline - PR comments disabled
-                                      </span>
-                                    )}
-                                  </div>
-                                  <button
-                                    type="submit"
-                                    className="comment-submit"
-                                    disabled={submitCommentMutation.isPending || !isOnline || isLocalDirectoryMode}
-                                    title={
-                                      isLocalDirectoryMode
-                                        ? "PR comments aren't available in local folder mode"
-                                        : !isOnline
-                                          ? "PR comments are disabled while offline"
-                                          : ""
-                                    }
-                                  >
-                                    {submitCommentMutation.isPending ? "Posting…" : "Post comment"}
-                                  </button>
-                                </div>
-                              </form>
+                              />
                             </div>
                           ) : (
                             <>
-                              {prLevelComments.length === 0 ? (
-                                <div className="empty-state empty-state--subtle">No PR comments yet.</div>
-                              ) : (
-                                <div className="pr-comments-list">
-                                  {prLevelComments.map((comment: PullRequestComment) => (
-                                    <div key={comment.id} className="pr-comment">
-                                      <div className="pr-comment__header">
-                                        <span className="pr-comment__author">{comment.author}</span>
-                                        <span className="pr-comment__date">
-                                          {new Date(comment.created_at).toLocaleDateString()}
-                                        </span>
-                                      </div>
-                                      <div className="pr-comment__body">{comment.body}</div>
-                                    </div>
-                                  ))}
-                                </div>
-                              )}
+                              <CommentList
+                                comments={prLevelComments}
+                                emptyMessage="No PR comments yet."
+                              />
                               <div className="pr-comments-view__footer">
                                 <button
                                   type="button"
@@ -6566,10 +6503,8 @@ function App() {
                   </span>
                 </div>
                 <div className="pane__actions">
-                  {commentSuccess && !isGeneralCommentOpen && (
-                    <span className="pane__status comment-status comment-status--success">
-                      Comment published
-                    </span>
+                  {(commentSuccess || fileCommentSuccess) && (
+                    <CommentStatus type="success" message="Comment published" className="pane__status" />
                   )}
                   {selectedFile && (
                     <div className="source-menu-container" ref={sourceMenuRef}>
@@ -6664,59 +6599,34 @@ function App() {
               </div>
               <div className="pane__content">
                 {isGeneralCommentOpen && prDetail && (
-                  <form
+                  <CommentComposer
                     className="comment-composer comment-composer--inline"
+                    value={commentDraft}
+                    onChange={setCommentDraft}
                     onSubmit={handleCommentSubmit}
+                    onClearStatus={() => {
+                      setCommentError(null);
+                      setCommentSuccess(false);
+                    }}
+                    isPending={submitCommentMutation.isPending}
+                    disabled={!isOnline || isLocalDirectoryMode}
+                    disabledReason={
+                      isLocalDirectoryMode
+                        ? "PR comments aren't available in local folder mode"
+                        : !isOnline
+                          ? "PR comments are disabled while offline"
+                          : undefined
+                    }
+                    error={commentError}
+                    warning={!isOnline ? "⚠️ Offline - PR comments disabled" : undefined}
+                    placeholder="Share your thoughts on this change…"
+                    label="Pull request feedback"
+                    labelFor="comment-draft"
+                    textareaId="comment-draft"
+                    submitText={isLocalDirectoryMode ? "Unavailable (local folder)" : "Post comment"}
+                    pendingText="Sending…"
                     ref={generalCommentFormRef}
-                  >
-                    <label className="comment-composer__label" htmlFor="comment-draft">
-                      Pull request feedback
-                    </label>
-                    <textarea
-                      id="comment-draft"
-                      value={commentDraft}
-                      placeholder="Share your thoughts on this change…"
-                      onChange={(event) => {
-                        setCommentDraft(event.target.value);
-                        setCommentError(null);
-                        setCommentSuccess(false);
-                      }}
-                      rows={4}
-                      onKeyDown={(event) =>
-                        handleCtrlEnter(event, () => {
-                          if (isOnline && !submitCommentMutation.isPending) {
-                            generalCommentFormRef.current?.requestSubmit();
-                          }
-                        })
-                      }
-                    />
-                    <div className="comment-composer__actions">
-                      <div className="comment-composer__status">
-                        {commentError && (
-                          <span className="comment-status comment-status--error">{commentError}</span>
-                        )}
-                        {!isOnline && (
-                          <span className="comment-status comment-status--warning">
-                            ⚠️ Offline - PR comments disabled
-                          </span>
-                        )}
-                      </div>
-                      <button
-                        type="submit"
-                        className="comment-submit"
-                        disabled={submitCommentMutation.isPending || !isOnline || isLocalDirectoryMode}
-                        title={
-                          isLocalDirectoryMode
-                            ? "PR comments aren't available in local folder mode"
-                            : (!isOnline ? "PR comments are disabled while offline" : "")
-                        }
-                      >
-                        {isLocalDirectoryMode
-                          ? "Unavailable (local folder)"
-                          : (submitCommentMutation.isPending ? "Sending…" : "Post comment")}
-                      </button>
-                    </div>
-                  </form>
+                  />
                 )}
                 <div
                   className="pane__viewer pane__viewer--source"

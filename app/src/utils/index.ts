@@ -3,4 +3,3 @@
  */
 
 export * from "./scrollCache";
-export * from "./markdown";
