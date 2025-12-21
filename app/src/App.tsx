@@ -152,10 +152,7 @@ function App() {
   const [repoRef, setRepoRef] = useState<RepoRef | null>(null);
   const [repoInput, setRepoInput] = useState("");
   const [repoError, setRepoError] = useState<string | null>(null);
-  const [repoMRU, setRepoMRU] = useState<string[]>(() => {
-    const stored = localStorage.getItem('repo-mru');
-    return stored ? JSON.parse(stored) : [];
-  });
+  const [repoMRU, addRepoToMRU] = useMRUList('repo-mru', 10);
   const [showRepoMRU, setShowRepoMRU] = useState(false);
   const [prFileCounts, setPrFileCounts] = useState<Record<string, number>>(() => {
     const stored = localStorage.getItem('pr-file-counts');
@@ -3912,14 +3909,9 @@ function App() {
   useEffect(() => {
     if (pullsQuery.isSuccess && repoRef && !pullsQuery.isError) {
       const repoString = `${repoRef.owner}/${repoRef.repo}`;
-      setRepoMRU(prev => {
-        const filtered = prev.filter(r => r !== repoString);
-        const updated = [repoString, ...filtered].slice(0, 10);
-        localStorage.setItem('repo-mru', JSON.stringify(updated));
-        return updated;
-      });
+      addRepoToMRU(repoString);
     }
-  }, [pullsQuery.isSuccess, pullsQuery.isError, repoRef]);
+  }, [pullsQuery.isSuccess, pullsQuery.isError, repoRef, addRepoToMRU]);
 
   // Handle ESC key for media viewer
   useEffect(() => {
