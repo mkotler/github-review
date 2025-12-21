@@ -256,9 +256,8 @@ describe('Network Status Hook - useNetworkStatus.ts', () => {
       rerender();
 
       // Functions should be stable (same reference due to useCallback)
-      // Note: This may vary based on implementation
-      expect(typeof result.current.markOffline).toBe('function');
-      expect(typeof result.current.markOnline).toBe('function');
+      expect(result.current.markOffline).toBe(firstMarkOffline);
+      expect(result.current.markOnline).toBe(firstMarkOnline);
     });
   });
 });

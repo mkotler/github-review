@@ -45,7 +45,7 @@ import {
   MIN_CONTENT_WIDTH,
 } from "./constants";
 import { loadScrollCache, pruneScrollCache } from "./utils/scrollCache";
-import { parseLinePrefix, getImageMimeType } from "./utils/markdown";
+import { parseLinePrefix, getImageMimeType, formatFileLabel, formatFileTooltip, formatFilePathWithLeadingEllipsis, isImageFile, isMarkdownFile } from "./utils/markdown";
 import { MemoizedAsyncImage, MermaidCode, CommentThreadItem, MediaViewer, ConfirmDialog } from "./components";
 import type { MediaContent } from "./components";
 import { usePaneZoom, useViewedFiles, useMRUList, useLocalStorage } from "./hooks";
@@ -1605,51 +1605,6 @@ function App() {
     : "single";
   const inlineDefaultMode: "single" | "review" = hasLocalPendingReview ? "review" : "single";
   const replyDefaultMode = inlineDefaultMode;
-
-  const formatFileLabel = useCallback((path: string, tocNameMap?: Map<string, string>) => {
-    // Check if path contains toc.yml
-    if (path.toLowerCase().includes("toc.yml")) {
-      return "Table of Contents";
-    }
-
-    // Check if we have a display name from toc.yml
-    const tocName = tocNameMap?.get(path);
-    if (tocName) {
-      return tocName;
-    }
-
-    // Fallback to default formatting
-    const segments = path.split("/").filter(Boolean);
-    if (segments.length >= 2) {
-      const folder = segments[segments.length - 2];
-      const fileName = segments[segments.length - 1];
-      return `${folder}/${fileName}`;
-    }
-    return path;
-  }, []);
-
-  const formatFileTooltip = useCallback((file: PullRequestFile) => {
-    const status = file.status ? file.status.toUpperCase() : "";
-    return status ? `${file.path} - ${status}` : file.path;
-  }, []);
-
-  const formatFilePathWithLeadingEllipsis = useCallback((path: string, maxLength: number = 200) => {
-    if (path.length <= maxLength) {
-      return path;
-    }
-    return `...${path.slice(-(maxLength - 3))}`;
-  }, []);
-
-  const isImageFile = useCallback((file: PullRequestFile | null | undefined): boolean => {
-    return file?.language === "image";
-  }, []);
-
-  const isMarkdownFile = useCallback((file: PullRequestFile | null | undefined): boolean => {
-    if (!file) return false;
-    if (file.language === "markdown") return true;
-    const path = (file.path ?? "").toLowerCase();
-    return path.endsWith(".md") || path.endsWith(".markdown") || path.endsWith(".mdx");
-  }, []);
 
   const files = prDetail?.files ?? [];
 

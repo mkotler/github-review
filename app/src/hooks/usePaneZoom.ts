@@ -3,7 +3,7 @@
  * Handles zoom controls, keyboard shortcuts, and mouse wheel zooming.
  */
 
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect } from "react";
 import {
   PANE_ZOOM_DEFAULT,
   PANE_ZOOM_MIN,

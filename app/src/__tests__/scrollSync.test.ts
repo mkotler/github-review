@@ -1,9 +1,7 @@
 // Category 13: Scroll Synchronization Tests (useScrollSync.ts)
 // Tests for scroll sync logic and anchor parsing
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { renderHook, act } from '@testing-library/react';
-import type * as monaco from 'monaco-editor';
+import { describe, it, expect } from 'vitest';
 
 // We can't easily test the full hook without Monaco, but we can test the parsing logic
 // by importing the module and testing the exposed functions through the hook
