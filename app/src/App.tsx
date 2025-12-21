@@ -279,7 +279,6 @@ function App() {
   const sourcePaneLastScrollTopRef = useRef<Record<string, number>>({});
   const skipNextSourceScrollRestoreRef = useRef(false);
   const skipSourceRestoreForRef = useRef<string | null>(null);
-  const selectedFilePathRef = useRef<string | null>(null);
   const selectedFileCacheKeyRef = useRef<string | null>(null);
   const sourcePaneRestoreInFlightRef = useRef<SourceRestoreState | null>(null);
   const sourcePaneRestoreGraceRef = useRef<{ fileKey: string; target: number; expiresAt: number } | null>(null);
@@ -544,9 +543,6 @@ function App() {
     scrollCacheRef.current = pruned;
     persistScrollCache(pruned);
   }, [persistScrollCache]);
-
-  // Keep imperative ref for the selected file path in sync during render
-  selectedFilePathRef.current = selectedFilePath;
 
   useEffect(() => {
     if (repoRef) {
