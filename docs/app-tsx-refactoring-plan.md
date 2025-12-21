@@ -2,492 +2,367 @@
 
 ## Executive Summary
 
-The `App.tsx` file is currently **9,041 lines** - a monolithic component that handles authentication, PR browsing, file viewing, commenting, review management, scroll synchronization, offline caching, and UI rendering all in one file. This document outlines a systematic refactoring strategy with the test cases needed to ensure safe extraction.
+The `App.tsx` file has been reduced from **9,041 lines** to **7,179 lines** (~20% reduction) through systematic extraction of hooks, components, utilities, and types. This document tracks progress and outlines the next phases of refactoring.
 
-## Current State Analysis
+## Current State Analysis (Updated December 2024)
 
 ### Metrics
-- **Total Lines**: 9,041
-- **useState Hooks**: ~100+
-- **useRef Hooks**: ~50+
-- **useCallback Functions**: ~60+
-- **useEffect Hooks**: ~50+
-- **useMemo Hooks**: ~30+
-- **TanStack Queries**: 8+ (authQuery, pullsQuery, pullDetailQuery, etc.)
-- **TanStack Mutations**: 10+ (login, logout, submitComment, etc.)
-- **Helper Components**: 3 (AsyncImage, MermaidCode, CommentThreadItem)
+- **Total Lines**: 7,179 (down from 9,041)
+- **useState Hooks**: ~65 (reduced from ~100)
+- **useRef Hooks**: ~45
+- **useCallback Functions**: ~40 (reduced from ~60)
+- **useEffect Hooks**: ~45
+- **useMemo Hooks**: ~25
+- **TanStack Queries**: 5 (prsUnderReviewQuery, pullsQuery, pullDetailQuery, mruOpenPrsQueries, mruClosedPrsQueries)
+- **TanStack Mutations**: 0 in App.tsx (all moved to hooks)
 
-### Identified Feature Areas
+### Extracted Modules
 
-1. **Authentication** (lines ~1600-1800)
-   - authQuery, loginMutation, logoutMutation
-   - OAuth flow, token storage, offline auth caching
+#### Types (`src/types/index.ts`) ✅
+- RepoRef, PullRequestSummary, PullRequestMetadata
+- PullRequestDetail, PullRequestFile, PullRequestComment
+- PullRequestReview, PrUnderReview, LocalComment
+- ScrollCacheEntry, ScrollCacheState, SourceRestoreState
+- ReviewMetadata
 
-2. **Repository Selection** (lines ~4100-4300)
-   - repoInput, repoRef state
-   - MRU dropdown, repo form submission
-   - Local directory mode
+#### Constants (`src/constants/index.ts`) ✅
+- RETRY_CONFIG, PANE_ZOOM_STEP
+- SCROLL_CACHE_KEY, SCROLL_CACHE_TTL_MS, LEGACY_SCROLL_KEY
+- SOURCE_RESTORE_TIMEOUT_MS, SOURCE_RESTORE_MAX_ATTEMPTS
+- SOURCE_RESTORE_EPSILON, SOURCE_RESTORE_GRACE_MS
+- SOURCE_RESTORE_ACTIVATION_GRACE_MS
+- MIN_SIDEBAR_WIDTH, MIN_CONTENT_WIDTH
 
-3. **PR List Management** (lines ~1700-1900, ~4200-4800)
-   - pullsQuery, prsUnderReviewQuery, MRU queries
-   - PR filtering, search, state (open/closed/merged)
-   - "PRs Under Review" tracking
+#### Hooks (`src/hooks/`) ✅
 
-4. **PR Detail & Files** (lines ~2100-2800)
-   - pullDetailQuery, file contents queries
-   - TOC parsing, file sorting
-   - File filtering (markdown/yaml, viewed/unviewed)
+| Hook | Lines | Tests | Description |
+|------|-------|-------|-------------|
+| `useAuth` | 140 | 10 | Authentication state, login/logout mutations |
+| `useCommentMutations` | 600 | 45 | All comment/review CRUD operations |
+| `useCommentFiltering` | 138 | 30 | Filter comments by file, outdated, author |
+| `useFileContents` | 188 | 12 | File content loading with offline cache |
+| `useFileNavigation` | 105 | 13 | Browser-like back/forward navigation |
+| `useLocalStorage` | 92 | 19 | Generic localStorage persistence |
+| `useMarkdownComponents` | 92 | - | ReactMarkdown component overrides |
+| `usePaneZoom` | 127 | 16 | Editor zoom controls |
+| `useTocSortedFiles` | 373 | 31 | TOC-based file ordering |
+| `useViewedFiles` | 110 | 20 | Track viewed files per PR |
+| `useMRUList` | (in hooks/index.ts) | - | Most Recently Used list management |
 
-5. **Code Viewing** (lines ~8000-8700)
-   - Monaco Editor integration (editor, diff)
-   - Glyph margin click handling
-   - Zoom controls
+**Total Hook Tests**: 196
 
-6. **Markdown Preview** (lines ~8700-9000)
-   - ReactMarkdown rendering
-   - Image handling (AsyncImage)
-   - Link navigation within PR
-   - Mermaid diagram rendering
+#### Utilities (`src/utils/`) ✅
 
-7. **Scroll Synchronization** (lines ~3400-3800)
-   - Source-to-preview sync
-   - Preview-to-source sync
-   - Scroll position caching/restoration
+| Utility | Description |
+|---------|-------------|
+| `helpers.ts` | parseLinePrefix, getImageMimeType, formatFileLabel, formatFileTooltip, formatFilePathWithLeadingEllipsis, isImageFile, isMarkdownFile |
+| `scrollCache.ts` | loadScrollCache, pruneScrollCache |
 
-8. **Comment System** (lines ~2000-2100, ~5000-7000)
-   - Comment panel UI
-   - Comment threads (parent + replies)
-   - File-level vs line-level comments
-   - Comment CRUD operations
-   - Draft management
+#### Components (`src/components/`) ✅
 
-9. **Review Workflow** (lines ~4800-5300)
-   - Start/show/submit/delete review
-   - Local review storage
-   - Pending review handling
-   - Batch submission
+| Component | Description |
+|-----------|-------------|
+| `AsyncImage.tsx` | Image loading with base64 fallback |
+| `CommentComposer.tsx` | Comment input form |
+| `CommentDisplay.tsx` | Single comment rendering |
+| `CommentStatus.tsx` | Error/success message display |
+| `CommentThreadItem.tsx` | Thread with parent + replies |
+| `ConfirmDialog.tsx` | Reusable confirmation modal |
+| `MediaViewer.tsx` | Full-screen image viewer |
+| `MermaidCode.tsx` | Mermaid diagram rendering |
 
-10. **Offline Support** (integrated throughout)
-    - Network status detection
-    - IndexedDB caching
-    - Offline mode UI indicators
+### What Remains in App.tsx
 
-11. **UI Layout & Resizing** (lines ~3900-4100, ~8000+)
-    - Sidebar collapse/expand
-    - Pane resizing
-    - Panel accordion behavior
+1. **UI State Management** (~65 useState hooks)
+   - Panel collapse states (sidebar, repo, PR, comments)
+   - Modal/menu visibility states
+   - Form input states (drafts, errors, success flags)
+   - Resizing states
 
-## Refactoring Strategy
+2. **Complex Effects** (~45 useEffect hooks)
+   - Scroll position restoration logic
+   - Menu click-outside handlers
+   - Draft auto-save with debouncing
+   - PR mode auto-switching
 
-### Phase 1: Extract Types and Constants (Low Risk)
+3. **TanStack Queries** (5 queries)
+   - `prsUnderReviewQuery` - Local reviews list
+   - `pullsQuery` - PR list for repo
+   - `pullDetailQuery` - Single PR detail
+   - `mruOpenPrsQueries` - MRU repos open PRs
+   - `mruClosedPrsQueries` - MRU repos closed PRs
 
-**Goal**: Move all type definitions and constants to separate files.
+4. **UI Rendering** (~3000 lines of JSX)
+   - Login screen
+   - Sidebar (user menu, repo panel, PR panel, file list, comment panel)
+   - Main workspace (source pane, preview pane)
+   - Modals and menus
 
-**Files to Create**:
-- `src/types/index.ts` - All type definitions
-- `src/constants/index.ts` - RETRY_CONFIG, zoom settings, scroll cache settings
+5. **Monaco Editor Integration** (~400 lines)
+   - Editor mount handlers
+   - Glyph margin click handlers
+   - Scroll synchronization
+   - Wheel event handlers for zoom
 
-**Test Cases Required**: None (pure refactoring, no behavior change)
+---
 
-### Phase 2: Extract Custom Hooks (Medium Risk)
+## Next Refactoring Phase: Recommended Changes
 
-**Goal**: Extract stateful logic into custom hooks.
+### Priority 1: Extract UI State Management
 
-#### 2.1: useAuth Hook
-**Extract**: authQuery, loginMutation, logoutMutation, auth-related effects
-**File**: `src/hooks/useAuth.ts`
+#### 1.1: `useDrafts` Hook (HIGH VALUE)
+**Lines to extract**: ~150 lines
+**Location**: Lines 2165-2320 in App.tsx
+
+**Extract**:
+- `draftsByFile` state
+- Draft loading from localStorage
+- Draft auto-save effects with debouncing
+- Draft restoration effects
+- Draft clearing on submit
+
+**Benefits**:
+- Removes 6 useEffect hooks from App.tsx
+- Consolidates all draft logic
+- Makes draft persistence testable
+
 **Test Cases**:
-- [ ] Returns loading state during initial auth check
-- [ ] Returns authenticated state with user data when logged in
-- [ ] Returns unauthenticated state when not logged in
-- [ ] loginMutation triggers OAuth flow
-- [ ] logoutMutation clears credentials and redirects
-- [ ] Handles offline auth caching correctly
-- [ ] Re-validates token on reconnection
+- [ ] Loads drafts from localStorage on mount
+- [ ] Saves drafts with 300ms debounce
+- [ ] Restores inline draft when file selected
+- [ ] Restores file-level draft when composer opens
+- [ ] Clears draft after successful submit
+- [ ] Handles multiple files' drafts independently
 
-#### 2.2: useRepository Hook
-**Extract**: repoRef, repoInput, repoMRU, repo form logic
-**File**: `src/hooks/useRepository.ts`
-**Test Cases**:
-- [ ] Parses owner/repo from input correctly
-- [ ] Validates format (rejects invalid formats)
-- [ ] Updates MRU list on successful load
-- [ ] Persists MRU to localStorage
-- [ ] Loads MRU from localStorage on mount
-- [ ] Handles local directory mode separately
+#### 1.2: `useScrollPositions` Hook (HIGH VALUE)
+**Lines to extract**: ~200 lines
+**Location**: Lines 344-520, 1440-1700
 
-#### 2.3: usePullRequests Hook
-**Extract**: pullsQuery, prsUnderReviewQuery, MRU queries, PR filtering
-**File**: `src/hooks/usePullRequests.ts`
-**Test Cases**:
-- [ ] Fetches open PRs for selected repo
-- [ ] Fetches closed PRs when showClosedPRs is true
-- [ ] Filters PRs by search term (number, title, author)
-- [ ] Tracks PRs under review across repos
-- [ ] Handles pagination correctly
-- [ ] Refetches on manual refresh
+**Extract**:
+- `scrollCacheRef` and related refs
+- `saveScrollPosition`, `getScrollPosition`, `persistScrollCache`
+- `persistSourceScrollPosition`, `shouldSkipSourceScrollSnapshot`
+- Source pane scroll restoration logic
+- File list scroll restoration logic
+- Comment panel scroll restoration logic
 
-#### 2.4: usePullDetail Hook
-**Extract**: pullDetailQuery, file contents, comments, reviews
-**File**: `src/hooks/usePullDetail.ts`
-**Test Cases**:
-- [ ] Fetches PR detail when selectedPr changes
-- [ ] Returns files with correct status (added, modified, deleted, renamed)
-- [ ] Returns comments grouped by file
-- [ ] Returns reviews with pending review detection
-- [ ] Handles renamed files correctly
-- [ ] Caches results for instant re-access
+**Benefits**:
+- Removes complex scroll restoration logic from App.tsx
+- Makes scroll behavior testable
+- Reduces ref count significantly
 
-#### 2.5: useFileContents Hook
-**Extract**: fileContentsQuery, file preloading logic
-**File**: `src/hooks/useFileContents.ts`
 **Test Cases**:
-- [ ] Fetches content on file selection
-- [ ] Returns both head and base content for diff
-- [ ] Handles missing content gracefully
-- [ ] Uses cache for previously loaded files
-- [ ] Falls back to offline cache when offline
-
-#### 2.6: useTocOrdering Hook
-**Extract**: tocFilesMetadata, tocContentsQuery, tocFileNameMap, sortedFiles
-**File**: `src/hooks/useTocOrdering.ts`
-**Test Cases**:
-- [ ] Parses toc.yml files correctly
-- [ ] Extracts display names from toc entries
-- [ ] Orders files according to toc hierarchy
-- [ ] Handles nested toc directories
-- [ ] Falls back to alphabetical for files not in toc
-
-#### 2.7: useComments Hook
-**Extract**: Comment CRUD mutations, local comments, reviewAwareComments
-**File**: `src/hooks/useComments.ts`
-**Test Cases**:
-- [ ] Creates single comment (POST immediately)
-- [ ] Creates review comment (stores locally)
-- [ ] Updates existing comment
-- [ ] Deletes comment (local and GitHub)
-- [ ] Merges local and GitHub comments correctly
-- [ ] Filters by file path
-- [ ] Groups into threads (parent + replies)
-
-#### 2.8: useReview Hook
-**Extract**: Review mutations (start, submit, delete), pendingReview state
-**File**: `src/hooks/useReview.ts`
-**Test Cases**:
-- [ ] Starts new local review
-- [ ] Resumes existing local review
-- [ ] Submits local review to GitHub (batch)
-- [ ] Deletes local review
-- [ ] Deletes GitHub pending review
-- [ ] Handles submission errors gracefully
-- [ ] Creates log file on abandon
-
-#### 2.9: useViewedFiles Hook
-**Extract**: viewedFiles state, toggle/markAll functions
-**File**: `src/hooks/useViewedFiles.ts`
-**Test Cases**:
-- [ ] Tracks viewed files per PR
-- [ ] Persists to localStorage
-- [ ] Loads from localStorage on mount
-- [ ] toggleFileViewed toggles state correctly
-- [ ] markAllFilesAsViewed marks all files
-
-#### 2.10: useDrafts Hook
-**Extract**: draftsByFile state, draft persistence logic
-**File**: `src/hooks/useDrafts.ts`
-**Test Cases**:
-- [ ] Stores inline comment drafts per file
-- [ ] Stores reply drafts per comment
-- [ ] Debounces localStorage writes
-- [ ] Loads drafts on mount
-- [ ] Clears drafts on successful submit
-
-#### 2.11: useScrollCache Hook
-**Extract**: Scroll position caching for file list, source pane, comment panel
-**File**: `src/hooks/useScrollCache.ts`
-**Test Cases**:
-- [ ] Saves scroll position on scroll events
+- [ ] Saves scroll position on scroll event
 - [ ] Restores scroll position on file change
 - [ ] Handles TTL expiration
 - [ ] Prunes old entries
-- [ ] Works independently per cache type
+- [ ] Protects during restore grace period
 
-#### 2.12: usePaneZoom Hook
-**Extract**: paneZoomLevel state, zoom functions
-**File**: `src/hooks/usePaneZoom.ts`
-**Test Cases**:
-- [ ] Adjusts zoom level within bounds
-- [ ] Resets zoom to default
-- [ ] Persists zoom level
-- [ ] Applies zoom to Monaco editor
+#### 1.3: `useMenuStates` Hook (MEDIUM VALUE)
+**Lines to extract**: ~100 lines
+**Location**: Various menu state hooks
 
-### Phase 3: Extract UI Components (Medium Risk)
+**Extract**:
+- `isUserMenuOpen`, `toggleUserMenu`, `closeUserMenu`
+- `isPrFilterMenuOpen`, `togglePrFilterMenu`, `closePrFilterMenu`
+- `showSourceMenu`, `showFilesMenu`, `showCommentPanelMenu`
+- Click-outside handlers for all menus
 
-**Goal**: Extract large UI sections into separate components.
+**Benefits**:
+- Consolidates 5 similar patterns
+- Removes 5 useEffect hooks
+- Simpler mental model
 
-#### 3.1: Sidebar Component
-**Extract**: Entire sidebar including user menu, repo panel, PR panel, file list
-**File**: `src/components/Sidebar/index.tsx`
-**Sub-components**:
-- `UserMenu.tsx`
-- `RepoPanel.tsx`
-- `PrPanel.tsx`
-- `FileList.tsx`
-- `CommentPanel.tsx`
+### Priority 2: Extract Query Logic
 
-**Test Cases**:
-- [ ] Renders user menu with avatar and login
-- [ ] Opens/closes user menu dropdown
-- [ ] Collapses/expands sidebar
-- [ ] Shows repo input form
-- [ ] Shows PR list with correct badges
-- [ ] Shows file list with viewed checkboxes
-- [ ] Shows comment count badges on files
-- [ ] Handles file selection
+#### 2.1: `usePullRequests` Hook (HIGH VALUE)
+**Lines to extract**: ~300 lines
+**Location**: Lines 760-950, 2760-3100
 
-#### 3.2: CommentPanel Component
-**Extract**: Comment panel with threads, composer, actions
-**File**: `src/components/CommentPanel/index.tsx`
-**Sub-components**:
-- `CommentThread.tsx`
-- `CommentComposer.tsx`
-- `ReplyComposer.tsx`
-- `ReviewActions.tsx`
+**Extract**:
+- `prsUnderReviewQuery`
+- `mruOpenPrsQueries`, `mruClosedPrsQueries`
+- `pullsQuery`
+- `enhancedPrsUnderReview` memo
+- PR state/metadata caching logic
+- PR prefetching logic
+
+**Benefits**:
+- Removes 3 queries from App.tsx
+- Consolidates all PR list logic
+- Makes PR filtering/enhancement testable
 
 **Test Cases**:
-- [ ] Renders comment threads correctly
-- [ ] Shows reply composer on reply click
-- [ ] Shows edit form on edit click
-- [ ] Handles comment submission
-- [ ] Shows pending review indicator
-- [ ] Shows "Submit review" / "Delete review" buttons
+- [ ] Fetches PRs under review from backend
+- [ ] Fetches PRs from MRU repos
+- [ ] Enhances PRs with viewed counts
+- [ ] Caches PR metadata
+- [ ] Prefetches PR details
 
-#### 3.3: SourcePane Component
-**Extract**: Monaco editor pane with toolbar
-**File**: `src/components/SourcePane/index.tsx`
+#### 2.2: `usePullDetail` Hook (MEDIUM VALUE)
+**Lines to extract**: ~150 lines
+**Location**: Lines 986-1100
 
-**Test Cases**:
-- [ ] Renders Monaco editor with correct content
-- [ ] Switches between diff and single view
-- [ ] Handles glyph margin clicks
-- [ ] Applies zoom level
-- [ ] Shows correct file path in header
+**Extract**:
+- `pullDetailQuery`
+- Offline caching on fetch
+- Auto-cache all files effect
+- Force fresh data effect
 
-#### 3.4: PreviewPane Component
-**Extract**: Markdown preview pane
-**File**: `src/components/PreviewPane/index.tsx`
+**Benefits**:
+- Separates PR detail fetching
+- Makes offline caching testable
 
-**Test Cases**:
-- [ ] Renders markdown content correctly
-- [ ] Renders Mermaid diagrams
-- [ ] Handles link clicks (internal navigation)
-- [ ] Handles image loading (AsyncImage)
-- [ ] Shows non-markdown as preformatted text
+### Priority 3: Extract UI Components
 
-#### 3.5: MediaViewer Component
-**Extract**: Full-screen media viewer modal
-**File**: `src/components/MediaViewer/index.tsx`
+#### 3.1: `Sidebar` Component (HIGH VALUE)
+**Lines to extract**: ~1200 lines
+**Location**: Lines 4050-5800
 
-**Test Cases**:
-- [ ] Opens on image click
-- [ ] Shows image at full size
-- [ ] Closes on ESC key
-- [ ] Closes on backdrop click
+**Extract**:
+- Entire `<aside className="sidebar">` block
+- User menu, repo panel, PR panel sections
+- File list with all filtering/badges
+- Comment panel when inline comments open
 
-#### 3.6: Modal Components
-**Extract**: Confirmation dialogs
-**File**: `src/components/Modal/index.tsx`
+**Sub-components to create**:
+- `UserMenu.tsx` - Avatar, dropdown, logout button
+- `RepoPanel.tsx` - Repo input, MRU dropdown
+- `PrPanel.tsx` - PR list, filtering, badges
+- `FileList.tsx` - File tree with comment badges
 
-**Test Cases**:
-- [ ] DeleteCommentModal shows on delete click
-- [ ] DeleteReviewModal shows on delete review click
-- [ ] SubmitErrorModal shows on submission error
+**Benefits**:
+- Single largest extraction possible
+- Creates reusable sidebar structure
+- Enables parallel development
 
-### Phase 4: Extract Services/Utilities (Low Risk)
+#### 3.2: `SourcePane` Component (MEDIUM VALUE)
+**Lines to extract**: ~500 lines
+**Location**: Lines 6100-6600
 
-**Goal**: Extract API calls and utility functions.
+**Extract**:
+- Source pane header with toolbar
+- Monaco Editor wrapper
+- DiffEditor wrapper
+- Glyph margin handlers
+- Scroll sync handlers
 
-#### 4.1: GitHub API Service
-**File**: `src/services/github.ts`
-**Functions**:
-- `fetchPullRequests`
-- `fetchPullDetail`
-- `fetchFileContents`
-- `submitComment`
-- `submitReview`
-- `updateComment`
-- `deleteComment`
+**Benefits**:
+- Isolates Monaco complexity
+- Makes editor behavior testable
 
-**Test Cases**: Already covered by backend tests
+#### 3.3: `PreviewPane` Component (MEDIUM VALUE)
+**Lines to extract**: ~300 lines
+**Location**: Lines 6700-7000
 
-#### 4.2: Local Review Service
-**File**: `src/services/localReview.ts`
-**Functions**:
-- `startLocalReview`
-- `addLocalComment`
-- `updateLocalComment`
-- `deleteLocalComment`
-- `submitLocalReview`
-- `getLocalReviewMetadata`
+**Extract**:
+- Preview pane header
+- ReactMarkdown wrapper
+- Non-markdown pre display
+- Image handling
 
-**Test Cases**: Already covered by backend tests (review_storage.rs)
+**Benefits**:
+- Separates preview rendering
+- Simplifies markdown customization
 
-#### 4.3: Markdown Utilities
-**File**: `src/utils/markdown.ts`
-**Functions**:
-- `parseLinePrefix`
-- `formatFileLabel`
-- `isMarkdownFile`
-- `isImageFile`
+### Priority 4: Simplify Remaining Logic
 
-**Test Cases**:
-- [ ] parseLinePrefix extracts line number from "[Line 42] comment"
-- [ ] parseLinePrefix returns original body when no prefix
-- [ ] formatFileLabel extracts folder/file from path
-- [ ] isMarkdownFile detects .md, .markdown, .mdx
-- [ ] isImageFile detects .png, .jpg, .gif, .svg, .webp
+#### 4.1: Flatten Review State Management
+**Current complexity**: pendingReview, pendingReviewOverride, pendingReviewFromServer, hasLocalPendingReview
+**Opportunity**: Consolidate into single review state object
 
-#### 4.4: File Navigation Utilities
-**File**: `src/utils/navigation.ts`
-**Functions**:
-- `resolveRelativePath`
-- `formatFilePathWithEllipsis`
+#### 4.2: Reduce Panel State Variables
+**Current**: 8 separate boolean states for panel visibility
+**Opportunity**: Single `panelState` object or reducer
 
-**Test Cases**:
-- [ ] resolveRelativePath handles ../
-- [ ] resolveRelativePath handles ./
-- [ ] resolveRelativePath handles absolute paths
-- [ ] formatFilePathWithEllipsis truncates long paths
+#### 4.3: Extract Form Handlers
+**Current**: Multiple inline form handlers with similar patterns
+**Opportunity**: Create reusable form handling utilities
 
-### Phase 5: Integration Testing (High Priority)
+---
 
-**Goal**: Create integration tests that verify the complete user flows work correctly.
+## Updated Test Coverage
 
-#### 5.1: Authentication Flow
-**Test Cases**:
-- [ ] User can log in via OAuth
-- [ ] User session persists across page reload
-- [ ] User can log out
-- [ ] Offline user can view cached PRs
+| Area | Current Tests | Target Tests | Status |
+|------|--------------|--------------|--------|
+| Types/Constants | 0 | 0 | ✅ N/A |
+| useAuth | 10 | 10 | ✅ Complete |
+| useCommentMutations | 45 | 45 | ✅ Complete |
+| useCommentFiltering | 30 | 30 | ✅ Complete |
+| useFileContents | 12 | 12 | ✅ Complete |
+| useFileNavigation | 13 | 13 | ✅ Complete |
+| useLocalStorage | 19 | 19 | ✅ Complete |
+| usePaneZoom | 16 | 16 | ✅ Complete |
+| useTocSortedFiles | 31 | 31 | ✅ Complete |
+| useViewedFiles | 20 | 20 | ✅ Complete |
+| useNetworkStatus | 11 | 11 | ✅ Complete |
+| **Hooks Subtotal** | **226** | **226** | ✅ |
+| useDrafts | 0 | 8 | ⏳ Planned |
+| useScrollPositions | 0 | 10 | ⏳ Planned |
+| useMenuStates | 0 | 6 | ⏳ Planned |
+| usePullRequests | 0 | 10 | ⏳ Planned |
+| usePullDetail | 0 | 6 | ⏳ Planned |
+| Sidebar Component | 0 | 15 | ⏳ Planned |
+| SourcePane Component | 0 | 10 | ⏳ Planned |
+| PreviewPane Component | 0 | 8 | ⏳ Planned |
+| **Total** | **226** | **299** |
 
-#### 5.2: PR Browsing Flow
-**Test Cases**:
-- [ ] User can enter repo and load PRs
-- [ ] User can filter PRs by search
-- [ ] User can select a PR and see files
-- [ ] User can switch between open/closed PRs
+---
 
-#### 5.3: File Viewing Flow
-**Test Cases**:
-- [ ] User can select a file and see content
-- [ ] User can toggle diff view
-- [ ] User can mark file as viewed
-- [ ] User can navigate via file links
+## Recommended Next Session Tasks
 
-#### 5.4: Comment Flow
-**Test Cases**:
-- [ ] User can add a single comment
-- [ ] User can start a review and add comments
-- [ ] User can edit own comment
-- [ ] User can delete own comment
-- [ ] User can reply to a comment
-- [ ] User can submit review
+### Option A: Focus on State Extraction (Reduces complexity)
+1. Extract `useDrafts` hook (~2 hours)
+2. Extract `useScrollPositions` hook (~3 hours)
+3. Extract `useMenuStates` hook (~1 hour)
 
-#### 5.5: Offline Flow
-**Test Cases**:
-- [ ] User can view cached PR when offline
-- [ ] User can add comments to local review when offline
-- [ ] App shows offline indicator correctly
-- [ ] App recovers when connection returns
+**Expected result**: -450 lines, -15 effects, more testable
 
-## Recommended Extraction Order
+### Option B: Focus on Query Extraction (Reduces coupling)
+1. Extract `usePullRequests` hook (~3 hours)
+2. Extract `usePullDetail` hook (~2 hours)
 
-### Week 1: Foundation
-1. Extract types (`src/types/index.ts`)
-2. Extract constants (`src/constants/index.ts`)
-3. Extract `useAuth` hook
-4. Extract `useRepository` hook
+**Expected result**: -450 lines, cleaner data flow
 
-### Week 2: Data Layer
-5. Extract `usePullRequests` hook
-6. Extract `usePullDetail` hook
-7. Extract `useFileContents` hook
-8. Extract `useTocOrdering` hook
+### Option C: Focus on UI Extraction (Biggest visual impact)
+1. Extract `Sidebar` component with sub-components (~4 hours)
 
-### Week 3: Comment System
-9. Extract `useComments` hook
-10. Extract `useReview` hook
-11. Extract `useDrafts` hook
+**Expected result**: -1200 lines, reusable components
 
-### Week 4: UI Components - Sidebar
-12. Extract `Sidebar` component
-13. Extract `UserMenu`, `RepoPanel`, `PrPanel`
-14. Extract `FileList` component
-
-### Week 5: UI Components - Main
-15. Extract `CommentPanel` and sub-components
-16. Extract `SourcePane` component
-17. Extract `PreviewPane` component
-
-### Week 6: Polish
-18. Extract remaining utilities
-19. Extract `Modal` components
-20. Add integration tests
-
-## Risk Mitigation
-
-### Before Each Extraction:
-1. Ensure all related tests pass
-2. Document the current behavior
-3. Create a feature branch
-
-### During Extraction:
-1. Extract one piece at a time
-2. Run tests after each change
-3. Verify UI manually
-
-### After Extraction:
-1. Run full test suite
-2. Manual QA of affected features
-3. Review for regressions
-
-## Test Coverage Goals
-
-| Area | Current Tests | Target Tests |
-|------|--------------|--------------|
-| Types/Constants | 0 | 0 (type-only) |
-| useAuth | 0 | 10 |
-| useRepository | 0 | 8 |
-| usePullRequests | 0 | 8 |
-| usePullDetail | 0 | 8 |
-| useFileContents | 0 | 6 |
-| useTocOrdering | 0 | 6 |
-| useComments | 0 | 10 |
-| useReview | 0 | 10 |
-| useViewedFiles | 0 | 6 |
-| useDrafts | 0 | 8 |
-| useScrollCache | 0 | 6 |
-| UI Components | 0 | 20 |
-| Integration | 0 | 15 |
-| **Total New** | **0** | **~121** |
+---
 
 ## Summary
 
-This refactoring plan breaks down the monolithic App.tsx into:
-- **12+ custom hooks** for stateful logic
-- **10+ UI components** for rendering
-- **4+ utility modules** for shared functions
-- **~121 new test cases** for confidence
+### Progress Made
+- **Lines reduced**: 9,041 → 7,179 (20% reduction)
+- **Hooks extracted**: 11 custom hooks
+- **Components extracted**: 8 reusable components
+- **Tests added**: 226 new tests (all passing)
+- **Mutations moved**: All 6 comment/review mutations now in hooks
 
-The phased approach ensures that:
-1. Each extraction is small and testable
-2. Existing functionality is preserved
-3. Progress is incremental and reversible
-4. The final architecture is maintainable and scalable
+### Remaining Work
+- **Lines remaining**: 7,179
+- **Target**: ~3,000 lines (core App orchestration only)
+- **Estimated additional extractions**: 4-6 more hooks, 3-4 more components
+- **Estimated tests to add**: ~73 more tests
 
-## Next Steps
+### Architecture Vision
+```
+App.tsx (~3000 lines)
+├── Orchestrates state between extracted modules
+├── Handles top-level routing/layout
+└── Minimal direct DOM rendering
 
-1. Review and approve this plan
-2. Prioritize which hooks/components to extract first based on immediate needs
-3. Create test stubs for the first extraction target
-4. Begin Phase 1 (types and constants)
+hooks/ (~2000 lines)
+├── useAuth, useCommentMutations, useCommentFiltering
+├── useFileContents, useFileNavigation, useLocalStorage
+├── usePaneZoom, useTocSortedFiles, useViewedFiles
+├── useDrafts, useScrollPositions, useMenuStates (new)
+└── usePullRequests, usePullDetail (new)
+
+components/ (~2000 lines)
+├── Sidebar/ (UserMenu, RepoPanel, PrPanel, FileList)
+├── SourcePane/, PreviewPane/
+├── AsyncImage, CommentThreadItem, ConfirmDialog
+└── MediaViewer, MermaidCode
+```
