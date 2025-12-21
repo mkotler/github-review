@@ -194,6 +194,40 @@ describe("useFileNavigation hook", () => {
     });
   });
 
+  describe("setSelectedFilePath (without history)", () => {
+    it("should set selected file without adding to history", () => {
+      const { result } = renderHook(() => useFileNavigation());
+
+      act(() => {
+        result.current.navigateToFile("file1.ts");
+      });
+      act(() => {
+        result.current.setSelectedFilePath("file2.ts");
+      });
+
+      expect(result.current.selectedFilePath).toBe("file2.ts");
+      expect(result.current.historyLength).toBe(1); // Only file1 in history
+      expect(result.current.historyIndex).toBe(0);
+    });
+
+    it("should allow setting to null without affecting history", () => {
+      const { result } = renderHook(() => useFileNavigation());
+
+      act(() => {
+        result.current.navigateToFile("file1.ts");
+      });
+      act(() => {
+        result.current.navigateToFile("file2.ts");
+      });
+      act(() => {
+        result.current.setSelectedFilePath(null);
+      });
+
+      expect(result.current.selectedFilePath).toBeNull();
+      expect(result.current.historyLength).toBe(2); // History preserved
+    });
+  });
+
   describe("back and forward navigation sequence", () => {
     it("should handle complex navigation sequence", () => {
       const { result } = renderHook(() => useFileNavigation());

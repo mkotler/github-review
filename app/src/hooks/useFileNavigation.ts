@@ -10,6 +10,8 @@ export interface UseFileNavigationReturn {
   selectedFilePath: string | null;
   /** Navigate to a file (adds to history) */
   navigateToFile: (path: string | null) => void;
+  /** Set selected file without adding to history (for programmatic selection like auto-select) */
+  setSelectedFilePath: (pathOrUpdater: string | null | ((prev: string | null) => string | null)) => void;
   /** Navigate back in history */
   goBack: () => void;
   /** Navigate forward in history */
@@ -101,9 +103,21 @@ export function useFileNavigation(): UseFileNavigationReturn {
     });
   }, []);
 
+  // Set selected file without adding to history (for programmatic selection)
+  // Supports both direct value and functional updater pattern
+  const setSelectedFilePath = useCallback((pathOrUpdater: string | null | ((prev: string | null) => string | null)) => {
+    setState((prev) => {
+      const newPath = typeof pathOrUpdater === 'function' 
+        ? pathOrUpdater(prev.selectedFilePath)
+        : pathOrUpdater;
+      return { ...prev, selectedFilePath: newPath };
+    });
+  }, []);
+
   return {
     selectedFilePath: state.selectedFilePath,
     navigateToFile,
+    setSelectedFilePath,
     goBack,
     goForward,
     canGoBack: state.index > 0,

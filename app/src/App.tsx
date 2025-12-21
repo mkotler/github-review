@@ -1,6 +1,6 @@
 /* @refresh reset */
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -15,7 +15,6 @@ import * as offlineCache from "./offlineCache";
 import { useScrollSync } from "./useScrollSync.ts";
 // Extracted modules
 import type {
-  AuthStatus,
   RepoRef,
   PullRequestSummary,
   PullRequestMetadata,
@@ -31,7 +30,6 @@ import type {
   ReviewMetadata,
 } from "./types";
 import {
-  AUTH_QUERY_KEY,
   RETRY_CONFIG,
   PANE_ZOOM_STEP,
   SCROLL_CACHE_KEY,
@@ -49,7 +47,7 @@ import { loadScrollCache, pruneScrollCache } from "./utils/scrollCache";
 import { parseLinePrefix, getImageMimeType, formatFileLabel, formatFileTooltip, formatFilePathWithLeadingEllipsis, isImageFile, isMarkdownFile } from "./utils/helpers";
 import { MemoizedAsyncImage, MermaidCode, CommentThreadItem, MediaViewer, ConfirmDialog, CommentList, CommentComposer, CommentStatus, handleCtrlEnter as handleCtrlEnterUtil } from "./components";
 import type { MediaContent } from "./components";
-import { usePaneZoom, useViewedFiles, useMRUList, useLocalStorage, useTocSortedFiles, useFileContents, useCommentFiltering, useMarkdownComponents, useCommentMutations, createLocalReview } from "./hooks";
+import { usePaneZoom, useViewedFiles, useMRUList, useLocalStorage, useTocSortedFiles, useFileContents, useCommentFiltering, useMarkdownComponents, useCommentMutations, useFileNavigation, useAuth, createLocalReview } from "./hooks";
 
 type ScrollCacheSection = "fileList" | "fileComments" | "sourcePane";
 
@@ -171,10 +169,18 @@ function App() {
   const [selectedPr, setSelectedPr] = useState<number | null>(null);
   const [activeLocalDir, setActiveLocalDir] = useState<string | null>(null);
   const [localDirMRU, addLocalDir] = useMRUList('local-dir-mru', 10);
-  const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
-  const [fileNavigationHistory, setFileNavigationHistory] = useState<string[]>([]);
-  const [fileNavigationIndex, setFileNavigationIndex] = useState<number>(-1);
-  const [isNavigatingFromHistory, setIsNavigatingFromHistory] = useState(false);
+  // File navigation managed by useFileNavigation hook
+  const {
+    selectedFilePath,
+    setSelectedFilePath,
+    navigateToFile,
+    goBack: navigateBack,
+    goForward: navigateForward,
+    canGoBack: canNavigateBack,
+    canGoForward: canNavigateForward,
+    clearHistory: clearFileNavigationHistory,
+    historyLength: fileNavigationHistoryLength,
+  } = useFileNavigation();
   const [showClosedPRs, setShowClosedPRs] = useState(false);
   const [prMode, setPrMode] = useState<"under-review" | "repo">("under-review");
   const [prSearchFilter, setPrSearchFilter] = useState("");
@@ -713,49 +719,26 @@ function App() {
     };
   }, []);
 
-  const authQuery = useQuery({
-    queryKey: AUTH_QUERY_KEY,
-    queryFn: async () => {
-      const status = await invoke<AuthStatus>("cmd_check_auth_status");
-      
-      // Update network status based on authentication result
-      if (status.is_offline) {
-        markOffline();
-      } else if (status.is_authenticated) {
-        markOnline();
-      }
-      
-      // Cache auth status for instant reload
-      localStorage.setItem('cached-auth-status', JSON.stringify(status));
-      
-      return status;
-    },
-    retry: 3, // Retry up to 3 times for transient network errors
-    retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 5000), // Exponential backoff, max 5s
-    staleTime: 5 * 60 * 1000, // Consider auth status fresh for 5 minutes
-    refetchOnWindowFocus: true, // Re-check auth when window regains focus
-    refetchOnReconnect: true, // Re-check auth when browser detects network reconnection
-    initialData: () => {
-      // Load cached auth status immediately
-      const cached = localStorage.getItem('cached-auth-status');
-      if (cached) {
-        try {
-          return JSON.parse(cached);
-        } catch {
-          return undefined;
-        }
-      }
-      return undefined;
+  // Authentication managed by useAuth hook
+  const {
+    isLoading: isAuthLoading,
+    isAuthenticated,
+    userLogin,
+    avatarUrl,
+    startLogin,
+    isLoggingIn,
+    logout,
+    isLoggingOut,
+  } = useAuth({
+    isOnline,
+    onOffline: markOffline,
+    onOnline: markOnline,
+    onLogoutSuccess: () => {
+      setRepoRef(null);
+      setSelectedPr(null);
+      setSelectedFilePath(null);
     },
   });
-
-  // Re-validate authentication when coming back online
-  useEffect(() => {
-    if (isOnline && authQuery.data?.is_offline) {
-      console.log('🔄 Network back online, re-validating authentication...');
-      authQuery.refetch();
-    }
-  }, [isOnline, authQuery.data?.is_offline]);
 
   // Handle app wake from sleep/hibernation - refetch all queries
   useEffect(() => {
@@ -778,35 +761,6 @@ function App() {
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
   }, [queryClient]);
 
-  const loginMutation = useMutation({
-    mutationFn: async () => {
-      const status = await invoke<AuthStatus>("cmd_start_github_oauth");
-      return status;
-    },
-    onSuccess: (status) => {
-      queryClient.setQueryData(AUTH_QUERY_KEY, status);
-    },
-  });
-
-  const logoutMutation = useMutation({
-    mutationFn: async () => {
-      await invoke("cmd_logout");
-    },
-    onSuccess: () => {
-      queryClient.setQueryData<AuthStatus>(AUTH_QUERY_KEY, {
-        is_authenticated: false,
-        login: null,
-        avatar_url: null,
-        is_offline: false,
-      });
-      queryClient.removeQueries({ queryKey: ["pull-requests"] });
-      queryClient.removeQueries({ queryKey: ["pull-request"] });
-      setRepoRef(null);
-      setSelectedPr(null);
-      setSelectedFilePath(null);
-    },
-  });
-
   const prsUnderReviewQuery = useQuery({
     queryKey: ["prs-under-review"], // Remove login from key since it's local storage
     queryFn: async () => {
@@ -819,7 +773,7 @@ function App() {
       localStorage.setItem('cached-prs-under-review', JSON.stringify(cacheData));
       return prs;
     },
-    enabled: authQuery.data?.is_authenticated === true,
+    enabled: isAuthenticated,
     ...RETRY_CONFIG,
     staleTime: 5 * 60 * 1000, // 5 minutes - local reviews don't change often
     placeholderData: () => {
@@ -844,7 +798,7 @@ function App() {
       if (!match) return { queryKey: ["mru-open-prs-skip"], enabled: false };
       
       const [, owner, repo] = match;
-      const currentLogin = authQuery.data?.login;
+      const currentLogin = userLogin;
       
       return {
         queryKey: ["mru-open-prs", owner, repo, currentLogin],
@@ -891,7 +845,7 @@ function App() {
           
           return prsWithPendingReviews;
         },
-        enabled: authQuery.data?.is_authenticated === true && !!currentLogin,
+        enabled: isAuthenticated && !!currentLogin,
         ...RETRY_CONFIG,
         staleTime: 60 * 60 * 1000, // 1 hour
         gcTime: 60 * 60 * 1000, // Keep in cache for 1 hour
@@ -923,7 +877,7 @@ function App() {
       if (!match) return { queryKey: ["mru-closed-prs-skip"], enabled: false };
       
       const [, owner, repo] = match;
-      const currentLogin = authQuery.data?.login;
+      const currentLogin = userLogin;
       
       return {
         queryKey: ["mru-closed-prs", owner, repo, currentLogin],
@@ -970,7 +924,7 @@ function App() {
           
           return prsWithPendingReviews;
         },
-        enabled: authQuery.data?.is_authenticated === true && !!currentLogin && allOpenQueriesFinished,
+        enabled: isAuthenticated && !!currentLogin && allOpenQueriesFinished,
         ...RETRY_CONFIG,
         staleTime: 60 * 60 * 1000, // 1 hour
         gcTime: 60 * 60 * 1000, // Keep in cache for 1 hour
@@ -1021,7 +975,7 @@ function App() {
         throw error;
       }
     },
-    enabled: Boolean(repoRef && authQuery.data?.is_authenticated && !isLocalDirectoryMode && !isLocalRepo),
+    enabled: Boolean(repoRef && isAuthenticated && !isLocalDirectoryMode && !isLocalRepo),
     ...RETRY_CONFIG,
   });
 
@@ -1039,7 +993,7 @@ function App() {
       repoRef?.owner,
       repoRef?.repo,
       selectedPr,
-      authQuery.data?.login,
+      userLogin,
       activeLocalDir,
     ],
     queryFn: async () => {
@@ -1051,7 +1005,7 @@ function App() {
       if (isLocalRepo) {
         throw new Error("No local folder selected. Use Signed in → Open Local Folder…");
       }
-      const currentLogin = authQuery.data?.login ?? null;
+      const currentLogin = userLogin ?? null;
       
       // Always try network first (to detect coming back online)
       try {
@@ -1104,7 +1058,7 @@ function App() {
     enabled:
       Boolean(
         (activeLocalDir && repoRef) ||
-          (!isLocalRepo && repoRef && selectedPr && authQuery.data?.is_authenticated && authQuery.data?.login),
+          (!isLocalRepo && repoRef && selectedPr && isAuthenticated && userLogin),
       ),
     staleTime: 0, // Always consider data stale to force refetch
     refetchOnMount: true, // Refetch when component mounts
@@ -1136,15 +1090,15 @@ function App() {
       // Remove query when online to force fresh fetch, invalidate when offline to preserve cached data
       if (isOnline) {
         queryClient.removeQueries({ 
-          queryKey: ["pull-request", repoRef.owner, repoRef.repo, selectedPr, authQuery.data?.login]
+          queryKey: ["pull-request", repoRef.owner, repoRef.repo, selectedPr, userLogin]
         });
       } else {
         queryClient.invalidateQueries({ 
-          queryKey: ["pull-request", repoRef.owner, repoRef.repo, selectedPr, authQuery.data?.login]
+          queryKey: ["pull-request", repoRef.owner, repoRef.repo, selectedPr, userLogin]
         });
       }
     }
-  }, [repoRef?.owner, repoRef?.repo, selectedPr, authQuery.data?.login, isOnline, queryClient]);
+  }, [repoRef?.owner, repoRef?.repo, selectedPr, userLogin, isOnline, queryClient]);
 
   // Auto-cache all files when PR opens (if online)
   useEffect(() => {
@@ -1212,18 +1166,18 @@ function App() {
       // Remove query when online to force fresh fetch, invalidate when offline to preserve cached data
       if (isOnline) {
         queryClient.removeQueries({ 
-          queryKey: ["pull-request", repoRef.owner, repoRef.repo, selectedPr, authQuery.data?.login]
+          queryKey: ["pull-request", repoRef.owner, repoRef.repo, selectedPr, userLogin]
         });
       } else {
         queryClient.invalidateQueries({ 
-          queryKey: ["pull-request", repoRef.owner, repoRef.repo, selectedPr, authQuery.data?.login]
+          queryKey: ["pull-request", repoRef.owner, repoRef.repo, selectedPr, userLogin]
         });
       }
     }
     
     void refetchPulls();
     void refetchPullDetail();
-  }, [repoRef, selectedPr, authQuery.data?.login, refetchPullDetail, refetchPulls, queryClient, isOnline]);
+  }, [repoRef, selectedPr, userLogin, refetchPullDetail, refetchPulls, queryClient, isOnline]);
 
   const handleResizeStart = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -1272,7 +1226,7 @@ function App() {
     reviews,
     isLocalDirectoryMode,
     activeLocalDir,
-    authLogin: authQuery.data?.login ?? null,
+    authLogin: userLogin ?? null,
     selectedPr,
     editingComment,
   });
@@ -1389,7 +1343,7 @@ function App() {
           // Create a pending review object for the local review
           const localReview = createLocalReview({
             prNumber: prDetail.number,
-            author: authQuery.data?.login ?? "You",
+            author: userLogin ?? "You",
             commitId: prDetail.head_sha,
           });
           setPendingReviewOverride(localReview);
@@ -1406,7 +1360,7 @@ function App() {
     };
 
     void checkForLocalReview();
-  }, [repoRef, prDetail, pendingReviewOverride, pendingReviewFromServer, authQuery.data?.login, prsUnderReviewQuery, loadLocalComments]);
+  }, [repoRef, prDetail, pendingReviewOverride, pendingReviewFromServer, userLogin, prsUnderReviewQuery, loadLocalComments]);
 
   // Clear local review override if a GitHub pending review is detected
   // BUT only if the override is a LOCAL review (not the same as the server review)
@@ -1442,7 +1396,7 @@ function App() {
             repo: repoRef.repo,
             prNumber: prDetail.number,
             reviewId: pendingReviewFromServer.id,
-            currentLogin: authQuery.data?.login ?? null,
+            currentLogin: userLogin ?? null,
           });
           setLocalComments(pendingComments);
           // Set the pending review override so reviewAwareComments includes these comments
@@ -1453,7 +1407,7 @@ function App() {
       };
       void fetchPendingComments();
     }
-  }, [pendingReviewFromServer?.id, repoRef, prDetail?.number, authQuery.data?.login, pendingReviewOverride]);
+  }, [pendingReviewFromServer?.id, repoRef, prDetail?.number, userLogin, pendingReviewOverride]);
 
   const reviewAwareComments = useMemo(() => {
     if (pendingReview) {
@@ -1716,7 +1670,7 @@ function App() {
             // Create a fake review object for local comments
             localReview = createLocalReview({
               prNumber: prDetail.number,
-              author: authQuery.data?.login ?? "You",
+              author: userLogin ?? "You",
               commitId: prDetail.head_sha,
             });
           }
@@ -1731,7 +1685,7 @@ function App() {
         console.error("Failed to load local comments:", error);
       }
     }
-  }, [selectedFilePath, repoRef, prDetail, reviews, authQuery.data?.login, prsUnderReviewQuery, loadLocalComments, setFileCommentError, setFileCommentSuccess]);
+  }, [selectedFilePath, repoRef, prDetail, reviews, userLogin, prsUnderReviewQuery, loadLocalComments, setFileCommentError, setFileCommentSuccess]);
 
   const closeInlineComment = useCallback(() => {
     setIsInlineCommentOpen(false);
@@ -1772,8 +1726,8 @@ function App() {
 
   const handleLogout = useCallback(() => {
     closeUserMenu();
-    logoutMutation.mutate();
-  }, [closeUserMenu, logoutMutation]);
+    logout();
+  }, [closeUserMenu, logout]);
   const pullsErrorMessage = pullsQuery.isError
     ? pullsQuery.error instanceof Error
       ? pullsQuery.error.message
@@ -2131,7 +2085,7 @@ function App() {
     selectedFilePath,
     showOutdatedComments,
     showOnlyMyComments,
-    currentUserLogin: authQuery.data?.login ?? null,
+    currentUserLogin: userLogin ?? null,
   });
 
   useEffect(() => {
@@ -2438,40 +2392,14 @@ function App() {
 
   // Reset navigation history when PR changes
   useEffect(() => {
-    setFileNavigationHistory([]);
-    setFileNavigationIndex(-1);
-  }, [selectedPr]);
+    clearFileNavigationHistory();
+  }, [selectedPr, clearFileNavigationHistory]);
 
-  // Track file navigation history (only when user navigates, not from history buttons)
-  useEffect(() => {
-    if (!selectedFilePath || isNavigatingFromHistory) {
-      if (isNavigatingFromHistory) {
-        setIsNavigatingFromHistory(false);
-      }
-      return;
-    }
-
-    setFileNavigationHistory(prev => {
-      // If we're in the middle of history, truncate forward history
-      const newHistory = fileNavigationIndex >= 0 
-        ? prev.slice(0, fileNavigationIndex + 1)
-        : prev;
-      
-      // Don't add duplicate if the last entry is the same file
-      if (newHistory.length > 0 && newHistory[newHistory.length - 1] === selectedFilePath) {
-        return prev;
-      }
-      
-      // Add new entry
-      const updated = [...newHistory, selectedFilePath];
-      setFileNavigationIndex(updated.length - 1);
-      return updated;
-    });
-  }, [selectedFilePath, isNavigatingFromHistory, fileNavigationIndex]);
-
+  // Auto-select first file when file list changes
   useEffect(() => {
     if (filteredSortedFiles.length > 0) {
-      setSelectedFilePath((current) => {
+      // Use setSelectedFilePath (not navigateToFile) for auto-selection to avoid polluting history
+      setSelectedFilePath((current: string | null) => {
         if (current && filteredSortedFiles.some((file) => file.path === current)) {
           return current;
         }
@@ -2480,7 +2408,7 @@ function App() {
     } else {
       setSelectedFilePath(null);
     }
-  }, [filteredSortedFiles]);
+  }, [filteredSortedFiles, setSelectedFilePath]);
 
   useEffect(() => {
     if (commentSuccess) {
@@ -2882,7 +2810,7 @@ function App() {
             owner,
             repo,
             number,
-            authQuery.data?.login,
+            userLogin,
           ]);
           
           // Try to get from pulls list cache as fallback
@@ -2992,7 +2920,7 @@ function App() {
         pr.owner,
         pr.repo,
         pr.number,
-        authQuery.data?.login,
+        userLogin,
       ]);
       
       if (cachedPrDetail) {
@@ -3062,11 +2990,11 @@ function App() {
         local_folder: pr.local_folder ?? null,
       } as PrUnderReview : null;
     }).filter((pr): pr is NonNullable<typeof pr> => pr !== null);
-  }, [prsUnderReviewQuery.data, viewedFiles, prFileCounts, prTitles, prMetadata, queryClient, authQuery.data?.login, repoMRU, mruOpenPrsQueries, mruClosedPrsQueries, showAllFileTypes]);
+  }, [prsUnderReviewQuery.data, viewedFiles, prFileCounts, prTitles, prMetadata, queryClient, userLogin, repoMRU, mruOpenPrsQueries, mruClosedPrsQueries, showAllFileTypes]);
 
   // Fetch PR state/merged/locked for PRs under review that are missing it.
   useEffect(() => {
-    if (!authQuery.data?.is_authenticated) return;
+    if (!isAuthenticated) return;
 
     const candidates = enhancedPrsUnderReview
       .filter(pr => !(pr.owner === "__local__" && pr.repo === "local"))
@@ -3120,12 +3048,12 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [authQuery.data?.is_authenticated, enhancedPrsUnderReview, prMetadata, queryClient]);
+  }, [isAuthenticated, enhancedPrsUnderReview, prMetadata, queryClient]);
 
   // Prefetch PR details for PRs under review that don't have titles
   // Prioritize PRs with local reviews for immediate fetching
   useEffect(() => {
-    if (!authQuery.data?.login) return;
+    if (!userLogin) return;
     
     // Separate PRs with local reviews from others
     const prsWithLocalReviews = enhancedPrsUnderReview.filter(pr => pr.has_local_review);
@@ -3139,13 +3067,13 @@ function App() {
         }
         // Use fetchQuery instead of prefetchQuery to get results immediately
         void queryClient.fetchQuery({
-          queryKey: ["pull-request", pr.owner, pr.repo, pr.number, authQuery.data?.login],
+          queryKey: ["pull-request", pr.owner, pr.repo, pr.number, userLogin],
           queryFn: async () => {
             return await invoke<PullRequestDetail>("cmd_get_pull_request", {
               owner: pr.owner,
               repo: pr.repo,
               number: pr.number,
-              currentLogin: authQuery.data?.login,
+              currentLogin: userLogin,
             });
           },
           staleTime: 60 * 60 * 1000, // Cache for 1 hour
@@ -3160,19 +3088,19 @@ function App() {
           return;
         }
         void queryClient.prefetchQuery({
-          queryKey: ["pull-request", pr.owner, pr.repo, pr.number, authQuery.data?.login],
+          queryKey: ["pull-request", pr.owner, pr.repo, pr.number, userLogin],
           queryFn: async () => {
             return await invoke<PullRequestDetail>("cmd_get_pull_request", {
               owner: pr.owner,
               repo: pr.repo,
               number: pr.number,
-              currentLogin: authQuery.data?.login,
+              currentLogin: userLogin,
             });
           },
         });
       }
     });
-  }, [enhancedPrsUnderReview, queryClient, authQuery.data?.login]);
+  }, [enhancedPrsUnderReview, queryClient, userLogin]);
 
   // Add to MRU when pulls load successfully
   useEffect(() => {
@@ -3253,27 +3181,8 @@ function App() {
     // Keep the current PR mode (stay in "under-review" if already there)
   }, [enterLocalDirectoryMode]);
 
-  // Navigation functions for file history
-  const canNavigateBack = fileNavigationIndex > 0;
-  const canNavigateForward = fileNavigationIndex < fileNavigationHistory.length - 1;
-  
-  const navigateBack = useCallback(() => {
-    if (canNavigateBack) {
-      const newIndex = fileNavigationIndex - 1;
-      setFileNavigationIndex(newIndex);
-      setIsNavigatingFromHistory(true);
-      setSelectedFilePath(fileNavigationHistory[newIndex]);
-    }
-  }, [canNavigateBack, fileNavigationIndex, fileNavigationHistory]);
-  
-  const navigateForward = useCallback(() => {
-    if (canNavigateForward) {
-      const newIndex = fileNavigationIndex + 1;
-      setFileNavigationIndex(newIndex);
-      setIsNavigatingFromHistory(true);
-      setSelectedFilePath(fileNavigationHistory[newIndex]);
-    }
-  }, [canNavigateForward, fileNavigationIndex, fileNavigationHistory]);
+  // Note: File navigation (navigateBack, navigateForward, canNavigateBack, canNavigateForward) 
+  // comes from useFileNavigation hook
 
   // Get comment count for a file
   const getFileCommentCount = useCallback((filePath: string): number => {
@@ -3324,9 +3233,9 @@ function App() {
     return false;
   }, [draftsByFile]);
 
-  const handleLogin = useCallback(async () => {
-    await loginMutation.mutateAsync();
-  }, [loginMutation]);
+  const handleLogin = useCallback(() => {
+    startLogin();
+  }, [startLogin]);
 
   // Get mutation functions from the hook (state already destructured above)
   const {
@@ -3642,7 +3551,7 @@ function App() {
       return;
     }
     if (selectedFilePath !== targetFilePath) {
-      setSelectedFilePath(targetFilePath);
+      navigateToFile(targetFilePath);
     }
     setEditingCommentId(null);
     setEditingComment(null);
@@ -3686,7 +3595,7 @@ function App() {
             id: metadata.log_file_index, // Use log_file_index as the review ID
             body: metadata.body ?? "",
             state: "PENDING",
-            author: authQuery.data?.login ?? "You",
+            author: userLogin ?? "You",
             submitted_at: metadata.created_at,
             html_url: null, // Local reviews don't have URLs
             is_mine: true,
@@ -3708,7 +3617,7 @@ function App() {
       console.log("No local comments, creating new review");
       startReviewMutation.mutate();
     }
-  }, [localComments.length, repoRef, prDetail, authQuery.data?.login, startReviewMutation]);
+  }, [localComments.length, repoRef, prDetail, userLogin, startReviewMutation]);
 
   const handleStartReviewWithComment = useCallback(async () => {
     // This is called when user has typed a comment and clicks "Start review"
@@ -3801,7 +3710,7 @@ function App() {
         console.log("prDetail exists, creating local review object");
         const localReview = createLocalReview({
           prNumber: prDetail.number,
-          author: authQuery.data?.login ?? "You",
+          author: userLogin ?? "You",
           commitId: prDetail.head_sha,
         });
         setPendingReviewOverride(localReview);
@@ -3826,7 +3735,7 @@ function App() {
     selectedFile,
     repoRef,
     prDetail,
-    authQuery.data?.login,
+    userLogin,
     loadLocalComments,
   ]);
 
@@ -3847,7 +3756,7 @@ function App() {
           repo: repoRef.repo,
           prNumber: prDetail.number,
           reviewId: pendingReviewFromServer.id,
-          currentLogin: authQuery.data?.login ?? null,
+          currentLogin: userLogin ?? null,
         });
         console.log("Fetched pending review comments:", pendingComments);
         setLocalComments(pendingComments);
@@ -3869,7 +3778,7 @@ function App() {
         localReview = {
           id: prDetail.number,
           state: "PENDING",
-          author: authQuery.data?.login ?? "You",
+          author: userLogin ?? "You",
           submitted_at: null,
           body: null,
           html_url: null,
@@ -3888,7 +3797,7 @@ function App() {
     setIsInlineCommentOpen(true);
     setIsFileCommentComposerVisible(false);
     console.log("Panel state updated: isInlineCommentOpen=true");
-  }, [pendingReviewFromServer, repoRef, prDetail, authQuery.data?.login, localComments, reviews, prsUnderReviewQuery]);
+  }, [pendingReviewFromServer, repoRef, prDetail, userLogin, localComments, reviews, prsUnderReviewQuery]);
 
   const handleDeleteReviewClick = useCallback(() => {
     setShowDeleteReviewConfirm(true);
@@ -4131,12 +4040,12 @@ function App() {
     ? pullRequests.find((pr) => pr.number === selectedPr) ?? null
     : null;
 
-  const authData = authQuery.data;
-  if (authQuery.isLoading || authQuery.isPending) {
+  // Show loading state while auth is being checked
+  if (isAuthLoading) {
     return <div className="empty-state">Checking authentication…</div>;
   }
 
-  if (!authData?.is_authenticated) {
+  if (!isAuthenticated) {
     return (
       <div className="login-screen">
         <div>
@@ -4146,8 +4055,8 @@ function App() {
           </p>
         </div>
         <div className="login-actions">
-          <button onClick={handleLogin} disabled={loginMutation.isPending}>
-            {loginMutation.isPending ? "Waiting for GitHub…" : "Continue with GitHub"}
+          <button onClick={handleLogin} disabled={isLoggingIn}>
+            {isLoggingIn ? "Waiting for GitHub…" : "Continue with GitHub"}
           </button>
         </div>
       </div>
@@ -4201,16 +4110,16 @@ function App() {
                 aria-haspopup="menu"
                 {...userMenuAriaProps}
               >
-                {authData.avatar_url ? (
-                  <img src={authData.avatar_url} alt={authData.login ?? "GitHub user"} />
+                {avatarUrl ? (
+                  <img src={avatarUrl} alt={userLogin ?? "GitHub user"} />
                 ) : (
                   <div className="user-chip__avatar-fallback">
-                    {(authData.login ?? "").slice(0, 1).toUpperCase()}
+                    {(userLogin ?? "").slice(0, 1).toUpperCase()}
                   </div>
                 )}
                 <div className="user-chip__details">
                   <span className="chip-label">Signed in</span>
-                  <span className="chip-value">{authData.login}</span>
+                  <span className="chip-value">{userLogin}</span>
                 </div>
                 <span className="user-chip__chevron" aria-hidden="true">
                   {isUserMenuOpen ? "^" : "v"}
@@ -4251,10 +4160,10 @@ function App() {
                     type="button"
                     className="user-menu__item"
                     onClick={handleLogout}
-                    disabled={logoutMutation.isPending}
+                    disabled={isLoggingOut}
                     role="menuitem"
                   >
-                    {logoutMutation.isPending ? "Signing out…" : "Logout"}
+                    {isLoggingOut ? "Signing out…" : "Logout"}
                   </button>
                 </div>
               )}
@@ -5095,10 +5004,10 @@ function App() {
                                                 setIsInlineCommentOpen(true);
 
                                                 // Create pending review override
-                                                if (prDetail && authQuery.data?.login) {
+                                                if (prDetail && userLogin) {
                                                   const localReview = createLocalReview({
                                                     prNumber: prDetail.number,
-                                                    author: authQuery.data.login,
+                                                    author: userLogin,
                                                     commitId: prDetail.head_sha,
                                                   });
                                                   setPendingReviewOverride(localReview);
@@ -5414,10 +5323,10 @@ function App() {
                                         setIsInlineCommentOpen(true);
 
                                         // Create pending review override
-                                        if (prDetail && authQuery.data?.login) {
+                                        if (prDetail && userLogin) {
                                           const localReview = createLocalReview({
                                             prNumber: prDetail.number,
-                                            author: authQuery.data.login,
+                                            author: userLogin,
                                             commitId: prDetail.head_sha,
                                           });
                                           setPendingReviewOverride(localReview);
@@ -6124,7 +6033,7 @@ function App() {
                                       className={`file-list__button${
                                         selectedFilePath === file.path ? " file-list__button--active" : ""
                                       }`}
-                                      onClick={() => setSelectedFilePath(file.path)}
+                                      onClick={() => navigateToFile(file.path)}
                                       title={tooltip}
                                     >
                                       <span className="file-list__name">{displayName}</span>
@@ -6136,7 +6045,7 @@ function App() {
                                             onClick={(e) => {
                                               e.stopPropagation();
                                               if (selectedFilePath !== file.path) {
-                                                setSelectedFilePath(file.path);
+                                                navigateToFile(file.path);
                                               }
                                               setIsInlineCommentOpen(true);
                                             }}
@@ -6150,7 +6059,7 @@ function App() {
                                             onClick={(e) => {
                                               e.stopPropagation();
                                               if (selectedFilePath !== file.path) {
-                                                setSelectedFilePath(file.path);
+                                                navigateToFile(file.path);
                                               }
                                               setIsInlineCommentOpen(true);
                                             }}
@@ -6167,7 +6076,7 @@ function App() {
                                             onClick={(e) => {
                                               e.stopPropagation();
                                               if (selectedFilePath !== file.path) {
-                                                setSelectedFilePath(file.path);
+                                                navigateToFile(file.path);
                                               }
                                               void openInlineComment(file.path);
                                               handleAddCommentClick(file.path);
@@ -6177,7 +6086,7 @@ function App() {
                                                 e.preventDefault();
                                                 e.stopPropagation();
                                                 if (selectedFilePath !== file.path) {
-                                                  setSelectedFilePath(file.path);
+                                                  navigateToFile(file.path);
                                                 }
                                                 void openInlineComment(file.path);
                                                 handleAddCommentClick(file.path);
@@ -6808,13 +6717,13 @@ function App() {
                                       skipNextSourceScrollRestoreRef.current = true;
                                       skipSourceRestoreForRef.current = resolvedPath;
                                       setPendingAnchorId(anchorId);
-                                      setSelectedFilePath(resolvedPath);
+                                      navigateToFile(resolvedPath);
                                     }
                                   } else {
                                     skipNextSourceScrollRestoreRef.current = false;
                                     skipSourceRestoreForRef.current = null;
                                     setPendingAnchorId(null);
-                                    setSelectedFilePath(resolvedPath);
+                                    navigateToFile(resolvedPath);
                                   }
                                 }
                               }
@@ -6846,7 +6755,7 @@ function App() {
               <div className="pane__header">
                 <div className="pane__title-group">
                   <span>
-                    {fileNavigationHistory.length > 1 && (
+                    {fileNavigationHistoryLength > 1 && (
                       <>
                         <button
                           type="button"
@@ -7015,11 +6924,11 @@ function App() {
                                         }
                                       } else {
                                         setPendingAnchorId(anchorId);
-                                        setSelectedFilePath(resolvedPath);
+                                        navigateToFile(resolvedPath);
                                       }
                                     } else {
                                       setPendingAnchorId(null);
-                                      setSelectedFilePath(resolvedPath);
+                                      navigateToFile(resolvedPath);
                                     }
                                   }
                                 }
