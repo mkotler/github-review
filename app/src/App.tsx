@@ -47,7 +47,7 @@ import {
 import { loadScrollCache, pruneScrollCache } from "./utils/scrollCache";
 import { parseLinePrefix, getImageMimeType } from "./utils/markdown";
 import { MemoizedAsyncImage, MermaidCode, CommentThreadItem } from "./components";
-import { usePaneZoom } from "./hooks";
+import { usePaneZoom, useViewedFiles } from "./hooks";
 
 type ScrollCacheSection = "fileList" | "fileComments" | "sourcePane";
 
@@ -157,10 +157,6 @@ function App() {
     return stored ? JSON.parse(stored) : [];
   });
   const [showRepoMRU, setShowRepoMRU] = useState(false);
-  const [viewedFiles, setViewedFiles] = useState<Record<string, string[]>>(() => {
-    const stored = localStorage.getItem('viewed-files');
-    return stored ? JSON.parse(stored) : {};
-  });
   const [prFileCounts, setPrFileCounts] = useState<Record<string, number>>(() => {
     const stored = localStorage.getItem('pr-file-counts');
     return stored ? JSON.parse(stored) : {};
@@ -1668,13 +1664,20 @@ function App() {
     return path.endsWith(".md") || path.endsWith(".markdown") || path.endsWith(".mdx");
   }, []);
 
-  const isFileViewed = useCallback((filePath: string): boolean => {
-    if (!repoRef || !selectedPr) return false;
-    const prKey = `${repoRef.owner}/${repoRef.repo}#${selectedPr}`;
-    return (viewedFiles[prKey] || []).includes(filePath);
-  }, [repoRef, selectedPr, viewedFiles]);
-
   const files = prDetail?.files ?? [];
+
+  // Viewed files management hook
+  const {
+    viewedFiles,
+    isFileViewed,
+    toggleFileViewed,
+    markAllFilesAsViewed,
+  } = useViewedFiles({
+    owner: repoRef?.owner ?? null,
+    repo: repoRef?.repo ?? null,
+    selectedPr,
+    allFilePaths: files.map((f: PullRequestFile) => f.path),
+  });
 
   // Find all toc.yml files if they exist
   const tocFilesMetadata = useMemo(() => {
@@ -3946,11 +3949,6 @@ function App() {
 
   // Removed auto-navigate to pending review - users should manually open File Comments panel when desired
 
-  // Persist viewed files state
-  useEffect(() => {
-    localStorage.setItem('viewed-files', JSON.stringify(viewedFiles));
-  }, [viewedFiles]);
-
   // Persist prFileCounts to localStorage
   useEffect(() => {
     localStorage.setItem('pr-file-counts', JSON.stringify(prFileCounts));
@@ -4017,18 +4015,6 @@ function App() {
     // Keep the current PR mode (stay in "under-review" if already there)
   }, [enterLocalDirectoryMode]);
 
-  const toggleFileViewed = useCallback((filePath: string) => {
-    if (!repoRef || !selectedPr) return;
-    const prKey = `${repoRef.owner}/${repoRef.repo}#${selectedPr}`;
-    setViewedFiles(prev => {
-      const prViewed = prev[prKey] || [];
-      const updated = prViewed.includes(filePath)
-        ? prViewed.filter(f => f !== filePath)
-        : [...prViewed, filePath];
-      return { ...prev, [prKey]: updated };
-    });
-  }, [repoRef, selectedPr]);
-
   // Navigation functions for file history
   const canNavigateBack = fileNavigationIndex > 0;
   const canNavigateForward = fileNavigationIndex < fileNavigationHistory.length - 1;
@@ -4050,16 +4036,6 @@ function App() {
       setSelectedFilePath(fileNavigationHistory[newIndex]);
     }
   }, [canNavigateForward, fileNavigationIndex, fileNavigationHistory]);
-
-  const markAllFilesAsViewed = useCallback(() => {
-    if (!repoRef || !selectedPr || !files) return;
-    const prKey = `${repoRef.owner}/${repoRef.repo}#${selectedPr}`;
-    const allFilePaths = files.map((f: PullRequestFile) => f.path);
-    setViewedFiles(prev => ({
-      ...prev,
-      [prKey]: allFilePaths
-    }));
-  }, [repoRef, selectedPr, files]);
 
   // Get comment count for a file
   const getFileCommentCount = useCallback((filePath: string): number => {
