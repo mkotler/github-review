@@ -47,7 +47,7 @@ import {
 import { loadScrollCache, pruneScrollCache } from "./utils/scrollCache";
 import { parseLinePrefix, getImageMimeType } from "./utils/markdown";
 import { MemoizedAsyncImage, MermaidCode, CommentThreadItem } from "./components";
-import { usePaneZoom, useViewedFiles, useMRUList } from "./hooks";
+import { usePaneZoom, useViewedFiles, useMRUList, useLocalStorage } from "./hooks";
 
 type ScrollCacheSection = "fileList" | "fileComments" | "sourcePane";
 
@@ -154,17 +154,17 @@ function App() {
   const [repoError, setRepoError] = useState<string | null>(null);
   const [repoMRU, addRepoToMRU] = useMRUList('repo-mru', 10);
   const [showRepoMRU, setShowRepoMRU] = useState(false);
-  const [prFileCounts, setPrFileCounts] = useState<Record<string, number>>(() => {
-    const stored = localStorage.getItem('pr-file-counts');
-    return stored ? JSON.parse(stored) : {};
+  const [prFileCounts, setPrFileCounts] = useLocalStorage<Record<string, number>>({
+    key: 'pr-file-counts',
+    defaultValue: {}
   });
-  const [prTitles, setPrTitles] = useState<Record<string, string>>(() => {
-    const stored = localStorage.getItem('pr-titles');
-    return stored ? JSON.parse(stored) : {};
+  const [prTitles, setPrTitles] = useLocalStorage<Record<string, string>>({
+    key: 'pr-titles',
+    defaultValue: {}
   });
-  const [prMetadata, setPrMetadata] = useState<Record<string, { state: string; merged: boolean; locked?: boolean }>>(() => {
-    const stored = localStorage.getItem('pr-metadata');
-    return stored ? JSON.parse(stored) : {};
+  const [prMetadata, setPrMetadata] = useLocalStorage<Record<string, { state: string; merged: boolean; locked?: boolean }>>({
+    key: 'pr-metadata',
+    defaultValue: {}
   });
   const [selectedPr, setSelectedPr] = useState<number | null>(null);
   const [activeLocalDir, setActiveLocalDir] = useState<string | null>(null);
@@ -3930,15 +3930,7 @@ function App() {
 
   // Removed auto-navigate to pending review - users should manually open File Comments panel when desired
 
-  // Persist prFileCounts to localStorage
-  useEffect(() => {
-    localStorage.setItem('pr-file-counts', JSON.stringify(prFileCounts));
-  }, [prFileCounts]);
-
-  // Persist prTitles to localStorage
-  useEffect(() => {
-    localStorage.setItem('pr-titles', JSON.stringify(prTitles));
-  }, [prTitles]);
+  // prFileCounts, prTitles, prMetadata now use useLocalStorage hook for automatic persistence
 
   useEffect(() => {
     const element = commentContextMenuRef.current;
@@ -3948,10 +3940,6 @@ function App() {
     element.style.top = `${commentContextMenu.y}px`;
     element.style.left = `${commentContextMenu.x}px`;
   }, [commentContextMenu]);
-
-  useEffect(() => {
-    localStorage.setItem('pr-metadata', JSON.stringify(prMetadata));
-  }, [prMetadata]);
 
   // Auto-switch PR mode based on whether there are PRs under review
   // Only switch after queries have finished loading to avoid premature switching
