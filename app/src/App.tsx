@@ -46,10 +46,10 @@ import {
   MIN_CONTENT_WIDTH,
 } from "./constants";
 import { loadScrollCache, pruneScrollCache } from "./utils/scrollCache";
-import { parseLinePrefix, getImageMimeType, formatFileLabel, formatFileTooltip, formatFilePathWithLeadingEllipsis, isImageFile, isMarkdownFile, generateHeadingId, convertLocalComments, createLocalReview } from "./utils/helpers";
+import { parseLinePrefix, getImageMimeType, formatFileLabel, formatFileTooltip, formatFilePathWithLeadingEllipsis, isImageFile, isMarkdownFile, convertLocalComments, createLocalReview } from "./utils/helpers";
 import { MemoizedAsyncImage, MermaidCode, CommentThreadItem, MediaViewer, ConfirmDialog } from "./components";
 import type { MediaContent } from "./components";
-import { usePaneZoom, useViewedFiles, useMRUList, useLocalStorage, useTocSortedFiles, useFileContents, useCommentFiltering } from "./hooks";
+import { usePaneZoom, useViewedFiles, useMRUList, useLocalStorage, useTocSortedFiles, useFileContents, useCommentFiltering, useMarkdownComponents } from "./hooks";
 
 type ScrollCacheSection = "fileList" | "fileComments" | "sourcePane";
 
@@ -1199,55 +1199,11 @@ function App() {
     cacheAllFiles();
   }, [prDetail, repoRef, selectedPr, isOnline]);
 
-  // Memoize ReactMarkdown components to prevent Mermaid from re-rendering
-  const markdownComponents = useMemo(() => ({
-    h1: ({children, ...props}: any) => {
-      const id = generateHeadingId(String(children));
-      return <h1 id={id} {...props}>{children}</h1>;
-    },
-    h2: ({children, ...props}: any) => {
-      const id = generateHeadingId(String(children));
-      return <h2 id={id} {...props}>{children}</h2>;
-    },
-    h3: ({children, ...props}: any) => {
-      const id = generateHeadingId(String(children));
-      return <h3 id={id} {...props}>{children}</h3>;
-    },
-    h4: ({children, ...props}: any) => {
-      const id = generateHeadingId(String(children));
-      return <h4 id={id} {...props}>{children}</h4>;
-    },
-    h5: ({children, ...props}: any) => {
-      const id = generateHeadingId(String(children));
-      return <h5 id={id} {...props}>{children}</h5>;
-    },
-    h6: ({children, ...props}: any) => {
-      const id = generateHeadingId(String(children));
-      return <h6 id={id} {...props}>{children}</h6>;
-    },
-    code: ({ className, children, ...props }: any) => {
-      const match = /language-(\w+)/.exec(className || '');
-      const language = match ? match[1] : null;
-      
-      if (language === 'mermaid') {
-        const mermaidContent = String(children).trim();
-        return (
-          <div 
-            onClick={() => {
-              setMediaViewerContent({ type: 'mermaid', content: mermaidContent });
-              setMaximizedPane('media');
-            }}
-            className="mermaid-clickable"
-            title="Click to view fullscreen"
-          >
-            <MermaidCode>{mermaidContent}</MermaidCode>
-          </div>
-        );
-      }
-      
-      return <code className={className} {...props}>{children}</code>;
-    },
-  }), [setMediaViewerContent, setMaximizedPane]);
+  // Memoized ReactMarkdown component overrides
+  const markdownComponents = useMarkdownComponents({
+    setMediaViewerContent,
+    setMaximizedPane,
+  });
 
   const handleToggleRepoPanel = useCallback(() => {
     if (!repoRef) {

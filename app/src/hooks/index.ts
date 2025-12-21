@@ -25,3 +25,6 @@ export type { UseFileContentsOptions, UseFileContentsResult, FileContents } from
 
 export { useCommentFiltering } from "./useCommentFiltering";
 export type { UseCommentFilteringOptions, UseCommentFilteringResult, CommentThread } from "./useCommentFiltering";
+
+export { useMarkdownComponents } from "./useMarkdownComponents";
+export type { UseMarkdownComponentsOptions, MarkdownComponents } from "./useMarkdownComponents";
