@@ -3622,9 +3622,61 @@ function App() {
     }
   }, [selectedFilePath, draftsByFile, isAddingInlineComment]);
 
-  // Save file-level comment draft immediately when it changes
+  // Save inline comment draft with debounce to improve typing performance
   useEffect(() => {
-    if (selectedFilePath && isFileCommentComposerVisible) {
+    if (!selectedFilePath || !isAddingInlineComment) return;
+    
+    const timeoutId = setTimeout(() => {
+      setDraftsByFile(prev => ({
+        ...prev,
+        [selectedFilePath]: {
+          ...prev[selectedFilePath],
+          inline: inlineCommentDraft || undefined
+        }
+      }));
+    }, 300); // Debounce 300ms
+    
+    return () => clearTimeout(timeoutId);
+  }, [selectedFilePath, inlineCommentDraft, isAddingInlineComment]);
+
+  // Save reply draft with debounce to improve typing performance
+  useEffect(() => {
+    if (!selectedFilePath || replyingToCommentId === null) return;
+    
+    const timeoutId = setTimeout(() => {
+      if (replyDraft) {
+        setDraftsByFile(prev => ({
+          ...prev,
+          [selectedFilePath]: {
+            ...prev[selectedFilePath],
+            reply: {
+              ...(prev[selectedFilePath]?.reply || {}),
+              [replyingToCommentId]: replyDraft
+            }
+          }
+        }));
+      } else {
+        // Clear the reply draft if empty
+        setDraftsByFile(prev => {
+          const updated = { ...prev };
+          if (updated[selectedFilePath]?.reply) {
+            const newReply = { ...updated[selectedFilePath].reply };
+            delete newReply[replyingToCommentId];
+            updated[selectedFilePath] = { ...updated[selectedFilePath], reply: newReply };
+          }
+          return updated;
+        });
+      }
+    }, 300); // Debounce 300ms
+    
+    return () => clearTimeout(timeoutId);
+  }, [selectedFilePath, replyDraft, replyingToCommentId]);
+
+  // Save file-level comment draft with debounce to improve typing performance
+  useEffect(() => {
+    if (!selectedFilePath || !isFileCommentComposerVisible) return;
+    
+    const timeoutId = setTimeout(() => {
       setDraftsByFile(prev => ({
         ...prev,
         [selectedFilePath]: {
@@ -3632,7 +3684,9 @@ function App() {
           fileLevel: fileCommentDraft
         }
       }));
-    }
+    }, 300); // Debounce 300ms
+    
+    return () => clearTimeout(timeoutId);
   }, [selectedFilePath, fileCommentDraft, isFileCommentComposerVisible]);
 
   // Restore file-level draft when switching files or opening composer
@@ -6373,30 +6427,7 @@ function App() {
                                       }}
                                       value={replyDraft}
                                       onChange={(e) => {
-                                        const newValue = e.target.value;
-                                        setReplyDraft(newValue);
-                                        if (selectedFilePath && newValue) {
-                                          setDraftsByFile(prev => ({
-                                            ...prev,
-                                            [selectedFilePath]: {
-                                              ...prev[selectedFilePath],
-                                              reply: {
-                                                ...(prev[selectedFilePath]?.reply || {}),
-                                                [parentComment.id]: newValue
-                                              }
-                                            }
-                                          }));
-                                        } else if (selectedFilePath) {
-                                          setDraftsByFile(prev => {
-                                            const updated = { ...prev };
-                                            if (updated[selectedFilePath]?.reply) {
-                                              const newReply = { ...updated[selectedFilePath].reply };
-                                              delete newReply[parentComment.id];
-                                              updated[selectedFilePath] = { ...updated[selectedFilePath], reply: newReply };
-                                            }
-                                            return updated;
-                                          });
-                                        }
+                                        setReplyDraft(e.target.value);
                                       }}
                                       placeholder="Write a reply..."
                                       className="comment-panel__reply-textarea"
@@ -6733,17 +6764,7 @@ function App() {
                             <textarea
                               value={inlineCommentDraft}
                               onChange={(e) => {
-                                const newValue = e.target.value;
-                                setInlineCommentDraft(newValue);
-                                if (selectedFilePath) {
-                                  setDraftsByFile(prev => ({
-                                    ...prev,
-                                    [selectedFilePath]: {
-                                      ...prev[selectedFilePath],
-                                      inline: newValue || undefined
-                                    }
-                                  }));
-                                }
+                                setInlineCommentDraft(e.target.value);
                               }}
                               placeholder="Write a comment..."
                               className="comment-panel__reply-textarea"
