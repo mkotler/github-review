@@ -16,6 +16,7 @@ import {
   generateHeadingId,
   convertLocalComment,
   convertLocalComments,
+  createLocalReview,
 } from "../utils/markdown";
 import type { PullRequestFile, LocalComment } from "../types";
 
@@ -468,6 +469,44 @@ describe("markdown utilities", () => {
       expect(result[1].review_id).toBe(555);
       expect(result[0].is_draft).toBe(false);
       expect(result[1].is_draft).toBe(false);
+    });
+  });
+
+  describe("createLocalReview", () => {
+    it("creates a review with correct properties", () => {
+      const result = createLocalReview({
+        prNumber: 123,
+        author: "testuser",
+        commitId: "abc123def456",
+      });
+
+      expect(result.id).toBe(123);
+      expect(result.state).toBe("PENDING");
+      expect(result.author).toBe("testuser");
+      expect(result.commit_id).toBe("abc123def456");
+      expect(result.is_mine).toBe(true);
+    });
+
+    it("sets null values for optional properties", () => {
+      const result = createLocalReview({
+        prNumber: 456,
+        author: "anotheruser",
+        commitId: "xyz789",
+      });
+
+      expect(result.submitted_at).toBeNull();
+      expect(result.body).toBeNull();
+      expect(result.html_url).toBeNull();
+    });
+
+    it("uses prNumber as review id", () => {
+      const result = createLocalReview({
+        prNumber: 999,
+        author: "user",
+        commitId: "commit",
+      });
+
+      expect(result.id).toBe(999);
     });
   });
 });

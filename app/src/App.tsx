@@ -47,7 +47,7 @@ import {
   MIN_CONTENT_WIDTH,
 } from "./constants";
 import { loadScrollCache, pruneScrollCache } from "./utils/scrollCache";
-import { parseLinePrefix, getImageMimeType, formatFileLabel, formatFileTooltip, formatFilePathWithLeadingEllipsis, isImageFile, isMarkdownFile, generateHeadingId, convertLocalComments } from "./utils/markdown";
+import { parseLinePrefix, getImageMimeType, formatFileLabel, formatFileTooltip, formatFilePathWithLeadingEllipsis, isImageFile, isMarkdownFile, generateHeadingId, convertLocalComments, createLocalReview } from "./utils/markdown";
 import { MemoizedAsyncImage, MermaidCode, CommentThreadItem, MediaViewer, ConfirmDialog } from "./components";
 import type { MediaContent } from "./components";
 import { usePaneZoom, useViewedFiles, useMRUList, useLocalStorage } from "./hooks";
@@ -1410,16 +1410,11 @@ function App() {
         if (localCommentData.length > 0) {
   
           // Create a pending review object for the local review
-          const localReview: PullRequestReview = {
-            id: prDetail.number,
-            state: "PENDING",
+          const localReview = createLocalReview({
+            prNumber: prDetail.number,
             author: authQuery.data?.login ?? "You",
-            submitted_at: null,
-            body: null,
-            html_url: null,
-            commit_id: prDetail.head_sha,
-            is_mine: true,
-          };
+            commitId: prDetail.head_sha,
+          });
           setPendingReviewOverride(localReview);
 
           // Refetch PRs under review to show this PR in the list
@@ -4583,16 +4578,11 @@ function App() {
       // This will trigger the effect that loads local comments automatically
       if (prDetail) {
         console.log("prDetail exists, creating local review object");
-        const localReview: PullRequestReview = {
-          id: prDetail.number,
-          state: "PENDING",
+        const localReview = createLocalReview({
+          prNumber: prDetail.number,
           author: authQuery.data?.login ?? "You",
-          submitted_at: null,
-          body: null,
-          html_url: null,
-          commit_id: prDetail.head_sha,
-          is_mine: true,
-        };
+          commitId: prDetail.head_sha,
+        });
         setPendingReviewOverride(localReview);
         
         // Show the review panel with the newly added comment
@@ -5908,16 +5898,11 @@ function App() {
 
                                               // Create pending review override
                                               if (prDetail && authQuery.data?.login) {
-                                                const localReview: PullRequestReview = {
-                                                  id: prDetail.number,
-                                                  state: "PENDING",
+                                                const localReview = createLocalReview({
+                                                  prNumber: prDetail.number,
                                                   author: authQuery.data.login,
-                                                  submitted_at: null,
-                                                  body: null,
-                                                  html_url: null,
-                                                  commit_id: prDetail.head_sha,
-                                                  is_mine: true,
-                                                };
+                                                  commitId: prDetail.head_sha,
+                                                });
                                             setPendingReviewOverride(localReview);
                                           }
 
@@ -6251,16 +6236,11 @@ function App() {
 
                                       // Create pending review override
                                       if (prDetail && authQuery.data?.login) {
-                                        const localReview: PullRequestReview = {
-                                          id: prDetail.number,
-                                          state: "PENDING",
+                                        const localReview = createLocalReview({
+                                          prNumber: prDetail.number,
                                           author: authQuery.data.login,
-                                          submitted_at: null,
-                                          body: null,
-                                          html_url: null,
-                                          commit_id: prDetail.head_sha,
-                                          is_mine: true,
-                                        };
+                                          commitId: prDetail.head_sha,
+                                        });
                                         setPendingReviewOverride(localReview);
                                       }
 

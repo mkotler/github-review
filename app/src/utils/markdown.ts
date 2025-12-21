@@ -3,7 +3,7 @@
  * Extracted from App.tsx for better modularity and testability.
  */
 
-import type { PullRequestFile, LocalComment, PullRequestComment } from "../types";
+import type { PullRequestFile, LocalComment, PullRequestComment, PullRequestReview } from "../types";
 
 /**
  * Parses the [Line #] prefix from file-level comments.
@@ -229,4 +229,25 @@ export function convertLocalComments(
   }
 ): PullRequestComment[] {
   return localComments.map((lc) => convertLocalComment(lc, options));
+}
+
+/**
+ * Creates a local pending review object for a PR.
+ * Used when starting a new local review or loading existing local comments.
+ */
+export function createLocalReview(options: {
+  prNumber: number;
+  author: string;
+  commitId: string;
+}): PullRequestReview {
+  return {
+    id: options.prNumber,
+    state: "PENDING",
+    author: options.author,
+    submitted_at: null,
+    body: null,
+    html_url: null,
+    commit_id: options.commitId,
+    is_mine: true,
+  };
 }
