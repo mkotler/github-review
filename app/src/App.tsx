@@ -15,231 +15,45 @@ import mermaid from "mermaid";
 import { useNetworkStatus } from "./useNetworkStatus";
 import * as offlineCache from "./offlineCache";
 import { useScrollSync } from "./useScrollSync.ts";
-
-type AuthStatus = {
-  is_authenticated: boolean;
-  login?: string | null;
-  avatar_url?: string | null;
-  is_offline?: boolean; // true if authenticated using cached data without network verification
-};
-
-type PullRequestSummary = {
-  number: number;
-  title: string;
-  author: string;
-  updated_at: string;
-  head_ref: string;
-  has_pending_review: boolean;
-  file_count: number;
-  state: string;
-  merged: boolean;
-  locked?: boolean;
-};
-
-type FileLanguage = string;
-
-type PullRequestFile = {
-  path: string;
-  status: string;
-  additions: number;
-  deletions: number;
-  patch?: string | null;
-  head_content?: string | null;
-  base_content?: string | null;
-  language: FileLanguage;
-  previous_filename?: string | null;
-};
-
-type PullRequestDetail = {
-  number: number;
-  title: string;
-  body?: string | null;
-  author: string;
-  head_sha: string;
-  base_sha: string;
-  files: PullRequestFile[];
-  comments: PullRequestComment[];
-  my_comments: PullRequestComment[];
-  reviews: PullRequestReview[];
-};
-
-type RepoRef = {
-  owner: string;
-  repo: string;
-};
-
-type PullRequestComment = {
-  id: number;
-  body: string;
-  author: string;
-  created_at: string;
-  url: string;
-  path?: string | null;
-  line?: number | null;
-  side?: "RIGHT" | "LEFT" | null;
-  is_review_comment: boolean;
-  is_draft: boolean;
-  state?: string | null;
-  is_mine: boolean;
-  review_id?: number | null;
-  in_reply_to_id?: number | null;
-  outdated?: boolean | null;
-};
-
-type PullRequestReview = {
-  id: number;
-  state: string;
-  author: string;
-  submitted_at?: string | null;
-  body?: string | null;
-  html_url?: string | null;
-  commit_id?: string | null;
-  is_mine: boolean;
-};
-
-type PrUnderReview = {
-  owner: string;
-  repo: string;
-  number: number;
-  title: string;
-  has_local_review: boolean;
-  has_pending_review: boolean;
-  viewed_count: number;
-  total_count: number;
-  state?: string;
-  merged?: boolean;
-  locked?: boolean;
-  local_folder?: string | null;
-};
-
-type PullRequestMetadata = {
-  state: string;
-  merged: boolean;
-  locked: boolean;
-};
-
-const AUTH_QUERY_KEY = ["auth-status"] as const;
-
-// Retry configuration with exponential backoff
-const RETRY_CONFIG = {
-  retry: 3,
-  retryDelay: (attemptIndex: number) => Math.min(1000 * 2 ** attemptIndex, 30000),
-};
-
-const PANE_ZOOM_DEFAULT = 1;
-const PANE_ZOOM_MIN = 0.5;
-const PANE_ZOOM_MAX = 2;
-const PANE_ZOOM_STEP = 0.1;
-const BASE_EDITOR_FONT_SIZE = 14;
-
-const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
-
-const SCROLL_CACHE_KEY = "scroll-cache-v1";
-const SCROLL_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-const LEGACY_SCROLL_KEY = "__legacy__";
-const SOURCE_RESTORE_TIMEOUT_MS = 5000; // Increased for long files
-const SOURCE_RESTORE_MAX_ATTEMPTS = 50; // Increased for long files
-const SOURCE_RESTORE_EPSILON = 2;
-const SOURCE_RESTORE_GRACE_MS = 400;
-const SOURCE_RESTORE_ACTIVATION_GRACE_MS = 600;
-
-type ScrollCacheEntry = {
-  position: number;
-  updatedAt: number;
-};
-
-type ScrollCacheCollection = Record<string, ScrollCacheEntry>;
-
-type ScrollCacheState = {
-  fileList?: ScrollCacheCollection;
-  fileComments?: ScrollCacheCollection;
-  sourcePane?: ScrollCacheCollection;
-};
+// Extracted modules
+import type {
+  AuthStatus,
+  RepoRef,
+  PullRequestSummary,
+  PullRequestMetadata,
+  PullRequestDetail,
+  PullRequestFile,
+  PullRequestComment,
+  PullRequestReview,
+  PrUnderReview,
+  ScrollCacheEntry,
+  ScrollCacheState,
+  SourceRestoreState,
+} from "./types";
+import {
+  AUTH_QUERY_KEY,
+  RETRY_CONFIG,
+  PANE_ZOOM_DEFAULT,
+  PANE_ZOOM_MIN,
+  PANE_ZOOM_MAX,
+  PANE_ZOOM_STEP,
+  BASE_EDITOR_FONT_SIZE,
+  SCROLL_CACHE_KEY,
+  SCROLL_CACHE_TTL_MS,
+  LEGACY_SCROLL_KEY,
+  SOURCE_RESTORE_TIMEOUT_MS,
+  SOURCE_RESTORE_MAX_ATTEMPTS,
+  SOURCE_RESTORE_EPSILON,
+  SOURCE_RESTORE_GRACE_MS,
+  SOURCE_RESTORE_ACTIVATION_GRACE_MS,
+  MIN_SIDEBAR_WIDTH,
+  MIN_CONTENT_WIDTH,
+  clamp,
+} from "./constants";
+import { loadScrollCache, pruneScrollCache } from "./utils/scrollCache";
+import { parseLinePrefix, getImageMimeType } from "./utils/markdown";
 
 type ScrollCacheSection = "fileList" | "fileComments" | "sourcePane";
-
-type SourceRestoreState = {
-  fileKey: string;
-  target: number;
-  startedAt: number;
-  attempts: number;
-};
-
-const isScrollCacheEntry = (value: unknown): value is ScrollCacheEntry => {
-  return Boolean(
-    value &&
-    typeof value === "object" &&
-    typeof (value as ScrollCacheEntry).position === "number" &&
-    typeof (value as ScrollCacheEntry).updatedAt === "number",
-  );
-};
-
-const normalizeCollection = (value: unknown): ScrollCacheCollection | undefined => {
-  if (!value || typeof value !== "object") {
-    return undefined;
-  }
-
-  if (isScrollCacheEntry(value)) {
-    return { [LEGACY_SCROLL_KEY]: value };
-  }
-
-  const result: ScrollCacheCollection = {};
-  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
-    if (isScrollCacheEntry(entry)) {
-      result[key] = entry;
-    }
-  }
-
-  return Object.keys(result).length > 0 ? result : undefined;
-};
-
-const loadScrollCache = (): ScrollCacheState => {
-  if (typeof window === "undefined") {
-    return {};
-  }
-  try {
-    // Load all scroll positions from sessionStorage (session-only)
-    const stored = window.sessionStorage.getItem(SCROLL_CACHE_KEY);
-    if (!stored) {
-      return {};
-    }
-    const parsed = JSON.parse(stored);
-    if (!parsed || typeof parsed !== "object") {
-      return {};
-    }
-    const normalized = {
-      fileList: normalizeCollection((parsed as ScrollCacheState).fileList),
-      fileComments: normalizeCollection((parsed as ScrollCacheState).fileComments),
-      sourcePane: normalizeCollection((parsed as ScrollCacheState).sourcePane),
-    };
-    return normalized;
-  } catch (error) {
-    return {};
-  }
-};
-
-const pruneCollection = (collection?: ScrollCacheCollection): ScrollCacheCollection | undefined => {
-  if (!collection) {
-    return undefined;
-  }
-  const now = Date.now();
-  const entries: ScrollCacheCollection = {};
-  for (const [key, entry] of Object.entries(collection)) {
-    if (now - entry.updatedAt <= SCROLL_CACHE_TTL_MS) {
-      entries[key] = entry;
-    }
-  }
-  return Object.keys(entries).length > 0 ? entries : undefined;
-};
-
-const pruneScrollCache = (cache: ScrollCacheState): ScrollCacheState => {
-  const pruned = {
-    fileList: pruneCollection(cache.fileList),
-    fileComments: pruneCollection(cache.fileComments),
-    sourcePane: pruneCollection(cache.sourcePane),
-  };
-  return pruned;
-};
 
 // Global error handlers to catch crashes
 if (typeof window !== "undefined") {
@@ -337,9 +151,6 @@ const openDevtoolsWindow = () => {
   });
 };
 
-const MIN_SIDEBAR_WIDTH = 340;
-const MIN_CONTENT_WIDTH = 480;
-
 // Component to handle async image loading
 function AsyncImage({ owner, repo, reference, path, alt, onClick, ...props }: { 
   owner: string; 
@@ -366,17 +177,7 @@ function AsyncImage({ owner, repo, reference, path, alt, onClick, ...props }: {
         });
         
         if (!cancelled) {
-          // Determine MIME type from extension
-          const ext = path.split('.').pop()?.toLowerCase();
-          const mimeTypes: Record<string, string> = {
-            'png': 'image/png',
-            'jpg': 'image/jpeg',
-            'jpeg': 'image/jpeg',
-            'gif': 'image/gif',
-            'svg': 'image/svg+xml',
-            'webp': 'image/webp'
-          };
-          const mimeType = mimeTypes[ext || ''] || 'image/png';
+          const mimeType = getImageMimeType(path);
           
           setImageData(`data:${mimeType};base64,${base64Data}`);
         }
@@ -461,23 +262,6 @@ const MermaidCode = ({ children }: { children: string }) => {
 
   return <div ref={ref} className="mermaid-diagram" />;
 };
-
-// Helper function to parse [Line #] prefix from file-level comments
-function parseLinePrefix(body: string): { hasLinePrefix: boolean; lineNumber: number | null; remainingBody: string } {
-  const match = body.match(/^\[Line (\d+)\]\s*/);
-  if (match) {
-    return {
-      hasLinePrefix: true,
-      lineNumber: parseInt(match[1], 10),
-      remainingBody: body.slice(match[0].length)
-    };
-  }
-  return {
-    hasLinePrefix: false,
-    lineNumber: null,
-    remainingBody: body
-  };
-}
 
 // Helper component for comment thread items with collapse functionality
 interface CommentThreadItemProps {
@@ -8756,16 +8540,7 @@ function App() {
                                       reference: prDetail.head_sha,
                                       path: resolvedPath
                                     });
-                                    const ext = resolvedPath.split('.').pop()?.toLowerCase();
-                                    const mimeTypes: Record<string, string> = {
-                                      'png': 'image/png',
-                                      'jpg': 'image/jpeg',
-                                      'jpeg': 'image/jpeg',
-                                      'gif': 'image/gif',
-                                      'svg': 'image/svg+xml',
-                                      'webp': 'image/webp'
-                                    };
-                                    const mimeType = mimeTypes[ext || ''] || 'image/png';
+                                    const mimeType = getImageMimeType(resolvedPath);
                                     setMediaViewerContent({ type: 'image', content: `data:${mimeType};base64,${base64Data}` });
                                     setMaximizedPane('media');
                                   } catch (err) {
