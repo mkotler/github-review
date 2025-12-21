@@ -19,3 +19,6 @@ export type { ViewedFilesState, UseViewedFilesOptions, UseViewedFilesReturn } fr
 
 export { useTocSortedFiles } from "./useTocSortedFiles";
 export type { UseTocSortedFilesOptions, UseTocSortedFilesResult } from "./useTocSortedFiles";
+
+export { useFileContents } from "./useFileContents";
+export type { UseFileContentsOptions, UseFileContentsResult, FileContents } from "./useFileContents";

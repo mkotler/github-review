@@ -49,7 +49,7 @@ import { loadScrollCache, pruneScrollCache } from "./utils/scrollCache";
 import { parseLinePrefix, getImageMimeType, formatFileLabel, formatFileTooltip, formatFilePathWithLeadingEllipsis, isImageFile, isMarkdownFile, generateHeadingId, convertLocalComments, createLocalReview } from "./utils/helpers";
 import { MemoizedAsyncImage, MermaidCode, CommentThreadItem, MediaViewer, ConfirmDialog } from "./components";
 import type { MediaContent } from "./components";
-import { usePaneZoom, useViewedFiles, useMRUList, useLocalStorage, useTocSortedFiles } from "./hooks";
+import { usePaneZoom, useViewedFiles, useMRUList, useLocalStorage, useTocSortedFiles, useFileContents } from "./hooks";
 
 type ScrollCacheSection = "fileList" | "fileComments" | "sourcePane";
 
@@ -1855,109 +1855,18 @@ function App() {
     closeUserMenu();
   }, [closeUserMenu]);
 
-  const selectedFileMetadata = useMemo(() => {
-    if (!prDetail || !selectedFilePath) return null;
-    return prDetail.files.find((file: PullRequestFile) => file.path === selectedFilePath) ?? null;
-  }, [prDetail, selectedFilePath]);
-
-  // Fetch file contents on demand when a file is selected
-  const fileContentsQuery = useQuery({
-    queryKey: [
-      "file-contents",
-      repoRef?.owner,
-      repoRef?.repo,
-      selectedFilePath,
-      prDetail?.base_sha,
-      prDetail?.head_sha,
-      activeLocalDir,
-    ],
-    queryFn: async () => {
-      if (!selectedFileMetadata || !prDetail || !repoRef || !selectedPr) return null;
-      
-      // Always try network first (to detect coming back online)
-      try {
-        const [headContent, baseContent] = await invoke<[string | null, string | null]>("cmd_get_file_contents", {
-          owner: repoRef.owner,
-          repo: repoRef.repo,
-          filePath: selectedFilePath,
-          baseSha: prDetail.base_sha,
-          headSha: prDetail.head_sha,
-          status: selectedFileMetadata.status,
-          previousFilename: selectedFileMetadata.previous_filename ?? null,
-        });
-        
-        // Successful network request - mark online
-        markOnline();
-        
-        // Cache the result
-        await offlineCache.cacheFileContent(
-          repoRef.owner,
-          repoRef.repo,
-          selectedPr,
-          selectedFilePath!,
-          prDetail.head_sha,
-          prDetail.base_sha,
-          headContent,
-          baseContent
-        );
-        
-        return { headContent, baseContent };
-      } catch (error) {
-        // Check if it's a network error (Tauri invoke errors or HTTP errors)
-        const errorMsg = error instanceof Error ? error.message : String(error);
-        const isNetworkError = 
-          errorMsg.includes('http error') ||
-          errorMsg.includes('error sending request') ||
-          errorMsg.includes('fetch') || 
-          errorMsg.includes('network') || 
-          errorMsg.includes('Failed to invoke') ||
-          errorMsg.includes('connection') ||
-          errorMsg.includes('timeout');
-        
-        if (isNetworkError) {
-          console.log('🌐 Network error detected:', errorMsg);
-          markOffline();
-          
-          // Try cache as fallback
-          const cached = await offlineCache.getCachedFileContent(
-            repoRef.owner,
-            repoRef.repo,
-            selectedPr,
-            selectedFilePath!,
-            prDetail.head_sha,
-            prDetail.base_sha
-          );
-          if (cached) {
-            console.log(`📦 Loaded file ${selectedFilePath} from offline cache (after network error)`);
-            return cached;
-          }
-          throw new Error('Network unavailable and no cached data. Data will load when connection is restored.');
-        }
-        throw error;
-      }
-    },
-    enabled: Boolean(selectedFileMetadata && prDetail && repoRef && !isLocalDirectoryMode),
-    staleTime: Infinity, // File contents don't change for a given SHA
-    retry: (failureCount, error) => {
-      // Don't retry if offline and no cache available
-      if (!isOnline && error instanceof Error && error.message.includes('No cached data available')) {
-        return false;
-      }
-      // Otherwise use normal retry logic
-      return failureCount < 3;
-    },
-    retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 30000),
+  // File content loading with offline caching
+  const { selectedFile } = useFileContents({
+    selectedFilePath,
+    repoRef,
+    prDetail,
+    selectedPr,
+    isLocalDirectoryMode,
+    isOnline,
+    markOnline,
+    markOffline,
+    activeLocalDir,
   });
-
-  const selectedFile = useMemo(() => {
-    if (!selectedFileMetadata) return null;
-    if (!fileContentsQuery.data) return selectedFileMetadata;
-    return {
-      ...selectedFileMetadata,
-      head_content: fileContentsQuery.data.headContent,
-      base_content: fileContentsQuery.data.baseContent,
-    };
-  }, [selectedFileMetadata, fileContentsQuery.data]);
 
   // Memoize markdown preview content to prevent re-rendering on every keystroke
   const memoizedMarkdownContent = useMemo(() => {
