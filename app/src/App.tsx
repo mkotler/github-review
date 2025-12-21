@@ -47,7 +47,7 @@ import {
 import { loadScrollCache, pruneScrollCache } from "./utils/scrollCache";
 import { parseLinePrefix, getImageMimeType } from "./utils/markdown";
 import { MemoizedAsyncImage, MermaidCode, CommentThreadItem } from "./components";
-import { usePaneZoom, useViewedFiles } from "./hooks";
+import { usePaneZoom, useViewedFiles, useMRUList } from "./hooks";
 
 type ScrollCacheSection = "fileList" | "fileComments" | "sourcePane";
 
@@ -171,10 +171,7 @@ function App() {
   });
   const [selectedPr, setSelectedPr] = useState<number | null>(null);
   const [activeLocalDir, setActiveLocalDir] = useState<string | null>(null);
-  const [localDirMRU, setLocalDirMRU] = useState<string[]>(() => {
-    const stored = localStorage.getItem('local-dir-mru');
-    return stored ? JSON.parse(stored) : [];
-  });
+  const [localDirMRU, addLocalDir] = useMRUList('local-dir-mru', 10);
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
   const [fileNavigationHistory, setFileNavigationHistory] = useState<string[]>([]);
   const [fileNavigationIndex, setFileNavigationIndex] = useState<number>(-1);
@@ -314,24 +311,16 @@ function App() {
     return `...\\${parts[parts.length - 2]}\\${parts[parts.length - 1]}`;
   }, []);
 
-  const rememberLocalDir = useCallback((directory: string) => {
-    setLocalDirMRU((prev) => {
-      const next = [directory, ...prev.filter((p) => p !== directory)].slice(0, 10);
-      localStorage.setItem('local-dir-mru', JSON.stringify(next));
-      return next;
-    });
-  }, []);
-
   const enterLocalDirectoryMode = useCallback((directory: string) => {
     setActiveLocalDir(directory);
-    rememberLocalDir(directory);
+    addLocalDir(directory);
     setRepoInput(formatLocalDirDisplay(directory));
     setRepoRef({ owner: "__local__", repo: "local" });
     setSelectedPr(1);
     setSelectedFilePath(null);
     setPrSearchFilter("");
     setPrMode("repo");
-  }, [formatLocalDirDisplay, rememberLocalDir]);
+  }, [formatLocalDirDisplay, addLocalDir]);
 
   const exitLocalDirectoryMode = useCallback(() => {
     if (!isLocalDirectoryMode) return;
