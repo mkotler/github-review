@@ -10,3 +10,6 @@ export type { UseLocalStorageOptions } from "./useLocalStorage";
 
 export { useFileNavigation } from "./useFileNavigation";
 export type { UseFileNavigationReturn } from "./useFileNavigation";
+
+export { usePaneZoom } from "./usePaneZoom";
+export type { UsePaneZoomOptions, UsePaneZoomReturn } from "./usePaneZoom";

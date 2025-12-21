@@ -32,11 +32,7 @@ import type {
 import {
   AUTH_QUERY_KEY,
   RETRY_CONFIG,
-  PANE_ZOOM_DEFAULT,
-  PANE_ZOOM_MIN,
-  PANE_ZOOM_MAX,
   PANE_ZOOM_STEP,
-  BASE_EDITOR_FONT_SIZE,
   SCROLL_CACHE_KEY,
   SCROLL_CACHE_TTL_MS,
   LEGACY_SCROLL_KEY,
@@ -47,11 +43,11 @@ import {
   SOURCE_RESTORE_ACTIVATION_GRACE_MS,
   MIN_SIDEBAR_WIDTH,
   MIN_CONTENT_WIDTH,
-  clamp,
 } from "./constants";
 import { loadScrollCache, pruneScrollCache } from "./utils/scrollCache";
 import { parseLinePrefix, getImageMimeType } from "./utils/markdown";
 import { MemoizedAsyncImage, MermaidCode, CommentThreadItem } from "./components";
+import { usePaneZoom } from "./hooks";
 
 type ScrollCacheSection = "fileList" | "fileComments" | "sourcePane";
 
@@ -252,7 +248,6 @@ function App() {
   const [isPrCommentComposerOpen, setIsPrCommentComposerOpen] = useState(false);
   const [showAllFileTypes, setShowAllFileTypes] = useState(false);
   const [hideReviewedFiles, setHideReviewedFiles] = useState(false);
-  const [paneZoomLevel, setPaneZoomLevel] = useState(PANE_ZOOM_DEFAULT);
   const [pendingAnchorId, setPendingAnchorId] = useState<string | null>(null);
   const workspaceBodyRef = useRef<HTMLDivElement | null>(null);
   const appShellRef = useRef<HTMLDivElement | null>(null);
@@ -301,6 +296,15 @@ function App() {
   const selectedPrRef = useRef<number | null>(null);
   const queryClient = useQueryClient();
   const hoveredPaneRef = useRef<'source' | 'preview' | null>(null);
+
+  // Pane zoom management hook
+  const {
+    zoomLevel: paneZoomLevel,
+    resetZoom: resetPaneZoom,
+    adjustZoom: adjustPaneZoom,
+    applyCodeZoom,
+    isDefaultZoom: isDefaultPaneZoom,
+  } = usePaneZoom({ editorRef, diffEditorRef, hoveredPaneRef });
 
   const isLocalRepo = repoRef?.owner === "__local__" && repoRef?.repo === "local";
   const isLocalDirectoryMode = Boolean(activeLocalDir);
@@ -650,76 +654,6 @@ function App() {
       button.click();
     }
   }, []);
-
-  const resetPaneZoom = useCallback(() => {
-    setPaneZoomLevel(PANE_ZOOM_DEFAULT);
-  }, []);
-
-  const adjustPaneZoom = useCallback((delta: number) => {
-    setPaneZoomLevel(prev => {
-      const next = clamp(parseFloat((prev + delta).toFixed(2)), PANE_ZOOM_MIN, PANE_ZOOM_MAX);
-      return next;
-    });
-  }, []);
-
-  const applyCodeZoom = useCallback((scale: number) => {
-    const fontSize = Math.round(BASE_EDITOR_FONT_SIZE * scale);
-    if (editorRef.current) {
-      editorRef.current.updateOptions({ fontSize });
-    }
-    if (diffEditorRef.current) {
-      const modified = diffEditorRef.current.getModifiedEditor?.();
-      const original = diffEditorRef.current.getOriginalEditor?.();
-      modified?.updateOptions?.({ fontSize });
-      original?.updateOptions?.({ fontSize });
-    }
-  }, []);
-
-  useEffect(() => {
-    applyCodeZoom(paneZoomLevel);
-  }, [paneZoomLevel, applyCodeZoom]);
-
-  useEffect(() => {
-    const root = document.documentElement;
-    root.style.setProperty("--pane-zoom-scale", paneZoomLevel.toString());
-    return () => {
-      root.style.removeProperty("--pane-zoom-scale");
-    };
-  }, [paneZoomLevel]);
-
-  useEffect(() => {
-    const handleWheel = (event: WheelEvent) => {
-      if (!event.ctrlKey || !hoveredPaneRef.current) {
-        return;
-      }
-      event.preventDefault();
-      adjustPaneZoom(event.deltaY < 0 ? PANE_ZOOM_STEP : -PANE_ZOOM_STEP);
-    };
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (!event.ctrlKey || !hoveredPaneRef.current) {
-        return;
-      }
-      if (event.key === "=" || event.key === "+") {
-        event.preventDefault();
-        adjustPaneZoom(PANE_ZOOM_STEP);
-      } else if (event.key === "-" || event.key === "_") {
-        event.preventDefault();
-        adjustPaneZoom(-PANE_ZOOM_STEP);
-      } else if (event.key === "0") {
-        event.preventDefault();
-        resetPaneZoom();
-      }
-    };
-
-    window.addEventListener("wheel", handleWheel, { passive: false });
-    window.addEventListener("keydown", handleKeyDown);
-
-    return () => {
-      window.removeEventListener("wheel", handleWheel);
-      window.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [adjustPaneZoom, resetPaneZoom]);
 
   const scrollPreviewToAnchor = useCallback((anchorId: string) => {
     if (!anchorId || !previewViewerRef.current) {
@@ -7472,7 +7406,7 @@ function App() {
                               {isFileViewed(selectedFilePath) ? "Mark file as unviewed" : "Mark file as viewed"}
                             </button>
                           )}
-                          {Math.abs(paneZoomLevel - PANE_ZOOM_DEFAULT) > 0.001 && (
+                          {!isDefaultPaneZoom && (
                             <button
                               type="button"
                               className="source-menu__item"
