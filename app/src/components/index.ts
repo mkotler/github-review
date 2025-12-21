@@ -14,3 +14,6 @@ export type { CommentThreadItemProps, CommentThread } from './CommentThreadItem'
 
 export { MediaViewer } from './MediaViewer';
 export type { MediaContent, MediaViewerProps } from './MediaViewer';
+
+export { ConfirmDialog } from './ConfirmDialog';
+export type { ConfirmDialogProps } from './ConfirmDialog';

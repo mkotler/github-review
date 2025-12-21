@@ -46,7 +46,7 @@ import {
 } from "./constants";
 import { loadScrollCache, pruneScrollCache } from "./utils/scrollCache";
 import { parseLinePrefix, getImageMimeType } from "./utils/markdown";
-import { MemoizedAsyncImage, MermaidCode, CommentThreadItem, MediaViewer } from "./components";
+import { MemoizedAsyncImage, MermaidCode, CommentThreadItem, MediaViewer, ConfirmDialog } from "./components";
 import type { MediaContent } from "./components";
 import { usePaneZoom, useViewedFiles, useMRUList, useLocalStorage } from "./hooks";
 
@@ -8206,90 +8206,37 @@ function App() {
       </section>
 
       {showDeleteConfirm && (
-        <div className="modal-overlay" onClick={() => setShowDeleteConfirm(false)}>
-          <div className="modal-dialog" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h3>Delete Comment</h3>
-            </div>
-            <div className="modal-body">
-              <p>Are you sure you want to delete this comment?</p>
-            </div>
-            <div className="modal-footer">
-              <button
-                type="button"
-                className="modal-button modal-button--secondary"
-                onClick={() => setShowDeleteConfirm(false)}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="modal-button modal-button--danger"
-                onClick={() => {
-                  if (editingCommentId !== null) {
-                    deleteCommentMutation.mutate(editingCommentId);
-                  }
-                  setShowDeleteConfirm(false);
-                }}
-              >
-                Delete
-              </button>
-            </div>
-          </div>
-        </div>
+        <ConfirmDialog
+          title="Delete Comment"
+          message="Are you sure you want to delete this comment?"
+          confirmText="Delete"
+          isDanger
+          onClose={() => setShowDeleteConfirm(false)}
+          onConfirm={() => {
+            if (editingCommentId !== null) {
+              deleteCommentMutation.mutate(editingCommentId);
+            }
+          }}
+        />
       )}
 
       {showDeleteReviewConfirm && (
-        <div className="modal-overlay" onClick={() => setShowDeleteReviewConfirm(false)}>
-          <div className="modal-dialog" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h3>Delete Review</h3>
-            </div>
-            <div className="modal-body">
-              <p>Are you sure you want to delete this pending review?</p>
-            </div>
-            <div className="modal-footer">
-              <button
-                type="button"
-                className="modal-button modal-button--secondary"
-                onClick={() => setShowDeleteReviewConfirm(false)}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="modal-button modal-button--danger"
-                onClick={confirmDeleteReview}
-              >
-                Delete
-              </button>
-            </div>
-          </div>
-        </div>
+        <ConfirmDialog
+          title="Delete Review"
+          message="Are you sure you want to delete this pending review?"
+          confirmText="Delete"
+          isDanger
+          onClose={() => setShowDeleteReviewConfirm(false)}
+          onConfirm={confirmDeleteReview}
+        />
       )}
 
       {submitReviewDialogMessage && (
-        <div className="modal-overlay" onClick={() => setSubmitReviewDialogMessage(null)}>
-          <div className="modal-dialog" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h3>Submit Review</h3>
-            </div>
-            <div className="modal-body">
-              <p>
-                {submitReviewDialogMessage}
-              </p>
-            </div>
-            <div className="modal-footer">
-              <button
-                type="button"
-                className="modal-button modal-button--secondary"
-                onClick={() => setSubmitReviewDialogMessage(null)}
-              >
-                OK
-              </button>
-            </div>
-          </div>
-        </div>
+        <ConfirmDialog
+          title="Submit Review"
+          message={submitReviewDialogMessage}
+          onClose={() => setSubmitReviewDialogMessage(null)}
+        />
       )}
 
       {/* Comment Context Menu */}
