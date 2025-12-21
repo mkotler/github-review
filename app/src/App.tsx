@@ -1293,6 +1293,7 @@ function App() {
     fileCommentSubmittingMode,
     submitReviewDialogMessage,
     setSubmitReviewDialogMessage,
+    shouldDeleteFileDraft,
   } = commentMutations;
 
   // Auto-update local review commit ID when PR is refreshed
@@ -3312,13 +3313,7 @@ function App() {
     });
   }, [reviewAwareComments]);
 
-  // Helper to check if a file draft entry should be deleted (no non-empty drafts)
-  const shouldDeleteFileDraft = useCallback((fileDrafts: { inline?: string; reply?: Record<string, string> } | undefined): boolean => {
-    if (!fileDrafts) return true;
-    if (fileDrafts.inline && fileDrafts.inline.trim()) return false;
-    if (fileDrafts.reply && Object.values(fileDrafts.reply).some(draft => draft && draft.trim())) return false;
-    return true;
-  }, []);
+  // Note: shouldDeleteFileDraft comes from useCommentMutations hook
 
   // Check if a file has any drafts in progress (unsaved comments/replies)
   const fileHasDraftsInProgress = useCallback((filePath: string): boolean => {
