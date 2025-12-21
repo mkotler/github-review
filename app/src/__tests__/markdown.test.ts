@@ -13,6 +13,7 @@ import {
   getImageMimeType,
   resolveRelativePath,
   extractAnchorId,
+  generateHeadingId,
 } from "../utils/markdown";
 import type { PullRequestFile } from "../types";
 
@@ -289,6 +290,38 @@ describe("markdown utilities", () => {
     it("handles anchors with special characters", () => {
       expect(extractAnchorId("file.md#section-name")).toBe("section-name");
       expect(extractAnchorId("file.md#section_name")).toBe("section_name");
+    });
+  });
+
+  describe("generateHeadingId", () => {
+    it("converts text to lowercase", () => {
+      expect(generateHeadingId("Hello World")).toBe("hello-world");
+      expect(generateHeadingId("UPPERCASE")).toBe("uppercase");
+    });
+
+    it("replaces spaces with hyphens", () => {
+      expect(generateHeadingId("hello world")).toBe("hello-world");
+      expect(generateHeadingId("multiple   spaces")).toBe("multiple-spaces");
+    });
+
+    it("removes special characters", () => {
+      expect(generateHeadingId("hello!world")).toBe("helloworld");
+      expect(generateHeadingId("test@example#com")).toBe("testexamplecom");
+    });
+
+    it("handles en-dash and em-dash", () => {
+      expect(generateHeadingId("hello–world")).toBe("hello-world");
+      expect(generateHeadingId("hello—world")).toBe("hello-world");
+    });
+
+    it("collapses multiple consecutive hyphens to double hyphen", () => {
+      expect(generateHeadingId("hello---world")).toBe("hello--world");
+      expect(generateHeadingId("test----case")).toBe("test--case");
+    });
+
+    it("preserves existing hyphens and underscores", () => {
+      expect(generateHeadingId("hello-world")).toBe("hello-world");
+      expect(generateHeadingId("hello_world")).toBe("hello_world");
     });
   });
 });
