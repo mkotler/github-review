@@ -38,14 +38,15 @@ function createWrapper() {
 
 describe("useAuth hook", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
-    // Clear localStorage before each test
-    window.localStorage.clear();
+    // Reset all mocks including implementations
+    vi.resetAllMocks();
+    // Clear localStorage
+    localStorage.clear();
   });
 
   afterEach(() => {
-    vi.clearAllMocks();
-    window.localStorage.clear();
+    vi.resetAllMocks();
+    localStorage.clear();
   });
 
   describe("initial state", () => {

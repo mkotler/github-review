@@ -15,18 +15,25 @@ vi.mock('@tauri-apps/api/event', () => ({
   emit: vi.fn(),
 }));
 
-// Mock localStorage
-const localStorageMock = {
-  getItem: vi.fn(),
-  setItem: vi.fn(),
-  removeItem: vi.fn(),
-  clear: vi.fn(),
-  length: 0,
-  key: vi.fn(),
-};
+// Mock localStorage with working implementation
+function createLocalStorageMock() {
+  const store: Record<string, string> = {};
+  
+  return {
+    getItem: (key: string): string | null => store[key] ?? null,
+    setItem: (key: string, value: string): void => { store[key] = value; },
+    removeItem: (key: string): void => { delete store[key]; },
+    clear: (): void => { Object.keys(store).forEach(k => delete store[k]); },
+    get length(): number { return Object.keys(store).length; },
+    key: (index: number): string | null => Object.keys(store)[index] ?? null,
+  };
+}
+
+let localStorageMock = createLocalStorageMock();
 
 Object.defineProperty(window, 'localStorage', {
-  value: localStorageMock,
+  get() { return localStorageMock; },
+  configurable: true,
 });
 
 // Mock matchMedia
@@ -47,6 +54,10 @@ Object.defineProperty(window, 'matchMedia', {
 // Reset mocks between tests
 beforeEach(() => {
   vi.clearAllMocks();
-  localStorageMock.getItem.mockClear();
-  localStorageMock.setItem.mockClear();
+  // Reset localStorage to a fresh instance
+  localStorageMock = createLocalStorageMock();
+});
+
+afterEach(() => {
+  localStorageMock = createLocalStorageMock();
 });
