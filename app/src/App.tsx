@@ -219,8 +219,6 @@ function App() {
   const [showOnlyMyComments, setShowOnlyMyComments] = useState(false);
   const [showCommentPanelMenu, setShowCommentPanelMenu] = useState(false);
   const [commentContextMenu, setCommentContextMenu] = useState<{ x: number; y: number; comment: PullRequestComment | null } | null>(null);
-  const [, setReviewSummaryDraft] = useState("");
-  const [, setReviewSummaryError] = useState<string | null>(null);
   const [pendingReviewOverride, setPendingReviewOverride] = useState<PullRequestReview | null>(null);
   // Note: localComments, setLocalComments come from useCommentMutations hook
   const [submissionProgress, setSubmissionProgress] = useState<{ current: number; total: number; file: string } | null>(null);
@@ -2414,13 +2412,6 @@ function App() {
   }, [commentSuccess]);
 
   useEffect(() => {
-    if (!pendingReview) {
-      setReviewSummaryDraft("");
-      setReviewSummaryError(null);
-    }
-  }, [pendingReview]);
-
-  useEffect(() => {
     // Reset scroll position when file changes
     if (editorRef.current) {
       editorRef.current.setScrollTop(0);
@@ -3834,13 +3825,6 @@ function App() {
       }
     }
   }, [pendingReview, repoRef, prDetail, deleteReviewMutation, reviews]);
-
-  // const handleCloseReviewClick = useCallback(() => {
-  //   // Clear the review override to go back to viewing published comments, but keep panel open
-  //   setPendingReviewOverride(null);
-  //   setLocalComments([]);
-  //   // Keep isInlineCommentOpen=true so the panel stays open showing published comments
-  // }, []);
 
   const handleCommentSubmit = useCallback(
     (event: React.FormEvent) => {
