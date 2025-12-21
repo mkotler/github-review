@@ -42,3 +42,7 @@ raw-window-handle = "0.6"
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Graphics_Dwm"] }
 
+[dev-dependencies]
+tempfile = "3.8"
+tokio-test = "0.4"
+

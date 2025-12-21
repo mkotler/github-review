@@ -245,7 +245,41 @@ The executable will be in `src-tauri/target/release/`.
 
 ### Test
 
-> ⚠️ Unknown: No test suite configuration found in package.json or Cargo.toml. Tests may exist but are not discoverable via standard commands.
+The project includes comprehensive test suites for both the Rust backend and React frontend.
+
+#### Backend Tests (Rust)
+
+```bash
+cd app/src-tauri
+cargo test
+```
+
+This runs 73 tests covering:
+- **Error handling** (`error.rs`) - Error type creation, conversion, and serialization
+- **Models** (`models.rs`) - Type serialization/deserialization and edge cases
+- **GitHub API** (`github.rs`) - URL construction and parameter handling
+- **Storage** (`storage.rs`) - Credential and repository state management
+- **Review storage** (`review_storage.rs`) - Local review and comment persistence
+
+#### Frontend Tests (TypeScript)
+
+```bash
+cd app
+npm test              # Run tests once
+npm run test:watch    # Run tests in watch mode
+npm run test:coverage # Run tests with coverage report
+```
+
+This runs 66 tests covering:
+- **offlineCache.ts** - IndexedDB caching for offline support
+- **useNetworkStatus.ts** - Network detection and offline state management
+- **useScrollSync.ts** - Bidirectional scroll synchronization between source and preview
+
+#### Test Infrastructure
+
+- **Backend**: Rust's built-in test framework with `#[cfg(test)]` modules
+- **Frontend**: Vitest with jsdom, React Testing Library, and fake-indexeddb for IndexedDB mocking
+- **Configuration**: See `app/vitest.config.ts` for frontend test configuration
 
 ## Additional Documentation
 

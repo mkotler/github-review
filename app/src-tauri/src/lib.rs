@@ -5,6 +5,9 @@ mod models;
 mod storage;
 mod review_storage;
 
+#[cfg(test)]
+mod tests;
+
 use crate::github::CommentMode;
 use auth::{
     check_auth_status, fetch_pull_request_details, fetch_file_contents_on_demand, list_repo_pull_requests, logout,
