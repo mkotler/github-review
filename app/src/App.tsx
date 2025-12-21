@@ -49,7 +49,7 @@ import { loadScrollCache, pruneScrollCache } from "./utils/scrollCache";
 import { parseLinePrefix, getImageMimeType, formatFileLabel, formatFileTooltip, formatFilePathWithLeadingEllipsis, isImageFile, isMarkdownFile, generateHeadingId, convertLocalComments, createLocalReview } from "./utils/helpers";
 import { MemoizedAsyncImage, MermaidCode, CommentThreadItem, MediaViewer, ConfirmDialog } from "./components";
 import type { MediaContent } from "./components";
-import { usePaneZoom, useViewedFiles, useMRUList, useLocalStorage, useTocSortedFiles, useFileContents } from "./hooks";
+import { usePaneZoom, useViewedFiles, useMRUList, useLocalStorage, useTocSortedFiles, useFileContents, useCommentFiltering } from "./hooks";
 
 type ScrollCacheSection = "fileList" | "fileComments" | "sourcePane";
 
@@ -2194,83 +2194,14 @@ function App() {
     syncPreviewToEditor,
   ]);
 
-  const fileComments = useMemo(() => {
-    let filtered = !selectedFilePath 
-      ? reviewAwareComments 
-      : reviewAwareComments.filter((comment: PullRequestComment) => comment.path === selectedFilePath);
-
-    if (!showOutdatedComments) {
-      filtered = filtered.filter((comment: PullRequestComment) => !comment.outdated);
-    }
-    
-    // Sort by line number (comments without line numbers go to the end)
-    // For file-level comments with [Line #] prefix, extract the line number for sorting
-    return filtered.sort((a: PullRequestComment, b: PullRequestComment) => {
-      // Extract effective line number for comment a
-      let aLine = a.line;
-      if (aLine === null || aLine === 0) {
-        const aParsed = parseLinePrefix(a.body);
-        if (aParsed.hasLinePrefix && aParsed.lineNumber) {
-          aLine = aParsed.lineNumber;
-        }
-      }
-      
-      // Extract effective line number for comment b
-      let bLine = b.line;
-      if (bLine === null || bLine === 0) {
-        const bParsed = parseLinePrefix(b.body);
-        if (bParsed.hasLinePrefix && bParsed.lineNumber) {
-          bLine = bParsed.lineNumber;
-        }
-      }
-      
-      if (aLine === null && bLine === null) return 0;
-      if (aLine === null) return 1;
-      if (bLine === null) return -1;
-      return (aLine ?? 0) - (bLine ?? 0);
-    });
-  }, [reviewAwareComments, selectedFilePath, showOutdatedComments]);
-
-  const hasHiddenOutdatedComments = useMemo(() => {
-    if (showOutdatedComments) {
-      return false;
-    }
-    const relevant = !selectedFilePath
-      ? reviewAwareComments
-      : reviewAwareComments.filter((comment: PullRequestComment) => comment.path === selectedFilePath);
-    return relevant.some((comment: PullRequestComment) => comment.outdated);
-  }, [reviewAwareComments, selectedFilePath, showOutdatedComments]);
-
-  // Group comments into threads (parent + replies)
-  const commentThreads = useMemo(() => {
-    let threads: Array<{ parent: PullRequestComment; replies: PullRequestComment[] }> = [];
-    const replyMap = new Map<number, PullRequestComment[]>();
-    
-    // Group replies by parent comment ID
-    fileComments.forEach((comment: PullRequestComment) => {
-      if (comment.in_reply_to_id) {
-        const replies = replyMap.get(comment.in_reply_to_id) || [];
-        replies.push(comment);
-        replyMap.set(comment.in_reply_to_id, replies);
-      }
-    });
-    
-    // Build threads with top-level comments as parents
-    fileComments.forEach((comment: PullRequestComment) => {
-      if (!comment.in_reply_to_id) {
-        threads.push({
-          parent: comment,
-          replies: replyMap.get(comment.id) || []
-        });
-      }
-    });
-
-    if (showOnlyMyComments) {
-      threads = threads.filter((thread) => thread.parent.is_mine || (!!authQuery.data?.login && thread.parent.author === authQuery.data.login));
-    }
-    
-    return threads;
-  }, [fileComments, showOnlyMyComments, authQuery.data?.login]);
+  // Comment filtering and thread grouping
+  const { fileComments, hasHiddenOutdatedComments, commentThreads } = useCommentFiltering({
+    reviewAwareComments,
+    selectedFilePath,
+    showOutdatedComments,
+    showOnlyMyComments,
+    currentUserLogin: authQuery.data?.login ?? null,
+  });
 
   useEffect(() => {
     if (!selectedFileCacheKey) {

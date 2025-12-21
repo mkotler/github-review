@@ -22,3 +22,6 @@ export type { UseTocSortedFilesOptions, UseTocSortedFilesResult } from "./useToc
 
 export { useFileContents } from "./useFileContents";
 export type { UseFileContentsOptions, UseFileContentsResult, FileContents } from "./useFileContents";
+
+export { useCommentFiltering } from "./useCommentFiltering";
+export type { UseCommentFilteringOptions, UseCommentFilteringResult, CommentThread } from "./useCommentFiltering";
