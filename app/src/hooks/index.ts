@@ -13,3 +13,6 @@ export type { UseFileNavigationReturn } from "./useFileNavigation";
 
 export { usePaneZoom } from "./usePaneZoom";
 export type { UsePaneZoomOptions, UsePaneZoomReturn } from "./usePaneZoom";
+
+export { useViewedFiles } from "./useViewedFiles";
+export type { ViewedFilesState, UseViewedFilesOptions, UseViewedFilesReturn } from "./useViewedFiles";
