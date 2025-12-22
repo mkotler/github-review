@@ -390,7 +390,11 @@ export function useScrollSync({
   const previewScrollEndTimerRef = useRef<number | null>(null);
   const suppressSourceScrollEndSyncUntilRef = useRef<number>(0);
 
-  const buildMatchedAnchors = useCallback(
+  /**
+   * Build matched anchors with STRETCHED editor positions.
+   * Used for source-to-preview sync where we need to "slow down" scrolling through images.
+   */
+  const buildMatchedAnchorsStretched = useCallback(
     (
       editor: monaco.editor.IStandaloneCodeEditor,
       preview: HTMLElement,
@@ -458,6 +462,55 @@ export function useScrollSync({
     [],
   );
 
+  /**
+   * Build matched anchors with ACTUAL (non-stretched) editor positions.
+   * Used for preview-to-source sync where we map preview positions to real editor positions.
+   */
+  const buildMatchedAnchorsActual = useCallback(
+    (
+      editor: monaco.editor.IStandaloneCodeEditor,
+      preview: HTMLElement,
+      lineHeight: number,
+    ): Array<{ editorTop: number; previewTop: number }> => {
+      const positions = getPreviewElementPositions(preview);
+
+      const prefixHidden = prefixHiddenLinesRef.current;
+      const matched: Array<{ editorTop: number; previewTop: number }> = [];
+
+      for (const anchor of anchorsRef.current) {
+        if (anchor.type === "codeblock") {
+          continue;
+        }
+        const previewPos = positions.get(anchor.identifier);
+        if (!previewPos) continue;
+
+        const rawEditorTop = editor.getTopForLineNumber(anchor.sourceLine);
+        const hiddenBefore = prefixHidden[Math.max(0, Math.min(prefixHidden.length - 1, anchor.sourceLine - 1))] ?? 0;
+        const adjustedForHidden = Math.max(0, rawEditorTop - hiddenBefore * lineHeight);
+
+        matched.push({
+          editorTop: Math.max(0, adjustedForHidden),
+          previewTop: previewPos.top,
+        });
+      }
+
+      // Sort by editor position and filter non-monotonic preview positions
+      matched.sort((a, b) => a.editorTop - b.editorTop);
+      
+      const filtered: Array<{ editorTop: number; previewTop: number }> = [];
+      let lastPreviewTop = -Infinity;
+      for (const item of matched) {
+        if (item.previewTop >= lastPreviewTop) {
+          filtered.push(item);
+          lastPreviewTop = item.previewTop;
+        }
+      }
+
+      return filtered;
+    },
+    [],
+  );
+
   // Rebuild anchors when content changes
   const rebuildAnchors = useCallback(() => {
     if (!sourceContent) {
@@ -504,38 +557,62 @@ export function useScrollSync({
       const editorAtBottom = editorMaxScroll > 0 && editorScrollTop >= editorMaxScroll - 1;
       const previewMaxScroll = Math.max(0, preview.scrollHeight - preview.clientHeight);
 
-      const matchedAnchors = buildMatchedAnchors(editor, preview, lineHeight);
+      const matchedAnchors = buildMatchedAnchorsStretched(editor, preview, lineHeight);
 
-      // If we have image anchors, the source axis is stretched in buildMatchedAnchors.
+      // If we have image anchors, the source axis is stretched in buildMatchedAnchorsStretched.
       // Mirror that stretching for the current scrollTop so interpolation remains consistent.
+      // Also compute total image extra for scaling editorMaxScroll to match.
+      //
+      // KEY BEHAVIOR: When scrolling through a single-line image tag in source, we want
+      // to scroll through the full image height in preview. This is achieved by gradually
+      // adding the "extra" pixels as we scroll through the image line, rather than jumping
+      // all at once when we pass the line.
+      //
+      // IMAGE_SCROLL_ZONE_LINES controls how many source lines worth of scrolling it takes
+      // to scroll through the image. Higher = slower image scrolling in preview.
+      const IMAGE_SCROLL_ZONE_LINES = 2.5;
       let imageExtraBeforeScrollTop = 0;
+      let totalImageExtra = 0;
       if (matchedAnchors.length > 0 && anchorsRef.current.length > 0) {
-        // Recompute a lightweight image-extra prefix up to current adjusted scrollTop.
-        // This is O(n) over anchors and intentionally simple.
         const positions = getPreviewElementPositions(preview);
-        let cumulative = 0;
         const prefixHiddenLocal = prefixHiddenLinesRef.current;
         for (const anchor of anchorsRef.current) {
           if (anchor.type !== "image") continue;
           const previewPos = positions.get(anchor.identifier);
           if (!previewPos) continue;
+          const extra = Math.max(0, (previewPos.height || 0) - lineHeight);
+          totalImageExtra += extra;
+          
           const rawTop = editor.getTopForLineNumber(anchor.sourceLine);
           const hiddenBefore = prefixHiddenLocal[Math.max(0, Math.min(prefixHiddenLocal.length - 1, anchor.sourceLine - 1))] ?? 0;
-          const adjustedTop = Math.max(0, rawTop - hiddenBefore * lineHeight);
-          if (adjustedTop < editorScrollTopAdjusted) {
-            cumulative += Math.max(0, (previewPos.height || 0) - lineHeight);
+          const imageTop = Math.max(0, rawTop - hiddenBefore * lineHeight);
+          // Extend the scroll zone beyond just the image line for smoother scrolling
+          const imageZoneHeight = lineHeight * IMAGE_SCROLL_ZONE_LINES;
+          const imageBottom = imageTop + imageZoneHeight;
+          
+          if (editorScrollTopAdjusted >= imageBottom) {
+            // We're completely past this image zone - add full extra
+            imageExtraBeforeScrollTop += extra;
+          } else if (editorScrollTopAdjusted > imageTop) {
+            // We're IN the image zone - add proportional extra based on how far through
+            // the zone we've scrolled. This creates the "pause" effect where scrolling
+            // through the image line in source scrolls through the full image in preview.
+            const progressThroughZone = (editorScrollTopAdjusted - imageTop) / imageZoneHeight;
+            imageExtraBeforeScrollTop += extra * progressThroughZone;
           }
+          // If we're before the image line, add nothing for this image
         }
-        imageExtraBeforeScrollTop = cumulative;
       }
 
       const editorScrollTopForMapping = editorScrollTopAdjusted + imageExtraBeforeScrollTop;
+      // Scale editorMaxScroll to include total image stretch so ratios are consistent
+      const editorMaxScrollStretched = editorMaxScroll + totalImageExtra;
 
       let targetScrollTop: number;
 
       if (matchedAnchors.length < 2) {
         // Fallback: use editor scroll percent (pixel-based, works with word-wrap).
-        const scrollPercent = editorMaxScroll > 0 ? editorScrollTopForMapping / editorMaxScroll : 0;
+        const scrollPercent = editorMaxScrollStretched > 0 ? editorScrollTopForMapping / editorMaxScrollStretched : 0;
         targetScrollTop = scrollPercent * previewMaxScroll;
       } else {
         let prev: { editorTop: number; previewTop: number } | null = null;
@@ -547,7 +624,7 @@ export function useScrollSync({
           }
           if (a.editorTop > editorScrollTopForMapping) {
             next = a;
-            break;
+          break;
           }
         }
 
@@ -555,7 +632,7 @@ export function useScrollSync({
           const ratio = next.editorTop > 0 ? editorScrollTopForMapping / next.editorTop : 0;
           targetScrollTop = ratio * next.previewTop;
         } else if (prev && !next) {
-          const remainingEditor = Math.max(1, editorMaxScroll - prev.editorTop);
+          const remainingEditor = Math.max(1, editorMaxScrollStretched - prev.editorTop);
           const ratio = (editorScrollTopForMapping - prev.editorTop) / remainingEditor;
           targetScrollTop = prev.previewTop + ratio * (previewMaxScroll - prev.previewTop);
         } else if (prev && next) {
@@ -563,7 +640,7 @@ export function useScrollSync({
           const ratio = (editorScrollTopForMapping - prev.editorTop) / editorRange;
           targetScrollTop = prev.previewTop + ratio * (next.previewTop - prev.previewTop);
         } else {
-          const scrollPercent = editorMaxScroll > 0 ? editorScrollTopForMapping / editorMaxScroll : 0;
+          const scrollPercent = editorMaxScrollStretched > 0 ? editorScrollTopForMapping / editorMaxScrollStretched : 0;
           targetScrollTop = scrollPercent * previewMaxScroll;
         }
       }
@@ -661,42 +738,145 @@ export function useScrollSync({
 
       const editorMaxScroll = Math.max(0, editor.getScrollHeight() - editor.getLayoutInfo().height);
       const lineHeight = editor.getOption(monaco.editor.EditorOption.lineHeight);
-      const matchedAnchors = buildMatchedAnchors(editor, preview, lineHeight);
+      
+      // IMAGE_SCROLL_ZONE_LINES controls how many source lines worth of scrolling corresponds
+      // to scrolling through the full image height in preview. Must match syncSourceToPreview.
+      const IMAGE_SCROLL_ZONE_LINES = 2.5;
+      const positions = getPreviewElementPositions(preview);
+      const prefixHiddenLocal = prefixHiddenLinesRef.current;
+      
+      // Collect image info for adjustment calculations
+      const imageInfos: Array<{
+        previewTop: number;
+        previewBottom: number;
+        previewHeight: number;
+        sourceTop: number;
+        sourceZoneHeight: number;
+      }> = [];
+      
+      for (const anchor of anchorsRef.current) {
+        if (anchor.type !== "image") continue;
+        const previewPos = positions.get(anchor.identifier);
+        if (!previewPos) continue;
+        
+        const rawTop = editor.getTopForLineNumber(anchor.sourceLine);
+        const hiddenBefore = prefixHiddenLocal[Math.max(0, Math.min(prefixHiddenLocal.length - 1, anchor.sourceLine - 1))] ?? 0;
+        const sourceTop = Math.max(0, rawTop - hiddenBefore * lineHeight);
+        
+        imageInfos.push({
+          previewTop: previewPos.top,
+          previewBottom: previewPos.top + previewPos.height,
+          previewHeight: previewPos.height,
+          sourceTop,
+          sourceZoneHeight: lineHeight * IMAGE_SCROLL_ZONE_LINES,
+        });
+      }
+      
+      // Sort by preview position
+      imageInfos.sort((a, b) => a.previewTop - b.previewTop);
+      
+      // Check if we're currently scrolling through an image in the preview
+      for (const img of imageInfos) {
+        if (scrollTop >= img.previewTop && scrollTop < img.previewBottom) {
+          // We're scrolling through an image in preview.
+          // Calculate where the source should be: at the image line position,
+          // plus a proportional offset within the image zone.
+          const progressThroughImage = (scrollTop - img.previewTop) / Math.max(1, img.previewHeight);
+          const targetEditorScrollTop = img.sourceTop + (progressThroughImage * img.sourceZoneHeight);
+          
+          // Clamp and apply
+          const clampedTarget = Math.max(0, Math.min(targetEditorScrollTop, editorMaxScroll));
+          
+          // Direction affinity check
+          const currentEditorScrollTop = editor.getScrollTop();
+          if (previewDelta > 0 && clampedTarget < currentEditorScrollTop - 2) {
+            return;
+          }
+          if (previewDelta < 0 && clampedTarget > currentEditorScrollTop + 2) {
+            return;
+          }
+          
+          suppressSourceScrollEndSyncUntilRef.current = Date.now() + SOURCE_END_SYNC_SUPPRESS_MS;
+          isApplyingEditorScrollRef.current = true;
+          editor.setScrollTop(clampedTarget);
+          setTimeout(() => {
+            isApplyingEditorScrollRef.current = false;
+          }, SCROLL_ANIMATION_DURATION + 10);
+          return;
+        }
+      }
+      
+      // Not in an image - use adjusted scroll position that accounts for passed images.
+      // For each image we've passed, the preview consumed (imageHeight) pixels but the source
+      // only consumed (sourceZoneHeight) pixels. We need to adjust our preview position to
+      // account for this difference when interpolating.
+      let adjustedScrollTop = scrollTop;
+      let adjustedPreviewMaxScroll = previewMaxScroll;
+      
+      for (const img of imageInfos) {
+        if (scrollTop >= img.previewBottom) {
+          // We've passed this image - subtract the "extra" preview space it consumed
+          const extraPreviewSpace = img.previewHeight - img.sourceZoneHeight;
+          adjustedScrollTop -= extraPreviewSpace;
+        }
+        // Also adjust max scroll to keep ratios consistent
+        const extraPreviewSpace = img.previewHeight - img.sourceZoneHeight;
+        adjustedPreviewMaxScroll -= extraPreviewSpace;
+      }
+      
+      // Clamp adjusted values
+      adjustedScrollTop = Math.max(0, adjustedScrollTop);
+      adjustedPreviewMaxScroll = Math.max(1, adjustedPreviewMaxScroll);
+      
+      // Now use the adjusted positions for interpolation
+      const matchedAnchors = buildMatchedAnchorsActual(editor, preview, lineHeight);
+      
+      // Also adjust anchor preview positions to account for images
+      const adjustedAnchors = matchedAnchors.map(anchor => {
+        let adjustedPreviewTop = anchor.previewTop;
+        for (const img of imageInfos) {
+          if (anchor.previewTop >= img.previewBottom) {
+            const extraPreviewSpace = img.previewHeight - img.sourceZoneHeight;
+            adjustedPreviewTop -= extraPreviewSpace;
+          }
+        }
+        return { editorTop: anchor.editorTop, previewTop: Math.max(0, adjustedPreviewTop) };
+      });
 
       let targetEditorScrollTop: number;
-      if (matchedAnchors.length < 2) {
+      if (adjustedAnchors.length < 2) {
         // Fallback: map preview scroll percent to editor scroll percent.
-        const scrollPercent = previewMaxScroll > 0 ? scrollTop / previewMaxScroll : 0;
+        const scrollPercent = adjustedPreviewMaxScroll > 0 ? adjustedScrollTop / adjustedPreviewMaxScroll : 0;
         targetEditorScrollTop = scrollPercent * Math.max(0, editorMaxScroll);
       } else {
         // Re-sort by previewTop for lookup.
-        const byPreview = [...matchedAnchors].sort((a, b) => a.previewTop - b.previewTop);
+        const byPreview = [...adjustedAnchors].sort((a, b) => a.previewTop - b.previewTop);
 
         let prev: { editorTop: number; previewTop: number } | null = null;
         let next: { editorTop: number; previewTop: number } | null = null;
         for (const a of byPreview) {
-          if (a.previewTop <= scrollTop) {
+          if (a.previewTop <= adjustedScrollTop) {
             prev = a;
           }
-          if (a.previewTop > scrollTop) {
+          if (a.previewTop > adjustedScrollTop) {
             next = a;
             break;
           }
         }
 
         if (!prev && next) {
-          const ratio = next.previewTop > 0 ? scrollTop / next.previewTop : 0;
+          const ratio = next.previewTop > 0 ? adjustedScrollTop / next.previewTop : 0;
           targetEditorScrollTop = ratio * next.editorTop;
         } else if (prev && !next) {
-          const remainingPreview = Math.max(1, previewMaxScroll - prev.previewTop);
-          const ratio = (scrollTop - prev.previewTop) / remainingPreview;
+          const remainingPreview = Math.max(1, adjustedPreviewMaxScroll - prev.previewTop);
+          const ratio = (adjustedScrollTop - prev.previewTop) / remainingPreview;
           targetEditorScrollTop = prev.editorTop + ratio * (Math.max(0, editorMaxScroll) - prev.editorTop);
         } else if (prev && next) {
           const previewRange = Math.max(1, next.previewTop - prev.previewTop);
-          const ratio = (scrollTop - prev.previewTop) / previewRange;
+          const ratio = (adjustedScrollTop - prev.previewTop) / previewRange;
           targetEditorScrollTop = prev.editorTop + ratio * (next.editorTop - prev.editorTop);
         } else {
-          const scrollPercent = previewMaxScroll > 0 ? scrollTop / previewMaxScroll : 0;
+          const scrollPercent = adjustedPreviewMaxScroll > 0 ? adjustedScrollTop / adjustedPreviewMaxScroll : 0;
           targetEditorScrollTop = scrollPercent * Math.max(0, editorMaxScroll);
         }
       }
@@ -724,7 +904,7 @@ export function useScrollSync({
         isApplyingEditorScrollRef.current = false;
       }, SCROLL_ANIMATION_DURATION + 10);
     },
-    [isEnabled, getEditor, previewRef]
+    [isEnabled, getEditor, previewRef, buildMatchedAnchorsActual]
   );
 
   const schedulePreviewScrollEndSync = useCallback(

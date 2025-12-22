@@ -59,11 +59,20 @@ describe("useLocalStorage hook", () => {
     it("should use default value when stored JSON is invalid", () => {
       localStorage.setItem("test-key", "not-valid-json{");
 
+      // Suppress expected console.warn for invalid JSON
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
       const { result } = renderHook(() =>
         useLocalStorage({ key: "test-key", defaultValue: "default" })
       );
 
       expect(result.current[0]).toBe("default");
+      expect(warnSpy).toHaveBeenCalledWith(
+        'Error reading localStorage key "test-key":',
+        expect.any(SyntaxError)
+      );
+
+      warnSpy.mockRestore();
     });
   });
 
