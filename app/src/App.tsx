@@ -2355,6 +2355,21 @@ function App() {
     return () => clearTimeout(timeoutId);
   }, [selectedFilePath, fileCommentDraft, isFileCommentComposerVisible]);
 
+  // Close file comment composer when switching files, then reopen if new file has a draft
+  useEffect(() => {
+    // When file changes, close the composer to prevent draft leakage
+    setIsFileCommentComposerVisible(false);
+    
+    // Then check if the new file has a draft and open composer if it does
+    if (selectedFilePath && draftsByFile[selectedFilePath]?.fileLevel) {
+      // Use a small delay to ensure the close happens first
+      const timer = setTimeout(() => {
+        setIsFileCommentComposerVisible(true);
+      }, 0);
+      return () => clearTimeout(timer);
+    }
+  }, [selectedFilePath, draftsByFile]);
+
   // Restore file-level draft when switching files or opening composer
   useEffect(() => {
     if (isFileCommentComposerVisible && selectedFilePath) {
