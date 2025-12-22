@@ -75,6 +75,25 @@ npm run tauri dev
 
 This starts the Vite dev server and launches the Tauri application window.
 
+### Strict TypeScript Typechecking (Dev)
+
+Vite’s dev server transpiles TypeScript but does not run the full `tsc` typechecker. This repo enables “production-like” TypeScript checks (including unused locals/params) via these scripts:
+
+```bash
+# From the app directory
+npm run typecheck
+
+# Watch mode (recommended while developing)
+npm run typecheck:watch
+
+# Run the full Tauri dev app + strict TS checking together
+npm run tauri:dev:strict
+```
+
+Notes:
+- `typecheck` uses `tsconfig.json` and respects `noUnusedLocals` / `noUnusedParameters`.
+- If you only want the frontend dev server (no Tauri window), use `npm run dev:strict`.
+
 ### Local Folder Mode (no PR required)
 
 You can load a local directory of markdown files and review it in the app (useful for the scroll-sync fixtures in `tests/scroll-sync/`).

@@ -45,9 +45,11 @@ import {
 } from "./constants";
 import { loadScrollCache, pruneScrollCache } from "./utils/scrollCache";
 import { parseLinePrefix, getImageMimeType, formatFileLabel, formatFileTooltip, formatFilePathWithLeadingEllipsis, isImageFile, isMarkdownFile } from "./utils/helpers";
+import { moveFullEditorDraftToInline, moveInlineDraftToFullEditor } from "./utils/commentDrafts";
 import { MemoizedAsyncImage, MermaidCode, CommentThreadItem, MediaViewer, ConfirmDialog, CommentList, CommentComposer, CommentStatus, handleCtrlEnter as handleCtrlEnterUtil } from "./components";
 import type { MediaContent } from "./components";
 import { usePaneZoom, useViewedFiles, useMRUList, useLocalStorage, useTocSortedFiles, useFileContents, useCommentFiltering, useMarkdownComponents, useCommentMutations, useFileNavigation, useAuth, createLocalReview } from "./hooks";
+import { useAutoOpenFileCommentComposer } from "./hooks/useAutoOpenFileCommentComposer";
 
 type ScrollCacheSection = "fileList" | "fileComments" | "sourcePane";
 
@@ -200,7 +202,7 @@ function App() {
   const [inlineCommentDraft, setInlineCommentDraft] = useState("");
   const [inlineCommentLine, setInlineCommentLine] = useState("");
   const [inlineCommentError, setInlineCommentError] = useState<string | null>(null);
-  const [draftsByFile, setDraftsByFile] = useState<Record<string, { reply?: Record<number, string>, inline?: string, fileLevel?: string }>>({})
+  const [draftsByFile, setDraftsByFile] = useState<Record<string, { reply?: Record<number, string>, inline?: string, fileLevel?: string }>>({});
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isRepoPanelCollapsed, setIsRepoPanelCollapsed] = useState(false);
   const [isPrPanelCollapsed, setIsPrPanelCollapsed] = useState(false);
@@ -2355,20 +2357,12 @@ function App() {
     return () => clearTimeout(timeoutId);
   }, [selectedFilePath, fileCommentDraft, isFileCommentComposerVisible]);
 
-  // Close file comment composer when switching files, then reopen if new file has a draft
-  useEffect(() => {
-    // When file changes, close the composer to prevent draft leakage
-    setIsFileCommentComposerVisible(false);
-    
-    // Then check if the new file has a draft and open composer if it does
-    if (selectedFilePath && draftsByFile[selectedFilePath]?.fileLevel) {
-      // Use a small delay to ensure the close happens first
-      const timer = setTimeout(() => {
-        setIsFileCommentComposerVisible(true);
-      }, 0);
-      return () => clearTimeout(timer);
-    }
-  }, [selectedFilePath, draftsByFile]);
+  // Auto-open the full editor when switching to a file that already has a saved full-editor draft.
+  useAutoOpenFileCommentComposer({
+    selectedFilePath,
+    draftsByFile,
+    setIsFileCommentComposerVisible,
+  });
 
   // Restore file-level draft when switching files or opening composer
   useEffect(() => {
@@ -4274,23 +4268,17 @@ function App() {
                           setFileCommentDraft("");
                           setFileCommentLine("");
                           setFileCommentError(null);
-                        
-                          // If there's content in the full editor, restore it to inline editor
-                          if (currentDraft.trim() || (selectedFilePath && draftsByFile[selectedFilePath]?.inline)) {
-                            setIsAddingInlineComment(true);
-                            const draft = currentDraft || (selectedFilePath ? draftsByFile[selectedFilePath]?.inline || "" : "");
-                            setInlineCommentDraft(draft);
-                            setInlineCommentLine(currentLine);
-                            // Save to draftsByFile
-                            if (selectedFilePath && draft) {
-                              setDraftsByFile(prev => ({
-                                ...prev,
-                                [selectedFilePath]: {
-                                  ...prev[selectedFilePath],
-                                  inline: draft
-                                }
-                              }));
-                            }
+
+                          // Always restore to inline mode (even if empty) so "minimize" reliably switches views.
+                          setIsAddingInlineComment(true);
+                          setInlineCommentDraft(currentDraft);
+                          setInlineCommentLine(currentLine);
+
+                          // Move persisted draft from full -> inline so auto-restore doesn't immediately re-open full editor.
+                          if (selectedFilePath) {
+                            setDraftsByFile((prev) =>
+                              moveFullEditorDraftToInline(prev, selectedFilePath, currentDraft, shouldDeleteFileDraft)
+                            );
                           }
                         }}
                         aria-label="Back to comments"
@@ -5047,21 +5035,15 @@ function App() {
                                   onClick={() => {
                                     setFileCommentDraft(inlineCommentDraft);
                                     setFileCommentLine(inlineCommentLine);
+                                    setFileCommentIsFileLevel(!inlineCommentLine.trim());
                                     setIsAddingInlineComment(false);
                                     setInlineCommentDraft("");
                                     setInlineCommentLine("");
-                                    // Clear the draft from storage since it's being moved to full editor
+                                    // Move inline -> full draft in storage atomically so expand doesn't get undone by draft-sync effects.
                                     if (selectedFilePath) {
-                                      setDraftsByFile(prev => {
-                                        const newDrafts = { ...prev };
-                                        if (newDrafts[selectedFilePath]) {
-                                          delete newDrafts[selectedFilePath].inline;
-                                          if (shouldDeleteFileDraft(newDrafts[selectedFilePath])) {
-                                            delete newDrafts[selectedFilePath];
-                                          }
-                                        }
-                                        return newDrafts;
-                                      });
+                                      setDraftsByFile((prev) =>
+                                        moveInlineDraftToFullEditor(prev, selectedFilePath, inlineCommentDraft, shouldDeleteFileDraft)
+                                      );
                                     }
                                     openFileCommentComposer(pendingReview ? "review" : "single");
                                   }}

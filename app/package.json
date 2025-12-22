@@ -5,6 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck:watch": "tsc -p tsconfig.json --noEmit --watch --preserveWatchOutput",
+    "dev:strict": "concurrently -k -n VITE,TS -c cyan,magenta \"vite\" \"npm run typecheck:watch\"",
+    "tauri:dev:strict": "concurrently -k -n TAURI,TS -c cyan,magenta \"npm run tauri dev\" \"npm run typecheck:watch\"",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
@@ -42,6 +46,7 @@
     "@vitest/ui": "^3.2.4",
     "autoprefixer": "^10.4.21",
     "fake-indexeddb": "^6.0.0",
+    "concurrently": "^9.1.2",
     "jsdom": "^26.1.0",
     "postcss": "^8.5.6",
     "tailwindcss": "^4.1.16",
