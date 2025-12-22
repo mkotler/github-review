@@ -6224,6 +6224,8 @@ function App() {
                               onClick={() => {
                                 toggleFileViewed(selectedFilePath);
                                 setShowSourceMenu(false);
+                                // Close comments pane after marking file as viewed
+                                setIsInlineCommentOpen(false);
                               }}
                             >
                               {isFileViewed(selectedFilePath) ? "Mark file as unviewed" : "Mark file as viewed"}
