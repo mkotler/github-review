@@ -624,7 +624,7 @@ export function useScrollSync({
           }
           if (a.editorTop > editorScrollTopForMapping) {
             next = a;
-          break;
+            break;
           }
         }
 
