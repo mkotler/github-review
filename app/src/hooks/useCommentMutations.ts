@@ -348,7 +348,10 @@ export function useCommentMutations(
         setCommentError(null);
         setCommentSuccess(true);
       } else {
-        setFileCommentSuccess(true);
+        // Only show "Comment published" for single comments, not when adding to review
+        if (params.mode === "single") {
+          setFileCommentSuccess(true);
+        }
       }
       await invalidateAndRefetch();
     },
@@ -542,7 +545,7 @@ export function useCommentMutations(
     },
     onSuccess: async () => {
       setFileCommentError(null);
-      setFileCommentSuccess(true);
+      // Don't show "Comment published" for updates - it's just an edit, not a publish
       await invalidateAndRefetch();
       
       if (editingComment?.url === "#" || !editingComment?.url) {
