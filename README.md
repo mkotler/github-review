@@ -39,6 +39,8 @@ See [docs/summary.md](docs/summary.md) for a comprehensive repository map includ
 - **Rust** 1.70+ with cargo
 - **Tauri CLI** - Install via `npm install -g @tauri-apps/cli`
 - **GitHub OAuth App** - Register at https://github.com/settings/developers
+  - Set **Authorization callback URL** to: `http://127.0.0.1/callback`
+  - Note: The app uses a dynamically assigned port for OAuth callbacks. GitHub accepts any port on `127.0.0.1` as long as the base path matches `/callback`
   - Note your Client ID and Client Secret
 
 ### Setup
