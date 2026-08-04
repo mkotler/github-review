@@ -284,15 +284,22 @@ This runs 73 tests covering:
 
 ```bash
 cd app
-npm test              # Run tests once
-npm run test:watch    # Run tests in watch mode
-npm run test:coverage # Run tests with coverage report
+npm test              # Run tests in watch mode
+npm test -- run       # Run tests once
+npm run test:coverage # Run tests once with coverage report
 ```
 
-This runs 66 tests covering:
+This runs 230 tests covering:
 - **offlineCache.ts** - IndexedDB caching for offline support
+- **scrollCache.ts / scrollSync.ts** - Scroll position caching and bidirectional scroll synchronization between source and preview
 - **useNetworkStatus.ts** - Network detection and offline state management
-- **useScrollSync.ts** - Bidirectional scroll synchronization between source and preview
+- **useAuth.ts** - Authentication flow, including offline/reconnection handling
+- **useFileNavigation.ts** - File list navigation and ordering
+- **useLocalStorage.ts** - localStorage persistence hook
+- **usePaneZoom.ts** - Source/preview pane zoom controls
+- **useViewedFiles.ts** - Per-PR file viewed tracking
+- **commentComposerToggle** - Comment composer post/review toggle behavior
+- **helpers** - Shared utility functions
 
 #### Test Infrastructure
 
