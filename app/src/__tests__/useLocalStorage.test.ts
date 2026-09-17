@@ -56,6 +56,26 @@ describe("useLocalStorage hook", () => {
       expect(result.current[0]).toEqual(storedArray);
     });
 
+    it("should reload stored data when the key changes", () => {
+      localStorage.setItem("github-mru", JSON.stringify(["github/repo"]));
+      localStorage.setItem("enterprise-mru", JSON.stringify(["enterprise/repo"]));
+
+      const { result, rerender } = renderHook(
+        ({ storageKey }) =>
+          useLocalStorage<string[]>({
+            key: storageKey,
+            defaultValue: [],
+          }),
+        { initialProps: { storageKey: "github-mru" } },
+      );
+
+      expect(result.current[0]).toEqual(["github/repo"]);
+
+      rerender({ storageKey: "enterprise-mru" });
+
+      expect(result.current[0]).toEqual(["enterprise/repo"]);
+    });
+
     it("should use default value when stored JSON is invalid", () => {
       localStorage.setItem("test-key", "not-valid-json{");
 

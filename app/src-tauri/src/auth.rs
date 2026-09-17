@@ -1,4 +1,4 @@
-use std::{env, io, time::Duration};
+use std::{io, time::Duration};
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use rand::{distributions::Alphanumeric, Rng};
@@ -14,13 +14,34 @@ use crate::github::{
     list_pull_requests_with_login, submit_file_comment, submit_general_comment, 
     submit_pending_review, CommentMode,
 };
+use crate::github_environment::{
+    active_environment, select_environment, ConfiguredGitHubEnvironment, GitHubEnvironment,
+};
 use crate::models::{AuthStatus, PullRequestDetail, PullRequestReview, PullRequestSummary};
-use crate::storage::{delete_token, read_token, store_token, store_last_login, read_last_login, delete_last_login};
+use crate::storage::{
+    delete_last_login, delete_token, read_last_login, read_token, store_last_login, store_token,
+};
 
-const AUTHORIZE_URL: &str = "https://github.com/login/oauth/authorize";
-const TOKEN_URL: &str = "https://github.com/login/oauth/access_token";
 const SCOPES: &str = "repo pull_request:write";
 const OAUTH_TIMEOUT: Duration = Duration::from_secs(180);
+
+fn auth_status(
+    environment: &GitHubEnvironment,
+    is_authenticated: bool,
+    login: Option<String>,
+    avatar_url: Option<String>,
+    is_offline: bool,
+) -> AuthStatus {
+    AuthStatus {
+        is_authenticated,
+        login,
+        avatar_url,
+        is_offline,
+        environment_id: environment.id.clone(),
+        environment_name: environment.name.clone(),
+        web_base_url: environment.web_base_url.clone(),
+    }
+}
 
 /// Helper function to detect network-related errors
 fn is_network_error(err: &AppError) -> bool {
@@ -40,18 +61,21 @@ fn is_network_error(err: &AppError) -> bool {
 
 pub async fn check_auth_status() -> AppResult<AuthStatus> {
     tracing::info!("checking auth status");
-    if let Some(token) = read_token()? {
+    let configured = select_environment(None)?;
+    let environment = &configured.environment;
+    if let Some(token) = read_token(&environment.id)? {
         match fetch_authenticated_user(&token).await {
             Ok(user) => {
                 // Store login for offline use
-                store_last_login(&user.login).ok();
+                store_last_login(&environment.id, &user.login).ok();
                 
-                Ok(AuthStatus {
-                    is_authenticated: true,
-                    login: Some(user.login),
-                    avatar_url: user.avatar_url,
-                    is_offline: false,
-                })
+                Ok(auth_status(
+                    environment,
+                    true,
+                    Some(user.login),
+                    user.avatar_url,
+                    false,
+                ))
                 .map(|status| {
                     tracing::info!(user = status.login.as_deref().unwrap_or("unknown"), "auth status resolved");
                     status
@@ -61,27 +85,17 @@ pub async fn check_auth_status() -> AppResult<AuthStatus> {
                 AppError::Http(http_err) => {
                     if http_err.status() == Some(StatusCode::UNAUTHORIZED) {
                         // Token explicitly rejected - clear credentials
-                        delete_token().ok();
-                        delete_last_login().ok();
-                        Ok(AuthStatus {
-                            is_authenticated: false,
-                            login: None,
-                            avatar_url: None,
-                            is_offline: false,
-                        })
+                        delete_token(&environment.id).ok();
+                        delete_last_login(&environment.id).ok();
+                        Ok(auth_status(environment, false, None, None, false))
                         .map(|status| {
                             tracing::info!("auth status resolved after unauthorized");
                             status
                         })
-                    } else if let Some(last_login) = read_last_login().ok().flatten() {
+                    } else if let Some(last_login) = read_last_login(&environment.id).ok().flatten() {
                         // Network error but we have cached login - assume offline mode
                         tracing::info!("http error during auth check (status: {:?}), using cached login for offline mode", http_err.status());
-                        Ok(AuthStatus {
-                            is_authenticated: true,
-                            login: Some(last_login),
-                            avatar_url: None,
-                            is_offline: true,
-                        })
+                        Ok(auth_status(environment, true, Some(last_login), None, true))
                     } else {
                         // Network error and no cached login - propagate error
                         tracing::warn!("http error during auth check with no cached login");
@@ -91,13 +105,8 @@ pub async fn check_auth_status() -> AppResult<AuthStatus> {
                 // Network error - treat as offline but still authenticated
                 other if is_network_error(&other) => {
                     tracing::info!("network error during auth check, assuming offline mode");
-                    let last_login = read_last_login().ok().flatten();
-                    Ok(AuthStatus {
-                        is_authenticated: true,
-                        login: last_login,
-                        avatar_url: None,
-                        is_offline: true,
-                    })
+                    let last_login = read_last_login(&environment.id).ok().flatten();
+                    Ok(auth_status(environment, true, last_login, None, true))
                     .map(|status| {
                         tracing::info!(
                             user = status.login.as_deref().unwrap_or("unknown"),
@@ -108,14 +117,9 @@ pub async fn check_auth_status() -> AppResult<AuthStatus> {
                 }
                 other => {
                     // Other errors - if we have cached login, use it; otherwise propagate
-                    if let Some(last_login) = read_last_login().ok().flatten() {
+                    if let Some(last_login) = read_last_login(&environment.id).ok().flatten() {
                         tracing::info!("error during auth check, using cached login for offline mode");
-                        Ok(AuthStatus {
-                            is_authenticated: true,
-                            login: Some(last_login),
-                            avatar_url: None,
-                            is_offline: true,
-                        })
+                        Ok(auth_status(environment, true, Some(last_login), None, true))
                     } else {
                         tracing::warn!("error during auth check with no cached login");
                         Err(other)
@@ -124,12 +128,7 @@ pub async fn check_auth_status() -> AppResult<AuthStatus> {
             },
         }
     } else {
-        Ok(AuthStatus {
-            is_authenticated: false,
-            login: None,
-            avatar_url: None,
-            is_offline: false,
-        })
+        Ok(auth_status(environment, false, None, None, false))
         .map(|status| {
             tracing::info!("auth status resolved without token");
             status
@@ -138,17 +137,18 @@ pub async fn check_auth_status() -> AppResult<AuthStatus> {
 }
 
 pub async fn logout() -> AppResult<()> {
-    delete_token()?;
-    delete_last_login().ok(); // Best effort - don't fail logout if this fails
+    let environment = active_environment();
+    delete_token(&environment.id)?;
+    delete_last_login(&environment.id).ok(); // Best effort - don't fail logout if this fails
     Ok(())
 }
 
-pub async fn start_oauth_flow(_app: &tauri::AppHandle) -> AppResult<AuthStatus> {
-    dotenvy::dotenv().ok();
-    let client_id =
-        env::var("GITHUB_CLIENT_ID").map_err(|_| AppError::MissingConfig("GITHUB_CLIENT_ID"))?;
-    let client_secret = env::var("GITHUB_CLIENT_SECRET")
-        .map_err(|_| AppError::MissingConfig("GITHUB_CLIENT_SECRET"))?;
+pub async fn start_oauth_flow(
+    _app: &tauri::AppHandle,
+    environment_id: &str,
+) -> AppResult<AuthStatus> {
+    let configured = select_environment(Some(environment_id))?;
+    let environment = &configured.environment;
 
     let code_verifier = random_string(64);
     let code_challenge = compute_challenge(&code_verifier);
@@ -158,9 +158,9 @@ pub async fn start_oauth_flow(_app: &tauri::AppHandle) -> AppResult<AuthStatus> 
     let redirect_port = listener.local_addr()?.port();
     let redirect_uri = format!("http://127.0.0.1:{redirect_port}/callback");
 
-    let mut url = Url::parse(AUTHORIZE_URL)?;
+    let mut url = Url::parse(&configured.authorize_url)?;
     url.query_pairs_mut()
-        .append_pair("client_id", &client_id)
+        .append_pair("client_id", &configured.client_id)
         .append_pair("redirect_uri", &redirect_uri)
         .append_pair("scope", SCOPES)
         .append_pair("state", &state)
@@ -177,26 +177,26 @@ pub async fn start_oauth_flow(_app: &tauri::AppHandle) -> AppResult<AuthStatus> 
     }
 
     let token = exchange_code(
-        &client_id,
-        &client_secret,
+        &configured,
         &code,
         &redirect_uri,
         &code_verifier,
     )
     .await?;
 
-    store_token(&token)?;
+    store_token(&environment.id, &token)?;
     let user = fetch_authenticated_user(&token).await?;
     
     // Store login for offline use
-    store_last_login(&user.login).ok();
+    store_last_login(&environment.id, &user.login).ok();
 
-    Ok(AuthStatus {
-        is_authenticated: true,
-        login: Some(user.login.clone()),
-        avatar_url: user.avatar_url,
-        is_offline: false,
-    })
+    Ok(auth_status(
+        environment,
+        true,
+        Some(user.login),
+        user.avatar_url,
+        false,
+    ))
 }
 
 pub async fn list_repo_pull_requests(
@@ -361,7 +361,8 @@ pub async fn submit_review_with_comments(
 }
 
 pub fn require_token() -> AppResult<String> {
-    read_token()?.ok_or(AppError::OAuthCancelled)
+    let environment = active_environment();
+    read_token(&environment.id)?.ok_or(AppError::OAuthCancelled)
 }
 
 pub fn require_token_for_delete() -> AppResult<String> {
@@ -445,19 +446,18 @@ struct TokenResponse {
 }
 
 async fn exchange_code(
-    client_id: &str,
-    client_secret: &str,
+    configured: &ConfiguredGitHubEnvironment,
     code: &str,
     redirect_uri: &str,
     code_verifier: &str,
 ) -> AppResult<String> {
     let client = reqwest::Client::new();
     let response = client
-        .post(TOKEN_URL)
+        .post(&configured.token_url)
         .header(ACCEPT, "application/json")
         .json(&serde_json::json!({
-            "client_id": client_id,
-            "client_secret": client_secret,
+            "client_id": configured.client_id,
+            "client_secret": configured.client_secret,
             "code": code,
             "redirect_uri": redirect_uri,
             "code_verifier": code_verifier,

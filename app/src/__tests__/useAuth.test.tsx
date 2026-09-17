@@ -16,6 +16,37 @@ vi.mock("@tauri-apps/api/core", () => ({
 import { invoke } from "@tauri-apps/api/core";
 
 const mockInvoke = vi.mocked(invoke);
+const configuredEnvironments = [
+  {
+    id: "github.com",
+    name: "GitHub.com",
+    web_base_url: "https://github.com",
+    api_base_url: "https://api.github.com",
+  },
+];
+
+function mockAuthCommands(
+  authResults: Array<unknown> = [],
+  loginResult?: unknown,
+) {
+  let authResultIndex = 0;
+  mockInvoke.mockImplementation((command) => {
+    if (command === "cmd_list_github_environments") {
+      return Promise.resolve(configuredEnvironments);
+    }
+    if (command === "cmd_check_auth_status") {
+      const result = authResults[authResultIndex++];
+      return result instanceof Error ? Promise.reject(result) : Promise.resolve(result);
+    }
+    if (command === "cmd_start_github_oauth") {
+      return Promise.resolve(loginResult);
+    }
+    if (command === "cmd_logout") {
+      return Promise.resolve(undefined);
+    }
+    return Promise.reject(new Error(`Unexpected command: ${command}`));
+  });
+}
 
 function createWrapper() {
   const queryClient = new QueryClient({
@@ -51,7 +82,7 @@ describe("useAuth hook", () => {
 
   describe("initial state", () => {
     it("should return loading state initially", async () => {
-      mockInvoke.mockImplementation(() => new Promise(() => {})); // Never resolves
+      mockAuthCommands([new Promise(() => {})]);
 
       const { result } = renderHook(() => useAuth(), {
         wrapper: createWrapper(),
@@ -73,7 +104,7 @@ describe("useAuth hook", () => {
       window.localStorage.setItem("cached-auth-status", JSON.stringify(cachedStatus));
 
       // Mock invoke to return same data (since initialData is used)
-      mockInvoke.mockResolvedValueOnce(cachedStatus);
+      mockAuthCommands([cachedStatus]);
 
       const { result } = renderHook(() => useAuth(), {
         wrapper: createWrapper(),
@@ -97,7 +128,7 @@ describe("useAuth hook", () => {
         is_offline: false,
       };
 
-      mockInvoke.mockResolvedValueOnce(authStatus);
+      mockAuthCommands([authStatus]);
 
       const { result } = renderHook(() => useAuth(), {
         wrapper: createWrapper(),
@@ -121,7 +152,7 @@ describe("useAuth hook", () => {
         is_offline: false,
       };
 
-      mockInvoke.mockResolvedValueOnce(authStatus);
+      mockAuthCommands([authStatus]);
 
       const { result } = renderHook(() => useAuth(), {
         wrapper: createWrapper(),
@@ -144,7 +175,7 @@ describe("useAuth hook", () => {
       };
 
       const onOffline = vi.fn();
-      mockInvoke.mockResolvedValueOnce(authStatus);
+      mockAuthCommands([authStatus]);
 
       const { result } = renderHook(() => useAuth({ onOffline }), {
         wrapper: createWrapper(),
@@ -168,7 +199,7 @@ describe("useAuth hook", () => {
       };
 
       const onOnline = vi.fn();
-      mockInvoke.mockResolvedValueOnce(authStatus);
+      mockAuthCommands([authStatus]);
 
       const { result } = renderHook(() => useAuth({ onOnline }), {
         wrapper: createWrapper(),
@@ -198,9 +229,7 @@ describe("useAuth hook", () => {
         is_offline: false,
       };
 
-      mockInvoke
-        .mockResolvedValueOnce(initialStatus) // Initial auth check
-        .mockResolvedValueOnce(loggedInStatus); // Login
+      mockAuthCommands([initialStatus], loggedInStatus);
 
       const { result } = renderHook(() => useAuth(), {
         wrapper: createWrapper(),
@@ -214,14 +243,16 @@ describe("useAuth hook", () => {
 
       // Trigger login
       act(() => {
-        result.current.startLogin();
+        result.current.startLogin("github.com");
       });
 
       await waitFor(() => {
         expect(result.current.isAuthenticated).toBe(true);
       });
 
-      expect(mockInvoke).toHaveBeenCalledWith("cmd_start_github_oauth");
+      expect(mockInvoke).toHaveBeenCalledWith("cmd_start_github_oauth", {
+        environmentId: "github.com",
+      });
       expect(result.current.userLogin).toBe("newUser");
     });
   });
@@ -235,9 +266,7 @@ describe("useAuth hook", () => {
         is_offline: false,
       };
 
-      mockInvoke
-        .mockResolvedValueOnce(loggedInStatus) // Initial auth check
-        .mockResolvedValueOnce(undefined); // Logout
+      mockAuthCommands([loggedInStatus]);
 
       const onLogoutSuccess = vi.fn();
 
@@ -267,7 +296,7 @@ describe("useAuth hook", () => {
 
   describe("error handling", () => {
     it("should not be authenticated when auth check fails", async () => {
-      mockInvoke.mockRejectedValueOnce(new Error("Network error"));
+      mockAuthCommands([new Error("Network error")]);
 
       const { result } = renderHook(() => useAuth(), {
         wrapper: createWrapper(),
@@ -297,9 +326,7 @@ describe("useAuth hook", () => {
         is_offline: false,
       };
 
-      mockInvoke
-        .mockResolvedValueOnce(initialStatus)
-        .mockResolvedValueOnce(updatedStatus);
+      mockAuthCommands([initialStatus, updatedStatus]);
 
       const { result } = renderHook(() => useAuth(), {
         wrapper: createWrapper(),

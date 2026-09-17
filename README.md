@@ -38,8 +38,10 @@ See [docs/summary.md](docs/summary.md) for a comprehensive repository map includ
 - **Node.js** 18+ and npm
 - **Rust** 1.70+ with cargo
 - **Tauri CLI** - Install via `npm install -g @tauri-apps/cli`
-- **GitHub OAuth App** - Register at https://github.com/settings/developers
-  - Note your Client ID and Client Secret
+- **GitHub OAuth App** - Register one OAuth app on each GitHub environment you
+  want to use (for example, GitHub.com and your GitHub Enterprise Server)
+  - Use a loopback callback URL such as `http://127.0.0.1/callback`
+  - Note each app's Client ID and Client Secret
 
 ### Setup
 
@@ -57,8 +59,20 @@ See [docs/summary.md](docs/summary.md) for a comprehensive repository map includ
 3. **Configure OAuth credentials**
    ```bash
    cp .env.example src-tauri/.env
-   # Edit src-tauri/.env and add your GitHub OAuth credentials
+   # Edit src-tauri/.env and add one or more GitHub environments
    ```
+
+   `GITHUB_ENVIRONMENTS` is a JSON array. Each entry requires a stable `id`,
+   display `name`, `web_base_url`, `client_id`, and `client_secret`.
+   `api_base_url` is optional: GitHub.com defaults to
+   `https://api.github.com`, while GitHub Enterprise Server defaults to
+   `<web_base_url>/api/v3`.
+
+   When multiple entries are configured, the sign-in screen displays an
+   environment selector. Tokens and cached login names are stored separately
+   for each environment in the system keyring. The legacy
+   `GITHUB_CLIENT_ID`/`GITHUB_CLIENT_SECRET` variables still configure a single
+   GitHub.com environment when `GITHUB_ENVIRONMENTS` is absent.
 
 4. **Build Rust backend** (optional, happens automatically on dev)
    ```bash

@@ -6,7 +6,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect } from "react";
-import type { AuthStatus } from "../types";
+import type { AuthStatus, GitHubEnvironment } from "../types";
 import { AUTH_QUERY_KEY } from "../constants";
 
 export interface UseAuthOptions {
@@ -23,6 +23,8 @@ export interface UseAuthOptions {
 export interface UseAuthReturn {
   /** Current authentication status */
   authStatus: AuthStatus | undefined;
+  /** GitHub environments configured by the backend */
+  environments: GitHubEnvironment[];
   /** Whether the auth query is loading */
   isLoading: boolean;
   /** Whether the auth query has an error */
@@ -37,8 +39,14 @@ export interface UseAuthReturn {
   userLogin: string | null;
   /** Current user's avatar URL */
   avatarUrl: string | null;
+  /** Display name of the active GitHub environment */
+  environmentName: string | null;
+  /** Stable ID of the active GitHub environment */
+  environmentId: string | null;
+  /** Web URL of the active GitHub environment */
+  webBaseUrl: string;
   /** Function to trigger login */
-  startLogin: () => void;
+  startLogin: (environmentId: string) => void;
   /** Whether login is in progress */
   isLoggingIn: boolean;
   /** Function to trigger logout */
@@ -61,6 +69,13 @@ export interface UseAuthReturn {
 export function useAuth(options: UseAuthOptions = {}) {
   const { onOffline, onOnline, onLogoutSuccess, isOnline = true } = options;
   const queryClient = useQueryClient();
+
+  const environmentsQuery = useQuery({
+    queryKey: ["github-environments"],
+    queryFn: () => invoke<GitHubEnvironment[]>("cmd_list_github_environments"),
+    staleTime: Infinity,
+    retry: false,
+  });
 
   const authQuery = useQuery({
     queryKey: AUTH_QUERY_KEY,
@@ -107,8 +122,10 @@ export function useAuth(options: UseAuthOptions = {}) {
   }, [isOnline, authQuery.data?.is_offline]);
 
   const loginMutation = useMutation({
-    mutationFn: async () => {
-      const status = await invoke<AuthStatus>("cmd_start_github_oauth");
+    mutationFn: async (environmentId: string) => {
+      const status = await invoke<AuthStatus>("cmd_start_github_oauth", {
+        environmentId,
+      });
       return status;
     },
     onSuccess: (status) => {
@@ -126,6 +143,9 @@ export function useAuth(options: UseAuthOptions = {}) {
         login: null,
         avatar_url: null,
         is_offline: false,
+        environment_id: authQuery.data?.environment_id,
+        environment_name: authQuery.data?.environment_name,
+        web_base_url: authQuery.data?.web_base_url,
       });
       queryClient.removeQueries({ queryKey: ["pull-requests"] });
       queryClient.removeQueries({ queryKey: ["pull-request"] });
@@ -136,16 +156,20 @@ export function useAuth(options: UseAuthOptions = {}) {
   return {
     // Auth state
     authStatus: authQuery.data,
-    isLoading: authQuery.isLoading,
-    isError: authQuery.isError,
-    error: authQuery.error,
+    environments: environmentsQuery.data ?? [],
+    isLoading: authQuery.isLoading || environmentsQuery.isLoading,
+    isError: authQuery.isError || environmentsQuery.isError || loginMutation.isError,
+    error: authQuery.error ?? environmentsQuery.error ?? loginMutation.error,
     isAuthenticated: authQuery.data?.is_authenticated === true,
     isOfflineAuth: authQuery.data?.is_offline === true,
     userLogin: authQuery.data?.login ?? null,
     avatarUrl: authQuery.data?.avatar_url ?? null,
+    environmentName: authQuery.data?.environment_name ?? null,
+    environmentId: authQuery.data?.environment_id ?? null,
+    webBaseUrl: authQuery.data?.web_base_url ?? "https://github.com",
     
     // Login
-    startLogin: () => loginMutation.mutate(),
+    startLogin: (environmentId: string) => loginMutation.mutate(environmentId),
     isLoggingIn: loginMutation.isPending,
     
     // Logout

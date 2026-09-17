@@ -1,6 +1,7 @@
 mod auth;
 mod error;
 mod github;
+mod github_environment;
 mod models;
 mod storage;
 mod review_storage;
@@ -9,6 +10,7 @@ mod review_storage;
 mod tests;
 
 use crate::github::CommentMode;
+use github_environment::GitHubEnvironment;
 use auth::{
     check_auth_status, fetch_pull_request_details, fetch_file_contents_on_demand, list_repo_pull_requests, logout,
     publish_file_comment, publish_review_comment, start_oauth_flow, start_pending_review,
@@ -251,8 +253,18 @@ async fn cmd_load_local_directory(directory: String) -> Result<PullRequestDetail
 }
 
 #[tauri::command]
-async fn cmd_start_github_oauth(app: tauri::AppHandle) -> Result<AuthStatus, String> {
-    start_oauth_flow(&app).await.map_err(|err| err.to_string())
+async fn cmd_start_github_oauth(
+    app: tauri::AppHandle,
+    environment_id: String,
+) -> Result<AuthStatus, String> {
+    start_oauth_flow(&app, &environment_id)
+        .await
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+fn cmd_list_github_environments() -> Result<Vec<GitHubEnvironment>, String> {
+    github_environment::list_environments().map_err(|err| err.to_string())
 }
 
 #[tauri::command]
@@ -971,6 +983,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             cmd_load_local_directory,
+            cmd_list_github_environments,
             cmd_start_github_oauth,
             cmd_check_auth_status,
             cmd_logout,

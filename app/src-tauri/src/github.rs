@@ -2,6 +2,7 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, AUTHORIZATION,
 use reqwest::StatusCode;
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
+use std::fmt;
 use tauri::Emitter;
 use tracing::{debug, info, warn};
 
@@ -11,7 +12,15 @@ use crate::models::{
     PullRequestMetadata, PullRequestSummary,
 };
 
-const API_BASE: &str = "https://api.github.com";
+struct ActiveApiBase;
+
+impl fmt::Display for ActiveApiBase {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&crate::github_environment::active_environment().api_base_url)
+    }
+}
+
+const API_BASE: ActiveApiBase = ActiveApiBase;
 const USER_AGENT_VALUE: &str = "github-review-app/0.1";
 const API_VERSION_HEADER: &str = "x-github-api-version";
 const API_VERSION_VALUE: &str = "2022-11-28";
@@ -75,6 +84,7 @@ async fn ensure_success(
         return Ok(response);
     }
 
+    let request_url = response.url().clone();
     let headers = response.headers().clone();
 
     if status == StatusCode::FORBIDDEN {
@@ -82,6 +92,7 @@ async fn ensure_success(
             if let Some(info) = parse_sso_header(header) {
                 warn!(
                     context = context,
+                    request_url = %request_url,
                     organization = info.organization.as_deref().unwrap_or("unknown"),
                     "GitHub SSO authorization required"
                 );
@@ -106,6 +117,7 @@ async fn ensure_success(
     // Log only a short snippet of the response to avoid dumping entire HTML pages.
     warn!(
         context = context,
+        request_url = %request_url,
         status = status.as_u16(),
         response_body_len = body.len(),
         response_body_snippet = %log_snippet,
@@ -144,6 +156,7 @@ async fn ensure_success(
 
         warn!(
             context = context,
+            request_url = %request_url,
             status = status.as_u16(),
             error_message = %message,
             "GitHub API request failed"
@@ -166,6 +179,7 @@ async fn ensure_success(
 
     warn!(
         context = context,
+        request_url = %request_url,
         status = status.as_u16(),
         "GitHub API request failed"
     );

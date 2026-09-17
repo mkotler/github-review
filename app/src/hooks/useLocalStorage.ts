@@ -3,7 +3,7 @@
  * Provides a useState-like API with automatic persistence.
  */
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 
 export interface UseLocalStorageOptions<T> {
   /** Key to use in localStorage */
@@ -44,6 +44,16 @@ export function useLocalStorage<T>({
       return defaultValue;
     }
   });
+
+  useEffect(() => {
+    try {
+      const item = localStorage.getItem(key);
+      setStoredValue(item !== null ? deserialize(item) : defaultValue);
+    } catch (error) {
+      console.warn(`Error reading localStorage key "${key}":`, error);
+      setStoredValue(defaultValue);
+    }
+  }, [key]);
 
   // Setter that also updates localStorage
   const setValue = useCallback(

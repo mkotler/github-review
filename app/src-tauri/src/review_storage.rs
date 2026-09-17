@@ -766,11 +766,15 @@ impl ReviewStorage {
     
     async fn fetch_pr_title(&self, owner: &str, repo: &str, pr_number: u64) -> AppResult<String> {
         let token = require_token()?;
+        let environment = crate::github_environment::active_environment();
         let client = reqwest::Client::builder()
             .user_agent("github-review-app")
             .build()?;
         
-        let url = format!("https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}");
+        let url = format!(
+            "{}/repos/{owner}/{repo}/pulls/{pr_number}",
+            environment.api_base_url
+        );
         let response = client
             .get(&url)
             .header("Authorization", format!("Bearer {token}"))
@@ -858,6 +862,11 @@ impl ReviewStorage {
         };
         
         let mut content = String::new();
+        let environment = crate::github_environment::active_environment();
+        let pull_request_url = format!(
+            "{}/{}/{}/pull/{}",
+            environment.web_base_url, owner, repo, pr_number
+        );
         if is_local_folder {
             content.push_str("# Review\n");
             if let Some(local_folder) = &metadata.local_folder {
@@ -867,11 +876,11 @@ impl ReviewStorage {
             }
         } else if pr_title.is_empty() {
             content.push_str(&format!("# Review for PR #{}\n", pr_number));
-            content.push_str(&format!("# URL: https://github.com/{}/{}/pull/{}\n", owner, repo, pr_number));
+            content.push_str(&format!("# URL: {pull_request_url}\n"));
             content.push_str(&format!("# Repository: {}/{}\n", owner, repo));
         } else {
             content.push_str(&format!("# Review for PR #{}: {}\n", pr_number, pr_title));
-            content.push_str(&format!("# URL: https://github.com/{}/{}/pull/{}\n", owner, repo, pr_number));
+            content.push_str(&format!("# URL: {pull_request_url}\n"));
             content.push_str(&format!("# Repository: {}/{}\n", owner, repo));
         }
         content.push_str(&format!("# Created: {}\n", metadata.created_at));

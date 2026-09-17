@@ -2600,6 +2600,31 @@ select {
   transform: translateY(-1px);
 }
 
+.login-environment {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 14px;
+  color: #b2c4eb;
+  text-align: left;
+}
+
+.login-environment select {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid rgba(88, 114, 176, 0.4);
+  border-radius: 8px;
+  background: #171b28;
+  color: #f1f5ff;
+}
+
+.login-error {
+  margin: 0 0 14px;
+  color: #fca5a5;
+  font-size: 13px;
+  text-align: left;
+}
+
 .login-hint {
   color: rgba(178, 196, 235, 0.7);
   font-size: 14px;

@@ -13,6 +13,16 @@ export type AuthStatus = {
   avatar_url?: string | null;
   /** true if authenticated using cached data without network verification */
   is_offline?: boolean;
+  environment_id?: string;
+  environment_name?: string;
+  web_base_url?: string;
+};
+
+export type GitHubEnvironment = {
+  id: string;
+  name: string;
+  web_base_url: string;
+  api_base_url: string;
 };
 
 // =============================================================================

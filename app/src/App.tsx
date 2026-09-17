@@ -154,7 +154,7 @@ function App() {
   const [repoRef, setRepoRef] = useState<RepoRef | null>(null);
   const [repoInput, setRepoInput] = useState("");
   const [repoError, setRepoError] = useState<string | null>(null);
-  const [repoMRU, addRepoToMRU] = useMRUList('repo-mru', 10);
+  const [selectedEnvironmentId, setSelectedEnvironmentId] = useState("");
   const [showRepoMRU, setShowRepoMRU] = useState(false);
   const [prFileCounts, setPrFileCounts] = useLocalStorage<Record<string, number>>({
     key: 'pr-file-counts',
@@ -718,9 +718,15 @@ function App() {
   // Authentication managed by useAuth hook
   const {
     isLoading: isAuthLoading,
+    isError: isAuthError,
+    error: authError,
+    environments,
     isAuthenticated,
     userLogin,
     avatarUrl,
+    environmentName,
+    environmentId,
+    webBaseUrl,
     startLogin,
     isLoggingIn,
     logout,
@@ -735,6 +741,27 @@ function App() {
       setSelectedFilePath(null);
     },
   });
+
+  useEffect(() => {
+    if (environments.length === 0 || selectedEnvironmentId) {
+      return;
+    }
+    if (
+      environmentId &&
+      environments.some((environment) => environment.id === environmentId)
+    ) {
+      setSelectedEnvironmentId(environmentId);
+    } else {
+      setSelectedEnvironmentId(environments[0].id);
+    }
+  }, [environmentId, environments, selectedEnvironmentId]);
+
+  const environmentStorageId = environmentId ?? "github.com";
+  const repoMruStorageKey =
+    environmentStorageId === "github.com"
+      ? "repo-mru"
+      : `repo-mru-${environmentStorageId}`;
+  const [repoMRU, addRepoToMRU] = useMRUList(repoMruStorageKey, 10);
 
   // Handle app wake from sleep/hibernation - refetch all queries
   useEffect(() => {
@@ -758,7 +785,7 @@ function App() {
   }, [queryClient]);
 
   const prsUnderReviewQuery = useQuery({
-    queryKey: ["prs-under-review"], // Remove login from key since it's local storage
+    queryKey: ["prs-under-review", environmentStorageId],
     queryFn: async () => {
       const prs = await invoke<PrUnderReview[]>("cmd_get_prs_under_review");
       // Cache the results with timestamp in localStorage for instant display on next load
@@ -766,15 +793,20 @@ function App() {
         data: prs,
         timestamp: Date.now(),
       };
-      localStorage.setItem('cached-prs-under-review', JSON.stringify(cacheData));
+      localStorage.setItem(
+        `cached-prs-under-review-${environmentStorageId}`,
+        JSON.stringify(cacheData),
+      );
       return prs;
     },
-    enabled: isAuthenticated,
+    enabled: isAuthenticated && !!environmentId,
     ...RETRY_CONFIG,
     staleTime: 5 * 60 * 1000, // 5 minutes - local reviews don't change often
     placeholderData: () => {
       // Show cached data immediately while loading
-      const cached = localStorage.getItem('cached-prs-under-review');
+      const cached = localStorage.getItem(
+        `cached-prs-under-review-${environmentStorageId}`,
+      );
       if (cached) {
         try {
           const cacheData = JSON.parse(cached);
@@ -797,7 +829,7 @@ function App() {
       const currentLogin = userLogin;
       
       return {
-        queryKey: ["mru-open-prs", owner, repo, currentLogin],
+        queryKey: ["mru-open-prs", environmentStorageId, owner, repo, currentLogin],
         queryFn: async () => {
           if (!currentLogin) {
             return [];
@@ -832,7 +864,7 @@ function App() {
           }
           
           // Cache results in localStorage
-          const cacheKey = `mru-open-prs-${owner}-${repo}`;
+          const cacheKey = `mru-open-prs-${environmentStorageId}-${owner}-${repo}`;
           const cacheData = {
             data: prsWithPendingReviews,
             timestamp: Date.now(),
@@ -841,13 +873,13 @@ function App() {
           
           return prsWithPendingReviews;
         },
-        enabled: isAuthenticated && !!currentLogin,
+        enabled: isAuthenticated && !!currentLogin && !!environmentId,
         ...RETRY_CONFIG,
         staleTime: 60 * 60 * 1000, // 1 hour
         gcTime: 60 * 60 * 1000, // Keep in cache for 1 hour
         placeholderData: () => {
           // Load from cache for instant display
-          const cacheKey = `mru-open-prs-${owner}-${repo}`;
+          const cacheKey = `mru-open-prs-${environmentStorageId}-${owner}-${repo}`;
           const cached = localStorage.getItem(cacheKey);
           if (cached) {
             try {
@@ -876,7 +908,7 @@ function App() {
       const currentLogin = userLogin;
       
       return {
-        queryKey: ["mru-closed-prs", owner, repo, currentLogin],
+        queryKey: ["mru-closed-prs", environmentStorageId, owner, repo, currentLogin],
         queryFn: async () => {
           if (!currentLogin) {
             return [];
@@ -911,7 +943,7 @@ function App() {
           }
           
           // Cache results in localStorage
-          const cacheKey = `mru-closed-prs-${owner}-${repo}`;
+          const cacheKey = `mru-closed-prs-${environmentStorageId}-${owner}-${repo}`;
           const cacheData = {
             data: prsWithPendingReviews,
             timestamp: Date.now(),
@@ -920,13 +952,13 @@ function App() {
           
           return prsWithPendingReviews;
         },
-        enabled: isAuthenticated && !!currentLogin && allOpenQueriesFinished,
+        enabled: isAuthenticated && !!currentLogin && !!environmentId && allOpenQueriesFinished,
         ...RETRY_CONFIG,
         staleTime: 60 * 60 * 1000, // 1 hour
         gcTime: 60 * 60 * 1000, // Keep in cache for 1 hour
         placeholderData: () => {
           // Load from cache for instant display
-          const cacheKey = `mru-closed-prs-${owner}-${repo}`;
+          const cacheKey = `mru-closed-prs-${environmentStorageId}-${owner}-${repo}`;
           const cached = localStorage.getItem(cacheKey);
           if (cached) {
             try {
@@ -2744,6 +2776,7 @@ function App() {
       }
       setRepoError(null);
       setRepoRef({ owner, repo: repository });
+      setPrMode("repo");
       setSelectedPr(null);
       setSelectedFilePath(null);
       setPrSearchFilter("");
@@ -3230,8 +3263,10 @@ function App() {
   }, [draftsByFile]);
 
   const handleLogin = useCallback(() => {
-    startLogin();
-  }, [startLogin]);
+    if (selectedEnvironmentId) {
+      startLogin(selectedEnvironmentId);
+    }
+  }, [selectedEnvironmentId, startLogin]);
 
   // Get mutation functions from the hook (state already destructured above)
   const {
@@ -4035,6 +4070,9 @@ function App() {
   }
 
   if (!isAuthenticated) {
+    const selectedEnvironment = environments.find(
+      (environment) => environment.id === selectedEnvironmentId,
+    );
     return (
       <div className="login-screen">
         <div>
@@ -4044,8 +4082,34 @@ function App() {
           </p>
         </div>
         <div className="login-actions">
-          <button onClick={handleLogin} disabled={isLoggingIn}>
-            {isLoggingIn ? "Waiting for GitHub…" : "Continue with GitHub"}
+          {environments.length > 1 && (
+            <label className="login-environment">
+              <span>GitHub environment</span>
+              <select
+                value={selectedEnvironmentId}
+                onChange={(event) => setSelectedEnvironmentId(event.target.value)}
+                disabled={isLoggingIn}
+              >
+                {environments.map((environment) => (
+                  <option key={environment.id} value={environment.id}>
+                    {environment.name} ({environment.web_base_url})
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          {isAuthError && (
+            <p className="login-error">
+              {authError instanceof Error ? authError.message : "Unable to load GitHub configuration."}
+            </p>
+          )}
+          <button
+            onClick={handleLogin}
+            disabled={isLoggingIn || !selectedEnvironmentId || isAuthError}
+          >
+            {isLoggingIn
+              ? `Waiting for ${selectedEnvironment?.name ?? "GitHub"}…`
+              : `Continue with ${selectedEnvironment?.name ?? "GitHub"}`}
           </button>
         </div>
       </div>
@@ -4108,7 +4172,9 @@ function App() {
                 )}
                 <div className="user-chip__details">
                   <span className="chip-label">Signed in</span>
-                  <span className="chip-value">{userLogin}</span>
+                  <span className="chip-value">
+                    {userLogin}{environmentName ? ` · ${environmentName}` : ""}
+                  </span>
                 </div>
                 <span className="user-chip__chevron" aria-hidden="true">
                   {isUserMenuOpen ? "^" : "v"}
@@ -4187,7 +4253,7 @@ function App() {
                         </span>
                       </button>
                       <a
-                        href={`https://github.com/${repoRef?.owner}/${repoRef?.repo}/pull/${prDetail.number}`}
+                        href={`${webBaseUrl}/${repoRef?.owner}/${repoRef?.repo}/pull/${prDetail.number}`}
                         target="_blank"
                         rel="noreferrer"
                         className="panel__icon-button panel__icon-button--icon-only"
@@ -5614,7 +5680,7 @@ function App() {
                     )}
                     {isPrPanelCollapsed && selectedPr && prDetail && repoRef && (
                       <a
-                        href={`https://github.com/${repoRef.owner}/${repoRef.repo}/pull/${prDetail.number}`}
+                        href={`${webBaseUrl}/${repoRef.owner}/${repoRef.repo}/pull/${prDetail.number}`}
                         target="_blank"
                         rel="noreferrer"
                         className="panel__icon-button panel__icon-button--icon-only"

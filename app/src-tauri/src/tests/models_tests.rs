@@ -17,6 +17,9 @@ fn test_auth_status_serialization() {
         login: Some("octocat".to_string()),
         avatar_url: Some("https://github.com/images/octocat.png".to_string()),
         is_offline: false,
+        environment_id: "github.com".to_string(),
+        environment_name: "GitHub.com".to_string(),
+        web_base_url: "https://github.com".to_string(),
     };
     
     let json = serde_json::to_value(&status).unwrap();
@@ -24,6 +27,7 @@ fn test_auth_status_serialization() {
     assert_eq!(json["login"], "octocat");
     assert_eq!(json["avatar_url"], "https://github.com/images/octocat.png");
     assert_eq!(json["is_offline"], false);
+    assert_eq!(json["environment_id"], "github.com");
 }
 
 /// Test Case 2.2: AuthStatus with null fields
@@ -36,6 +40,9 @@ fn test_auth_status_with_nulls() {
         login: None,
         avatar_url: None,
         is_offline: false,
+        environment_id: "github.com".to_string(),
+        environment_name: "GitHub.com".to_string(),
+        web_base_url: "https://github.com".to_string(),
     };
     
     let json = serde_json::to_value(&status).unwrap();
