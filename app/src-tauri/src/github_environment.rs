@@ -66,6 +66,21 @@ fn normalize_base_url(value: &str, field_name: &'static str) -> AppResult<String
     Ok(value.to_string())
 }
 
+fn default_api_base_url(web_base_url: &str) -> AppResult<String> {
+    let url = Url::parse(web_base_url)?;
+    let host = url
+        .host_str()
+        .ok_or(AppError::MissingConfig(ENVIRONMENTS_CONFIG_KEY))?;
+
+    if host == "github.com" {
+        Ok(DEFAULT_API_BASE_URL.to_string())
+    } else if host.ends_with(".ghe.com") {
+        Ok(format!("https://api.{host}"))
+    } else {
+        Ok(format!("{web_base_url}/api/v3"))
+    }
+}
+
 fn configure_environment(
     config: GitHubEnvironmentConfig,
 ) -> AppResult<ConfiguredGitHubEnvironment> {
@@ -80,8 +95,7 @@ fn configure_environment(
     let web_base_url = normalize_base_url(&config.web_base_url, ENVIRONMENTS_CONFIG_KEY)?;
     let api_base_url = match config.api_base_url {
         Some(value) => normalize_base_url(&value, ENVIRONMENTS_CONFIG_KEY)?,
-        None if web_base_url == DEFAULT_WEB_BASE_URL => DEFAULT_API_BASE_URL.to_string(),
-        None => format!("{web_base_url}/api/v3"),
+        None => default_api_base_url(&web_base_url)?,
     };
 
     Ok(ConfiguredGitHubEnvironment {
@@ -188,17 +202,17 @@ mod tests {
     #[test]
     fn defaults_enterprise_api_url() {
         let environments = parse_environments(
-            r#"[{"id":"msft","name":"Microsoft GitHub","web_base_url":"https://msft.ghe.com","client_id":"id","client_secret":"secret"}]"#,
+            r#"[{"id":"server","name":"GitHub Enterprise Server","web_base_url":"https://github.contoso.com","client_id":"id","client_secret":"secret"}]"#,
         )
         .unwrap();
 
         assert_eq!(
             environments[0].environment.api_base_url,
-            "https://msft.ghe.com/api/v3"
+            "https://github.contoso.com/api/v3"
         );
         assert_eq!(
             environments[0].authorize_url,
-            "https://msft.ghe.com/login/oauth/authorize"
+            "https://github.contoso.com/login/oauth/authorize"
         );
     }
 
@@ -212,6 +226,19 @@ mod tests {
         assert_eq!(
             environments[0].environment.api_base_url,
             "https://api.github.com"
+        );
+    }
+
+    #[test]
+    fn uses_enterprise_cloud_data_residency_api_url() {
+        let environments = parse_environments(
+            r#"[{"id":"msft","name":"Microsoft GitHub","web_base_url":"https://msft.ghe.com","client_id":"id","client_secret":"secret"}]"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            environments[0].environment.api_base_url,
+            "https://api.msft.ghe.com"
         );
     }
 }

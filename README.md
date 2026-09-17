@@ -65,8 +65,9 @@ See [docs/summary.md](docs/summary.md) for a comprehensive repository map includ
    `GITHUB_ENVIRONMENTS` is a JSON array. Each entry requires a stable `id`,
    display `name`, `web_base_url`, `client_id`, and `client_secret`.
    `api_base_url` is optional: GitHub.com defaults to
-   `https://api.github.com`, while GitHub Enterprise Server defaults to
-   `<web_base_url>/api/v3`.
+   `https://api.github.com`, GitHub Enterprise Cloud data-residency hosts such
+   as `msft.ghe.com` default to `https://api.msft.ghe.com`, and self-hosted
+   GitHub Enterprise Server defaults to `<web_base_url>/api/v3`.
 
    When multiple entries are configured, the sign-in screen displays an
    environment selector. Tokens and cached login names are stored separately
