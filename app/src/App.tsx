@@ -46,6 +46,11 @@ import {
 import { loadScrollCache, pruneScrollCache } from "./utils/scrollCache";
 import { parseLinePrefix, getImageMimeType, formatFileLabel, formatFileTooltip, formatFilePathWithLeadingEllipsis, isImageFile, isMarkdownFile } from "./utils/helpers";
 import { moveFullEditorDraftToInline, moveInlineDraftToFullEditor } from "./utils/commentDrafts";
+import {
+  getPullRequestKey,
+  resolveUnderReviewState,
+  type UnderReviewOverrides,
+} from "./utils/prUnderReview";
 import { MemoizedAsyncImage, MermaidCode, CommentThreadItem, MediaViewer, ConfirmDialog, CommentList, CommentComposer, CommentStatus, handleCtrlEnter as handleCtrlEnterUtil } from "./components";
 import type { MediaContent } from "./components";
 import { usePaneZoom, useViewedFiles, useMRUList, useLocalStorage, useTocSortedFiles, useFileContents, useCommentFiltering, useMarkdownComponents, useCommentMutations, useFileNavigation, useAuth, createLocalReview } from "./hooks";
@@ -762,6 +767,27 @@ function App() {
       ? "repo-mru"
       : `repo-mru-${environmentStorageId}`;
   const [repoMRU, addRepoToMRU] = useMRUList(repoMruStorageKey, 10);
+  const [underReviewOverrides, setUnderReviewOverrides] =
+    useLocalStorage<UnderReviewOverrides>({
+      key: `pr-under-review-overrides-${environmentStorageId}`,
+      defaultValue: {},
+    });
+
+  const togglePrUnderReview = useCallback(
+    (
+      owner: string,
+      repo: string,
+      number: number,
+      currentState: boolean,
+    ) => {
+      const key = getPullRequestKey(owner, repo, number);
+      setUnderReviewOverrides((previous) => ({
+        ...previous,
+        [key]: !currentState,
+      }));
+    },
+    [setUnderReviewOverrides],
+  );
 
   // Handle app wake from sleep/hibernation - refetch all queries
   useEffect(() => {
@@ -2797,6 +2823,40 @@ function App() {
       const key = `${pr.owner}/${pr.repo}#${pr.number}`;
       prMap.set(key, pr);
     });
+
+    // Explicitly starred PRs must appear even if no files have been viewed yet.
+    Object.entries(underReviewOverrides).forEach(([prKey, isUnderReview]) => {
+      if (!isUnderReview || prMap.has(prKey)) {
+        return;
+      }
+
+      const match = prKey.match(/^([^/]+)\/([^#]+)#(\d+)$/);
+      if (!match) {
+        return;
+      }
+
+      const [, owner, repo, numberText] = match;
+      const number = Number(numberText);
+      const currentRepoPulls = pullsQuery.data ?? [];
+      const summary =
+        owner === repoRef?.owner && repo === repoRef?.repo
+          ? currentRepoPulls.find((pr) => pr.number === number)
+          : undefined;
+
+      prMap.set(prKey, {
+        owner,
+        repo,
+        number,
+        title: summary?.title ?? prTitles[prKey] ?? "",
+        has_local_review: false,
+        has_pending_review: summary?.has_pending_review ?? false,
+        viewed_count: 0,
+        total_count: summary?.file_count ?? prFileCounts[prKey] ?? 0,
+        state: summary?.state,
+        merged: summary?.merged,
+        locked: summary?.locked,
+      });
+    });
     
     // Add PRs with pending reviews from MRU queries (both open and closed)
     [...mruOpenPrsQueries, ...mruClosedPrsQueries].forEach(query => {
@@ -2996,13 +3056,22 @@ function App() {
       const hasLocalFolderPath = Boolean(pr.local_folder);
 
       // Only show local-folder entries based on review progress.
-      const showPr = isLocalFolderEntry
+      const inferredUnderReview = isLocalFolderEntry
         ? (hasLocalFolderPath && totalCount > 0 && viewedCount < totalCount)
-        : (
-          pr.has_local_review ||
-          hasPendingReview ||
-          (viewedCount > 0 && totalCount > 0 && viewedCount < totalCount)
-        );
+        : resolveUnderReviewState(undefined, {
+          hasLocalReview: pr.has_local_review,
+          hasPendingReview,
+          viewedCount,
+          totalCount,
+        });
+      const showPr = isLocalFolderEntry
+        ? inferredUnderReview
+        : resolveUnderReviewState(underReviewOverrides[prKey], {
+          hasLocalReview: pr.has_local_review,
+          hasPendingReview,
+          viewedCount,
+          totalCount,
+        });
       
       return showPr ? {
         owner: pr.owner,
@@ -3019,7 +3088,7 @@ function App() {
         local_folder: pr.local_folder ?? null,
       } as PrUnderReview : null;
     }).filter((pr): pr is NonNullable<typeof pr> => pr !== null);
-  }, [prsUnderReviewQuery.data, viewedFiles, prFileCounts, prTitles, prMetadata, queryClient, userLogin, repoMRU, mruOpenPrsQueries, mruClosedPrsQueries, showAllFileTypes]);
+  }, [prsUnderReviewQuery.data, viewedFiles, prFileCounts, prTitles, prMetadata, queryClient, userLogin, repoMRU, mruOpenPrsQueries, mruClosedPrsQueries, showAllFileTypes, underReviewOverrides, repoRef, pullsQuery.data]);
 
   // Fetch PR state/merged/locked for PRs under review that are missing it.
   useEffect(() => {
@@ -5733,57 +5802,79 @@ function App() {
                               const prRepoLabel = isLocalUnderReview && pr.local_folder
                                 ? formatLocalDirDisplay(pr.local_folder)
                                 : `${pr.owner}/${pr.repo}`;
-
                               return (
-                              <button
+                              <div
                                 key={`${pr.owner}/${pr.repo}/${pr.number}/${pr.local_folder ?? ""}`}
-                                type="button"
-                                className={`pr-item pr-item--compact${
+                                className={`pr-item pr-item--compact pr-item--with-star${
                                   selectedPr === pr.number && repoRef?.owner === pr.owner && repoRef?.repo === pr.repo
                                     ? " pr-item--active"
                                     : ""
                                 }`}
-                                onClick={() => handleSelectPrUnderReview(pr)}
                               >
-                                <div className="pr-item__header">
-                                  <span className="pr-item__title">
-                                    {prTitleLabel}
-                                    {!isLocalUnderReview && pr.state && pr.state.toLowerCase() !== 'open' && (
-                                      <>{'\u00a0\u00a0'}<span className={`pr-item__state-badge ${pr.merged ? 'pr-item__state-badge--merged' : 'pr-item__state-badge--closed'}`}>{pr.merged ? 'MERGED' : 'CLOSED'}</span></>
-                                    )}
-                                    {!isLocalUnderReview && pr.locked && (
-                                      <>
-                                        {'\u00a0\u00a0'}
-                                        <span
-                                          className="pr-item__state-badge pr-item__state-badge--closed pr-item__state-badge--icon"
-                                          title="Locked for comments"
-                                          aria-label="Locked for comments"
-                                        >
-                                          <svg
-                                            viewBox="0 0 24 24"
-                                            width="12"
-                                            height="12"
-                                            aria-hidden="true"
-                                            focusable="false"
-                                          >
-                                            <path
-                                              fill="currentColor"
-                                              d="M17 9h-1V7a4 4 0 0 0-8 0v2H7a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-8a2 2 0 0 0-2-2Zm-7-2a2 2 0 1 1 4 0v2h-4V7Zm7 12H7v-8h10v8Z"
-                                            />
-                                          </svg>
-                                        </span>
-                                      </>
-                                    )}
-                                  </span>
-                                  <span 
-                                    className="pr-item__file-count" 
-                                    title={`${pr.viewed_count} files have been reviewed`}
+                                {!isLocalUnderReview && (
+                                  <button
+                                    type="button"
+                                    className="pr-item__star pr-item__star--active"
+                                    title="Mark as not under review"
+                                    aria-label={`Mark ${pr.owner}/${pr.repo} pull request ${pr.number} as not under review`}
+                                    aria-pressed="true"
+                                    onClick={() =>
+                                      togglePrUnderReview(
+                                        pr.owner,
+                                        pr.repo,
+                                        pr.number,
+                                        true,
+                                      )
+                                    }
                                   >
-                                    {pr.viewed_count} / {pr.total_count || "?"}
-                                  </span>
-                                </div>
-                                <span className="pr-item__repo">{prRepoLabel}</span>
-                              </button>
+                                    ★
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  className="pr-item__content"
+                                  onClick={() => handleSelectPrUnderReview(pr)}
+                                >
+                                  <div className="pr-item__header">
+                                    <span className="pr-item__title">
+                                      {prTitleLabel}
+                                      {!isLocalUnderReview && pr.state && pr.state.toLowerCase() !== 'open' && (
+                                        <>{'\u00a0\u00a0'}<span className={`pr-item__state-badge ${pr.merged ? 'pr-item__state-badge--merged' : 'pr-item__state-badge--closed'}`}>{pr.merged ? 'MERGED' : 'CLOSED'}</span></>
+                                      )}
+                                      {!isLocalUnderReview && pr.locked && (
+                                        <>
+                                          {'\u00a0\u00a0'}
+                                          <span
+                                            className="pr-item__state-badge pr-item__state-badge--closed pr-item__state-badge--icon"
+                                            title="Locked for comments"
+                                            aria-label="Locked for comments"
+                                          >
+                                            <svg
+                                              viewBox="0 0 24 24"
+                                              width="12"
+                                              height="12"
+                                              aria-hidden="true"
+                                              focusable="false"
+                                            >
+                                              <path
+                                                fill="currentColor"
+                                                d="M17 9h-1V7a4 4 0 0 0-8 0v2H7a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-8a2 2 0 0 0-2-2Zm-7-2a2 2 0 1 1 4 0v2h-4V7Zm7 12H7v-8h10v8Z"
+                                              />
+                                            </svg>
+                                          </span>
+                                        </>
+                                      )}
+                                    </span>
+                                    <span
+                                      className="pr-item__file-count"
+                                      title={`${pr.viewed_count} files have been reviewed`}
+                                    >
+                                      {pr.viewed_count} / {pr.total_count || "?"}
+                                    </span>
+                                  </div>
+                                  <span className="pr-item__repo">{prRepoLabel}</span>
+                                </button>
+                              </div>
                               );
                             })
                           )
@@ -5806,21 +5897,64 @@ function App() {
                                   : "Enter a repository to begin."}
                               </div>
                             ) : (
-                              filteredPullRequests.map((pr) => (
-                                <button
+                              filteredPullRequests.map((pr) => {
+                                const prKey = getPullRequestKey(
+                                  repoRef!.owner,
+                                  repoRef!.repo,
+                                  pr.number,
+                                );
+                                const localReview = (prsUnderReviewQuery.data ?? []).find(
+                                  (review) =>
+                                    review.owner === repoRef!.owner &&
+                                    review.repo === repoRef!.repo &&
+                                    review.number === pr.number,
+                                );
+                                const viewedCount = viewedFiles[prKey]?.length ?? 0;
+                                const isUnderReview = resolveUnderReviewState(
+                                  underReviewOverrides[prKey],
+                                  {
+                                    hasLocalReview: localReview?.has_local_review ?? false,
+                                    hasPendingReview: pr.has_pending_review,
+                                    viewedCount,
+                                    totalCount: pr.file_count,
+                                  },
+                                );
+
+                                return (
+                                <div
                                   key={pr.number}
-                                  type="button"
-                                  className={`pr-item pr-item--compact${selectedPr === pr.number ? " pr-item--active" : ""}`}
-                                  onClick={() => {
-                                    setSelectedPr(pr.number);
-                                    setSelectedFilePath(null);
-                                    setIsPrCommentsView(false);
-                                    setIsPrCommentComposerOpen(false);
-                                    setIsInlineCommentOpen(false);
-                                    setIsAddingInlineComment(false);
-                                    setReplyingToCommentId(null);
-                                  }}
+                                  className={`pr-item pr-item--compact pr-item--with-star${selectedPr === pr.number ? " pr-item--active" : ""}`}
                                 >
+                                  <button
+                                    type="button"
+                                    className={`pr-item__star${isUnderReview ? " pr-item__star--active" : ""}`}
+                                    title={isUnderReview ? "Mark as not under review" : "Mark as under review"}
+                                    aria-label={`Mark ${repoRef!.owner}/${repoRef!.repo} pull request ${pr.number} as ${isUnderReview ? "not " : ""}under review`}
+                                    aria-pressed={isUnderReview}
+                                    onClick={() =>
+                                      togglePrUnderReview(
+                                        repoRef!.owner,
+                                        repoRef!.repo,
+                                        pr.number,
+                                        isUnderReview,
+                                      )
+                                    }
+                                  >
+                                    {isUnderReview ? "★" : "☆"}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="pr-item__content"
+                                    onClick={() => {
+                                      setSelectedPr(pr.number);
+                                      setSelectedFilePath(null);
+                                      setIsPrCommentsView(false);
+                                      setIsPrCommentComposerOpen(false);
+                                      setIsInlineCommentOpen(false);
+                                      setIsAddingInlineComment(false);
+                                      setReplyingToCommentId(null);
+                                    }}
+                                  >
                                   <span className="pr-item__title">
                                     #{pr.number} · {pr.title}
                                     {pr.state && pr.state.toLowerCase() !== 'open' && (
@@ -5855,8 +5989,10 @@ function App() {
                                     <span>{new Date(pr.updated_at).toLocaleString()}</span>
                                     <span>{pr.head_ref}</span>
                                   </span>
-                                </button>
-                              ))
+                                  </button>
+                                </div>
+                                );
+                              })
                             )}
                           </>
                         )}
