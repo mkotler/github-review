@@ -129,6 +129,7 @@ export function useAuth(options: UseAuthOptions = {}) {
       return status;
     },
     onSuccess: (status) => {
+      localStorage.setItem("cached-auth-status", JSON.stringify(status));
       queryClient.setQueryData(AUTH_QUERY_KEY, status);
     },
   });
@@ -138,7 +139,7 @@ export function useAuth(options: UseAuthOptions = {}) {
       await invoke("cmd_logout");
     },
     onSuccess: () => {
-      queryClient.setQueryData<AuthStatus>(AUTH_QUERY_KEY, {
+      const loggedOutStatus: AuthStatus = {
         is_authenticated: false,
         login: null,
         avatar_url: null,
@@ -146,7 +147,9 @@ export function useAuth(options: UseAuthOptions = {}) {
         environment_id: authQuery.data?.environment_id,
         environment_name: authQuery.data?.environment_name,
         web_base_url: authQuery.data?.web_base_url,
-      });
+      };
+      localStorage.setItem("cached-auth-status", JSON.stringify(loggedOutStatus));
+      queryClient.setQueryData<AuthStatus>(AUTH_QUERY_KEY, loggedOutStatus);
       queryClient.removeQueries({ queryKey: ["pull-requests"] });
       queryClient.removeQueries({ queryKey: ["pull-request"] });
       onLogoutSuccess?.();

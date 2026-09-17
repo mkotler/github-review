@@ -395,6 +395,46 @@ describe("useViewedFiles hook", () => {
       expect(result.current.isFileViewed("file1.ts")).toBe(true);
       expect(result.current.isFileViewed("file2.ts")).toBe(false);
     });
+
+    it("should isolate viewed files by GitHub environment", async () => {
+      const { result, rerender } = renderHook(
+        (props) => useViewedFiles(props),
+        {
+          initialProps: {
+            owner: "owner",
+            repo: "repo",
+            selectedPr: 1,
+            allFilePaths: [] as string[],
+            environmentId: "github.com",
+          },
+        }
+      );
+
+      act(() => {
+        result.current.toggleFileViewed("github-file.md");
+      });
+
+      rerender({
+        owner: "owner",
+        repo: "repo",
+        selectedPr: 1,
+        allFilePaths: [],
+        environmentId: "msft.ghe.com",
+      });
+
+      await waitFor(() => {
+        expect(result.current.isFileViewed("github-file.md")).toBe(false);
+      });
+
+      act(() => {
+        result.current.toggleFileViewed("enterprise-file.md");
+      });
+
+      expect(mockStorage.setItem).toHaveBeenCalledWith(
+        "viewed-files-msft.ghe.com",
+        expect.any(String),
+      );
+    });
   });
 
   describe("setViewedFiles", () => {

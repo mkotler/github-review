@@ -570,21 +570,27 @@ async fn cmd_local_update_comment_file_path(
 
 #[tauri::command]
 async fn cmd_local_update_comment(
+    owner: String,
+    repo: String,
     comment_id: i64,
     body: String,
 ) -> Result<ReviewComment, String> {
     let storage = review_storage::get_storage().map_err(|e| e.to_string())?;
     storage
-        .update_comment(comment_id, &body)
+        .update_comment(&owner, &repo, comment_id, &body)
         .await
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-async fn cmd_local_delete_comment(comment_id: i64) -> Result<(), String> {
+async fn cmd_local_delete_comment(
+    owner: String,
+    repo: String,
+    comment_id: i64,
+) -> Result<(), String> {
     let storage = review_storage::get_storage().map_err(|e| e.to_string())?;
     storage
-        .delete_comment(comment_id)
+        .delete_comment(&owner, &repo, comment_id)
         .await
         .map_err(|e| e.to_string())
 }
@@ -740,7 +746,7 @@ async fn cmd_submit_local_review(
     // Delete only successfully posted comments from DB (but they remain in log file)
     for comment_id in succeeded_ids {
         storage
-            .delete_comment_preserve_log(comment_id)
+            .delete_comment_preserve_log(&owner, &repo, comment_id)
             .map_err(|e| e.to_string())?;
     }
     
@@ -858,7 +864,8 @@ fn cmd_get_storage_info(app: tauri::AppHandle) -> Result<String, String> {
     let data_dir = app.path().app_data_dir()
         .map_err(|e| format!("Failed to get app data dir: {:?}", e))?;
     
-    let db_path = data_dir.join("reviews.db");
+    let storage = review_storage::get_storage().map_err(|e| e.to_string())?;
+    let db_path = storage.active_database_path();
     let log_dir = data_dir.join("review_logs");
     
     let info = format!(

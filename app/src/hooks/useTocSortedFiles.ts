@@ -28,6 +28,7 @@ export interface UseTocSortedFilesOptions {
   showAllFileTypes: boolean;
   hideReviewedFiles: boolean;
   isFileViewed: (path: string) => boolean;
+  environmentId?: string;
 }
 
 export interface UseTocSortedFilesResult {
@@ -81,6 +82,7 @@ export function useTocSortedFiles(options: UseTocSortedFilesOptions): UseTocSort
     showAllFileTypes,
     hideReviewedFiles,
     isFileViewed,
+    environmentId = "github.com",
   } = options;
 
   // Find all toc.yml files if they exist
@@ -92,6 +94,7 @@ export function useTocSortedFiles(options: UseTocSortedFilesOptions): UseTocSort
   const tocContentsQuery = useQuery({
     queryKey: [
       "toc-contents",
+      environmentId,
       repoRef?.owner,
       repoRef?.repo,
       tocFilesMetadata.map((f) => f.path).join(","),
@@ -142,7 +145,8 @@ export function useTocSortedFiles(options: UseTocSortedFilesOptions): UseTocSort
             prDetail.head_sha,
             prDetail.base_sha,
             headContent,
-            baseContent
+            baseContent,
+            environmentId,
           );
 
           const content = headContent ?? baseContent ?? "";
@@ -170,7 +174,8 @@ export function useTocSortedFiles(options: UseTocSortedFilesOptions): UseTocSort
               selectedPr,
               tocFile.path,
               prDetail.head_sha,
-              prDetail.base_sha
+              prDetail.base_sha,
+              environmentId,
             );
             if (cached) {
               console.log(`📦 Loaded ${tocFile.path} from offline cache`);

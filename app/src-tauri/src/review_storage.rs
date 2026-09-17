@@ -4,8 +4,9 @@ use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use tokio::fs;
+
+const DEFAULT_ENVIRONMENT_ID: &str = "github.com";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReviewComment {
@@ -37,7 +38,7 @@ pub struct ReviewMetadata {
 }
 
 pub struct ReviewStorage {
-    conn: Mutex<Connection>,
+    data_dir: PathBuf,
     log_dir: PathBuf,
 }
 
@@ -48,9 +49,23 @@ impl ReviewStorage {
         
         let db_path = data_dir.join("reviews.db");
         tracing::info!("Opening database at {:?}", db_path);
-        let conn = Connection::open(&db_path)?;
-        
-        // Create tables
+        Self::initialize_database(&db_path)?;
+
+        let log_dir = data_dir.join("review_logs");
+        std::fs::create_dir_all(&log_dir)?;
+
+        Ok(Self {
+            data_dir: data_dir.to_path_buf(),
+            log_dir,
+        })
+    }
+
+    fn initialize_database(db_path: &Path) -> AppResult<Connection> {
+        if let Some(parent) = db_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let conn = Connection::open(db_path)?;
+
         conn.execute(
             "CREATE TABLE IF NOT EXISTS review_metadata (
                 owner TEXT NOT NULL,
@@ -110,14 +125,54 @@ impl ReviewStorage {
              ON review_comments(owner, repo, pr_number)",
             [],
         )?;
-        
-        let log_dir = data_dir.join("review_logs");
-        std::fs::create_dir_all(&log_dir)?;
-        
-        Ok(Self {
-            conn: Mutex::new(conn),
-            log_dir,
-        })
+
+        Ok(conn)
+    }
+
+    fn safe_environment_id(environment_id: &str) -> String {
+        environment_id
+            .chars()
+            .map(|character| {
+                if character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_') {
+                    character
+                } else {
+                    '-'
+                }
+            })
+            .collect()
+    }
+
+    fn storage_environment_id(owner: &str, repo: &str) -> String {
+        if owner == "__local__" && repo == "local" {
+            DEFAULT_ENVIRONMENT_ID.to_string()
+        } else {
+            crate::github_environment::active_environment().id
+        }
+    }
+
+    fn open_connection(&self, owner: &str, repo: &str) -> AppResult<Connection> {
+        let environment_id = Self::storage_environment_id(owner, repo);
+        self.open_environment_connection(&environment_id)
+    }
+
+    fn open_environment_connection(&self, environment_id: &str) -> AppResult<Connection> {
+        Self::initialize_database(&self.database_path_for_environment(environment_id))
+    }
+
+    fn database_path_for_environment(&self, environment_id: &str) -> PathBuf {
+        if environment_id == DEFAULT_ENVIRONMENT_ID {
+            self.data_dir.join("reviews.db")
+        } else {
+            self.data_dir
+                .join("github_environments")
+                .join(Self::safe_environment_id(&environment_id))
+                .join("reviews.db")
+        }
+    }
+
+    pub fn active_database_path(&self) -> PathBuf {
+        let environment_id = crate::github_environment::active_environment().id;
+        self.database_path_for_environment(&environment_id)
     }
     
     /// Start a new review or get existing review metadata
@@ -131,7 +186,7 @@ impl ReviewStorage {
         local_folder: Option<&str>,
     ) -> AppResult<ReviewMetadata> {
         tracing::info!("Starting review for {}/{}#{}", owner, repo, pr_number);
-        let conn = self.conn.lock().map_err(|_| AppError::Internal("Lock poisoned".into()))?;
+        let conn = self.open_connection(owner, repo)?;
         
         // Check if review already exists
         let existing: Option<ReviewMetadata> = conn
@@ -201,7 +256,7 @@ impl ReviewStorage {
         new_commit_id: &str,
     ) -> AppResult<ReviewMetadata> {
         tracing::info!("Updating commit ID for review {}/{}#{} to {}", owner, repo, pr_number, new_commit_id);
-        let conn = self.conn.lock().map_err(|_| AppError::Internal("Lock poisoned".into()))?;
+        let conn = self.open_connection(owner, repo)?;
         
         // Check if review exists
         let existing: Option<ReviewMetadata> = conn
@@ -277,7 +332,7 @@ impl ReviewStorage {
         let now = Utc::now().to_rfc3339();
         
         let comment = {
-            let conn = self.conn.lock().map_err(|_| AppError::Internal("Lock poisoned".into()))?;
+            let conn = self.open_connection(owner, repo)?;
             
             conn.execute(
                 "INSERT INTO review_comments 
@@ -316,23 +371,26 @@ impl ReviewStorage {
     /// Update an existing comment
     pub async fn update_comment(
         &self,
+        owner: &str,
+        repo: &str,
         comment_id: i64,
         new_body: &str,
     ) -> AppResult<ReviewComment> {
         let now = Utc::now().to_rfc3339();
         
         let comment = {
-            let conn = self.conn.lock().map_err(|_| AppError::Internal("Lock poisoned".into()))?;
+            let conn = self.open_connection(owner, repo)?;
             
             conn.execute(
-                "UPDATE review_comments SET body = ?1, updated_at = ?2 WHERE id = ?3",
-                params![new_body, &now, comment_id],
+                "UPDATE review_comments SET body = ?1, updated_at = ?2
+                 WHERE id = ?3 AND owner = ?4 AND repo = ?5",
+                params![new_body, &now, comment_id, owner, repo],
             )?;
             
             conn.query_row(
                 "SELECT id, owner, repo, pr_number, file_path, line_number, side, body, commit_id, created_at, updated_at, deleted, in_reply_to_id
-                 FROM review_comments WHERE id = ?1",
-                params![comment_id],
+                 FROM review_comments WHERE id = ?1 AND owner = ?2 AND repo = ?3",
+                params![comment_id, owner, repo],
                 |row| {
                     Ok(ReviewComment {
                         id: row.get(0)?,
@@ -360,20 +418,22 @@ impl ReviewStorage {
     }
     
     /// Delete a specific comment
-    pub async fn delete_comment(&self, comment_id: i64) -> AppResult<()> {
+    pub async fn delete_comment(&self, owner: &str, repo: &str, comment_id: i64) -> AppResult<()> {
         let (owner, repo, pr_number) = {
-            let conn = self.conn.lock().map_err(|_| AppError::Internal("Lock poisoned".into()))?;
+            let conn = self.open_connection(owner, repo)?;
             
             let result: (String, String, u64) = conn.query_row(
-                "SELECT owner, repo, pr_number FROM review_comments WHERE id = ?1",
-                params![comment_id],
+                "SELECT owner, repo, pr_number FROM review_comments
+                 WHERE id = ?1 AND owner = ?2 AND repo = ?3",
+                params![comment_id, owner, repo],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )?;
             
             // Mark as deleted instead of removing
             conn.execute(
-                "UPDATE review_comments SET deleted = 1 WHERE id = ?1",
-                params![comment_id],
+                "UPDATE review_comments SET deleted = 1
+                 WHERE id = ?1 AND owner = ?2 AND repo = ?3",
+                params![comment_id, owner, repo],
             )?;
             
             result
@@ -386,12 +446,17 @@ impl ReviewStorage {
     }
     
     /// Delete a comment from DB without updating the log file (for successfully posted comments)
-    pub fn delete_comment_preserve_log(&self, comment_id: i64) -> AppResult<()> {
-        let conn = self.conn.lock().map_err(|_| AppError::Internal("Lock poisoned".into()))?;
+    pub fn delete_comment_preserve_log(
+        &self,
+        owner: &str,
+        repo: &str,
+        comment_id: i64,
+    ) -> AppResult<()> {
+        let conn = self.open_connection(owner, repo)?;
         
         conn.execute(
-            "DELETE FROM review_comments WHERE id = ?1",
-            params![comment_id],
+            "DELETE FROM review_comments WHERE id = ?1 AND owner = ?2 AND repo = ?3",
+            params![comment_id, owner, repo],
         )?;
         
         Ok(())
@@ -407,7 +472,7 @@ impl ReviewStorage {
         new_path: &str,
     ) -> AppResult<usize> {
         let affected = {
-            let conn = self.conn.lock().map_err(|_| AppError::Internal("Lock poisoned".into()))?;
+            let conn = self.open_connection(owner, repo)?;
             
             let affected = conn.execute(
                 "UPDATE review_comments SET file_path = ?1, updated_at = ?2 
@@ -433,7 +498,7 @@ impl ReviewStorage {
         repo: &str,
         pr_number: u64,
     ) -> AppResult<Vec<ReviewComment>> {
-        let conn = self.conn.lock().map_err(|_| AppError::Internal("Lock poisoned".into()))?;
+        let conn = self.open_connection(owner, repo)?;
         
         let mut stmt = conn.prepare(
             "SELECT id, owner, repo, pr_number, file_path, line_number, side, body, commit_id, created_at, updated_at, deleted, in_reply_to_id
@@ -472,7 +537,7 @@ impl ReviewStorage {
         repo: &str,
         pr_number: u64,
     ) -> AppResult<Option<ReviewMetadata>> {
-        let conn = self.conn.lock().map_err(|_| AppError::Internal("Lock poisoned".into()))?;
+        let conn = self.open_connection(owner, repo)?;
         
         let metadata = conn
             .query_row(
@@ -500,14 +565,39 @@ impl ReviewStorage {
     
     /// Get all review metadata (for finding PRs under review)
     pub fn get_all_review_metadata(&self) -> AppResult<Vec<ReviewMetadata>> {
-        let conn = self.conn.lock().map_err(|_| AppError::Internal("Lock poisoned".into()))?;
-        
-        let mut stmt = conn.prepare(
-            "SELECT owner, repo, pr_number, commit_id, body, local_folder, created_at, log_file_index
-             FROM review_metadata"
-        )?;
-        
-        let metadata_iter = stmt.query_map([], |row| {
+        let environment_id = crate::github_environment::active_environment().id;
+        let conn = self.open_environment_connection(&environment_id)?;
+        let mut results = Self::read_all_review_metadata(&conn, None)?;
+
+        // Local-folder reviews are host-independent and remain in the default database.
+        if environment_id != DEFAULT_ENVIRONMENT_ID {
+            let local_conn = self.open_environment_connection(DEFAULT_ENVIRONMENT_ID)?;
+            results.extend(Self::read_all_review_metadata(
+                &local_conn,
+                Some(("__local__", "local")),
+            )?);
+        }
+
+        Ok(results)
+    }
+
+    fn read_all_review_metadata(
+        conn: &Connection,
+        repository_filter: Option<(&str, &str)>,
+    ) -> AppResult<Vec<ReviewMetadata>> {
+        let mut stmt = if repository_filter.is_some() {
+            conn.prepare(
+                "SELECT owner, repo, pr_number, commit_id, body, local_folder, created_at, log_file_index
+                 FROM review_metadata WHERE owner = ?1 AND repo = ?2",
+            )?
+        } else {
+            conn.prepare(
+                "SELECT owner, repo, pr_number, commit_id, body, local_folder, created_at, log_file_index
+                 FROM review_metadata",
+            )?
+        };
+
+        let map_row = |row: &rusqlite::Row<'_>| {
             Ok(ReviewMetadata {
                 owner: row.get(0)?,
                 repo: row.get(1)?,
@@ -518,13 +608,18 @@ impl ReviewStorage {
                 created_at: row.get(6)?,
                 log_file_index: row.get(7)?,
             })
-        })?;
-        
+        };
+        let metadata_iter = if let Some((owner, repo)) = repository_filter {
+            stmt.query_map(params![owner, repo], map_row)?
+        } else {
+            stmt.query_map([], map_row)?
+        };
+
         let mut results = Vec::new();
         for metadata in metadata_iter {
             results.push(metadata?);
         }
-        
+
         Ok(results)
     }
     
@@ -536,7 +631,7 @@ impl ReviewStorage {
         pr_number: u64,
     ) -> AppResult<()> {
         let metadata = {
-            let conn = self.conn.lock().map_err(|_| AppError::Internal("Lock poisoned".into()))?;
+            let conn = self.open_connection(owner, repo)?;
             
             let metadata: Option<ReviewMetadata> = conn
                 .query_row(
@@ -578,7 +673,7 @@ impl ReviewStorage {
             }
             
             // Delete from database
-            let conn = self.conn.lock().map_err(|_| AppError::Internal("Lock poisoned".into()))?;
+            let conn = self.open_connection(owner, repo)?;
             conn.execute(
                 "DELETE FROM review_metadata WHERE owner = ?1 AND repo = ?2 AND pr_number = ?3",
                 params![owner, repo, pr_number],
@@ -597,7 +692,7 @@ impl ReviewStorage {
         _pr_title: Option<&str>,
     ) -> AppResult<()> {
         let metadata = {
-            let conn = self.conn.lock().map_err(|_| AppError::Internal("Lock poisoned".into()))?;
+            let conn = self.open_connection(owner, repo)?;
             
             let metadata: Option<ReviewMetadata> = conn
                 .query_row(
@@ -639,7 +734,7 @@ impl ReviewStorage {
             }
             
             // Delete from database
-            let conn = self.conn.lock().map_err(|_| AppError::Internal("Lock poisoned".into()))?;
+            let conn = self.open_connection(owner, repo)?;
             conn.execute(
                 "DELETE FROM review_metadata WHERE owner = ?1 AND repo = ?2 AND pr_number = ?3",
                 params![owner, repo, pr_number],
@@ -657,7 +752,7 @@ impl ReviewStorage {
         _pr_title: Option<&str>,
     ) -> AppResult<()> {
         let metadata = {
-            let conn = self.conn.lock().map_err(|_| AppError::Internal("Lock poisoned".into()))?;
+            let conn = self.open_connection(owner, repo)?;
             
             let metadata: Option<ReviewMetadata> = conn
                 .query_row(
@@ -699,7 +794,7 @@ impl ReviewStorage {
             }
             
             // Delete from database
-            let conn = self.conn.lock().map_err(|_| AppError::Internal("Lock poisoned".into()))?;
+            let conn = self.open_connection(owner, repo)?;
             conn.execute(
                 "DELETE FROM review_metadata WHERE owner = ?1 AND repo = ?2 AND pr_number = ?3",
                 params![owner, repo, pr_number],
@@ -711,6 +806,26 @@ impl ReviewStorage {
     
     fn get_log_path(
         &self,
+        owner: &str,
+        repo: &str,
+        pr_number: u64,
+        index: i32,
+        local_folder: Option<&str>,
+    ) -> PathBuf {
+        let environment_id = Self::storage_environment_id(owner, repo);
+        self.get_log_path_for_environment(
+            &environment_id,
+            owner,
+            repo,
+            pr_number,
+            index,
+            local_folder,
+        )
+    }
+
+    fn get_log_path_for_environment(
+        &self,
+        environment_id: &str,
         owner: &str,
         repo: &str,
         pr_number: u64,
@@ -744,10 +859,18 @@ impl ReviewStorage {
             } else {
                 format!("{}-{}.log", safe_folder_name, index)
             }
-        } else if index == 0 {
-            format!("{}-{}-{}.log", owner, repo, pr_number)
         } else {
-            format!("{}-{}-{}-{}.log", owner, repo, pr_number, index)
+            let environment_prefix = if environment_id == DEFAULT_ENVIRONMENT_ID {
+                String::new()
+            } else {
+                format!("{}--", Self::safe_environment_id(&environment_id))
+            };
+
+            if index == 0 {
+                format!("{environment_prefix}{owner}-{repo}-{pr_number}.log")
+            } else {
+                format!("{environment_prefix}{owner}-{repo}-{pr_number}-{index}.log")
+            }
         };
 
         self.log_dir.join(filename)
@@ -797,7 +920,7 @@ impl ReviewStorage {
     async fn write_log(&self, owner: &str, repo: &str, pr_number: u64) -> AppResult<()> {
         tracing::info!("Writing log file for {}/{}#{}", owner, repo, pr_number);
         let (metadata, comments) = {
-            let conn = self.conn.lock().map_err(|_| AppError::Internal("Lock poisoned".into()))?;
+            let conn = self.open_connection(owner, repo)?;
             
             let metadata: ReviewMetadata = conn.query_row(
                 "SELECT owner, repo, pr_number, commit_id, body, local_folder, created_at, log_file_index
@@ -876,10 +999,12 @@ impl ReviewStorage {
             }
         } else if pr_title.is_empty() {
             content.push_str(&format!("# Review for PR #{}\n", pr_number));
+            content.push_str(&format!("# GitHub Environment: {}\n", environment.id));
             content.push_str(&format!("# URL: {pull_request_url}\n"));
             content.push_str(&format!("# Repository: {}/{}\n", owner, repo));
         } else {
             content.push_str(&format!("# Review for PR #{}: {}\n", pr_number, pr_title));
+            content.push_str(&format!("# GitHub Environment: {}\n", environment.id));
             content.push_str(&format!("# URL: {pull_request_url}\n"));
             content.push_str(&format!("# Repository: {}/{}\n", owner, repo));
         }
@@ -946,4 +1071,94 @@ pub fn get_storage() -> AppResult<&'static ReviewStorage> {
     REVIEW_STORAGE
         .get()
         .ok_or_else(|| AppError::Internal("Storage not initialized".into()))
+}
+
+#[cfg(test)]
+mod environment_isolation_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn uses_separate_database_paths_for_github_environments() {
+        let temp = TempDir::new().unwrap();
+        let storage = ReviewStorage::new(temp.path()).unwrap();
+
+        assert_eq!(
+            storage.database_path_for_environment(DEFAULT_ENVIRONMENT_ID),
+            temp.path().join("reviews.db"),
+        );
+        assert_eq!(
+            storage.database_path_for_environment("msft.ghe.com"),
+            temp.path()
+                .join("github_environments")
+                .join("msft.ghe.com")
+                .join("reviews.db"),
+        );
+    }
+
+    #[test]
+    fn allows_identical_pull_request_keys_in_separate_environments() {
+        let temp = TempDir::new().unwrap();
+        let storage = ReviewStorage::new(temp.path()).unwrap();
+        let github = storage
+            .open_environment_connection(DEFAULT_ENVIRONMENT_ID)
+            .unwrap();
+        let enterprise = storage
+            .open_environment_connection("msft.ghe.com")
+            .unwrap();
+
+        for connection in [&github, &enterprise] {
+            connection
+                .execute(
+                    "INSERT INTO review_metadata
+                     (owner, repo, pr_number, commit_id, body, local_folder, created_at, log_file_index)
+                     VALUES ('owner', 'repo', 42, 'commit', NULL, NULL, 'now', 0)",
+                    [],
+                )
+                .unwrap();
+        }
+
+        let github_count: i64 = github
+            .query_row("SELECT COUNT(*) FROM review_metadata", [], |row| row.get(0))
+            .unwrap();
+        let enterprise_count: i64 = enterprise
+            .query_row("SELECT COUNT(*) FROM review_metadata", [], |row| row.get(0))
+            .unwrap();
+
+        assert_eq!(github_count, 1);
+        assert_eq!(enterprise_count, 1);
+    }
+
+    #[test]
+    fn prefixes_non_default_environment_log_files() {
+        let temp = TempDir::new().unwrap();
+        let storage = ReviewStorage::new(temp.path()).unwrap();
+
+        let github_log = storage.get_log_path_for_environment(
+            DEFAULT_ENVIRONMENT_ID,
+            "owner",
+            "repo",
+            42,
+            0,
+            None,
+        );
+        let enterprise_log = storage.get_log_path_for_environment(
+            "msft.ghe.com",
+            "owner",
+            "repo",
+            42,
+            0,
+            None,
+        );
+
+        assert_eq!(
+            github_log.file_name().unwrap(),
+            "owner-repo-42.log",
+        );
+        assert_eq!(
+            enterprise_log.file_name().unwrap(),
+            "msft.ghe.com--owner-repo-42.log",
+        );
+        assert_ne!(github_log, enterprise_log);
+    }
 }

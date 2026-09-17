@@ -322,6 +322,39 @@ describe('Offline Cache - offlineCache.ts', () => {
       const result = await getCachedPRDetail('owner', 'repo', 999);
       expect(result).toBeNull();
     });
+
+    it('should isolate identical pull requests by GitHub environment', async () => {
+      await cachePRDetail(
+        'owner',
+        'repo',
+        123,
+        { title: 'GitHub.com PR' },
+        'github.com',
+      );
+      await cachePRDetail(
+        'owner',
+        'repo',
+        123,
+        { title: 'Enterprise PR' },
+        'msft.ghe.com',
+      );
+
+      const githubPr = await getCachedPRDetail(
+        'owner',
+        'repo',
+        123,
+        'github.com',
+      );
+      const enterprisePr = await getCachedPRDetail(
+        'owner',
+        'repo',
+        123,
+        'msft.ghe.com',
+      );
+
+      expect(githubPr.title).toBe('GitHub.com PR');
+      expect(enterprisePr.title).toBe('Enterprise PR');
+    });
   });
 
   describe('Edge Cases', () => {

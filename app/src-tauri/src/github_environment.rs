@@ -91,6 +91,12 @@ fn configure_environment(
     if id.is_empty() || name.is_empty() || client_id.is_empty() || client_secret.is_empty() {
         return Err(AppError::MissingConfig(ENVIRONMENTS_CONFIG_KEY));
     }
+    if !id
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_'))
+    {
+        return Err(AppError::MissingConfig(ENVIRONMENTS_CONFIG_KEY));
+    }
 
     let web_base_url = normalize_base_url(&config.web_base_url, ENVIRONMENTS_CONFIG_KEY)?;
     let api_base_url = match config.api_base_url {
@@ -240,5 +246,14 @@ mod tests {
             environments[0].environment.api_base_url,
             "https://api.msft.ghe.com"
         );
+    }
+
+    #[test]
+    fn rejects_environment_ids_that_are_unsafe_for_storage_keys() {
+        let result = parse_environments(
+            r#"[{"id":"msft/ghe","name":"Microsoft GitHub","web_base_url":"https://msft.ghe.com","client_id":"id","client_secret":"secret"}]"#,
+        );
+
+        assert!(result.is_err());
     }
 }

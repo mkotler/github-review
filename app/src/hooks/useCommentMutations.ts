@@ -55,6 +55,8 @@ export interface UseCommentMutationsOptions {
   activeLocalDir: string | null;
   /** Authenticated user's login */
   authLogin: string | null;
+  /** Active GitHub environment ID */
+  environmentId?: string;
   /** Selected PR number */
   selectedPr: number | null;
   /** Currently editing comment */
@@ -176,6 +178,7 @@ export function useCommentMutations(
     isLocalDirectoryMode,
     activeLocalDir,
     authLogin,
+    environmentId = "github.com",
     selectedPr,
     editingComment,
   } = options;
@@ -241,12 +244,12 @@ export function useCommentMutations(
   // Helper to invalidate and refetch queries
   const invalidateAndRefetch = useCallback(async () => {
     if (repoRef && prDetail) {
-      await offlineCache.clearPRCache(repoRef.owner, repoRef.repo, prDetail.number);
+      await offlineCache.clearPRCache(repoRef.owner, repoRef.repo, prDetail.number, environmentId);
     }
     await queryClient.invalidateQueries({ 
-      queryKey: ["pull-request", repoRef?.owner, repoRef?.repo, selectedPr, authLogin]
+      queryKey: ["pull-request", environmentId, repoRef?.owner, repoRef?.repo, selectedPr, authLogin]
     });
-  }, [repoRef, prDetail, selectedPr, authLogin, queryClient]);
+  }, [repoRef, prDetail, selectedPr, authLogin, environmentId, queryClient]);
 
   // ==========================================================================
   // Unified Comment Submission Mutation
@@ -447,7 +450,7 @@ export function useCommentMutations(
       
       // Remove query to force fresh fetch
       queryClient.removeQueries({ 
-        queryKey: ["pull-request", repoRef?.owner, repoRef?.repo, selectedPr, authLogin]
+        queryKey: ["pull-request", environmentId, repoRef?.owner, repoRef?.repo, selectedPr, authLogin]
       });
     },
     onError: (error: unknown) => {
@@ -529,7 +532,10 @@ export function useCommentMutations(
       const isLocalComment = editingComment?.url === "#" || !editingComment?.url;
       
       if (isLocalComment) {
+        if (!repoRef) throw new Error("Repository information not available");
         await invoke("cmd_local_update_comment", {
+          owner: repoRef.owner,
+          repo: repoRef.repo,
           commentId,
           body,
         });
@@ -568,7 +574,10 @@ export function useCommentMutations(
       const isLocalComment = editingComment?.url === "#" || !editingComment?.url;
       
       if (isLocalComment) {
+        if (!repoRef) throw new Error("Repository information not available");
         await invoke("cmd_local_delete_comment", {
+          owner: repoRef.owner,
+          repo: repoRef.repo,
           commentId,
         });
       } else {

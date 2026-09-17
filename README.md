@@ -71,7 +71,11 @@ See [docs/summary.md](docs/summary.md) for a comprehensive repository map includ
 
    When multiple entries are configured, the sign-in screen displays an
    environment selector. Tokens and cached login names are stored separately
-   for each environment in the system keyring. The legacy
+   for each environment in the system keyring. Local review databases, review
+   logs, offline content, viewed-file state, drafts, repository history, and
+   query caches are also isolated by environment. Existing GitHub.com data
+   retains its legacy storage paths; other environments use environment-qualified
+   database paths, log filenames, and browser-storage keys. The legacy
    `GITHUB_CLIENT_ID`/`GITHUB_CLIENT_SECRET` variables still configure a single
    GitHub.com environment when `GITHUB_ENVIRONMENTS` is absent.
 

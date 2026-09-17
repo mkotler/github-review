@@ -33,6 +33,8 @@ export interface UseFileContentsOptions {
   markOffline: () => void;
   /** Active local directory path (for query key) */
   activeLocalDir: string | null;
+  /** Active GitHub environment ID */
+  environmentId?: string;
 }
 
 export interface FileContents {
@@ -75,6 +77,7 @@ export function useFileContents(options: UseFileContentsOptions): UseFileContent
     markOnline,
     markOffline,
     activeLocalDir,
+    environmentId = "github.com",
   } = options;
 
   // Look up file metadata from PR files list
@@ -87,6 +90,7 @@ export function useFileContents(options: UseFileContentsOptions): UseFileContent
   const fileContentsQuery = useQuery({
     queryKey: [
       "file-contents",
+      environmentId,
       repoRef?.owner,
       repoRef?.repo,
       selectedFilePath,
@@ -121,7 +125,8 @@ export function useFileContents(options: UseFileContentsOptions): UseFileContent
           prDetail.head_sha,
           prDetail.base_sha,
           headContent,
-          baseContent
+          baseContent,
+          environmentId,
         );
         
         return { headContent, baseContent };
@@ -148,7 +153,8 @@ export function useFileContents(options: UseFileContentsOptions): UseFileContent
             selectedPr,
             selectedFilePath!,
             prDetail.head_sha,
-            prDetail.base_sha
+            prDetail.base_sha,
+            environmentId,
           );
           if (cached) {
             console.log(`📦 Loaded file ${selectedFilePath} from offline cache (after network error)`);

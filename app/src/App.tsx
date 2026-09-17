@@ -161,18 +161,6 @@ function App() {
   const [repoError, setRepoError] = useState<string | null>(null);
   const [selectedEnvironmentId, setSelectedEnvironmentId] = useState("");
   const [showRepoMRU, setShowRepoMRU] = useState(false);
-  const [prFileCounts, setPrFileCounts] = useLocalStorage<Record<string, number>>({
-    key: 'pr-file-counts',
-    defaultValue: {}
-  });
-  const [prTitles, setPrTitles] = useLocalStorage<Record<string, string>>({
-    key: 'pr-titles',
-    defaultValue: {}
-  });
-  const [prMetadata, setPrMetadata] = useLocalStorage<Record<string, { state: string; merged: boolean; locked?: boolean }>>({
-    key: 'pr-metadata',
-    defaultValue: {}
-  });
   const [selectedPr, setSelectedPr] = useState<number | null>(null);
   const [activeLocalDir, setActiveLocalDir] = useState<string | null>(null);
   const [localDirMRU, addLocalDir] = useMRUList('local-dir-mru', 10);
@@ -561,21 +549,6 @@ function App() {
     selectedPrRef.current = selectedPr;
   }, [selectedPr]);
 
-  const repoScopeKey = useMemo(() => {
-    if (!repoRef || selectedPr === null) {
-      return null;
-    }
-    return `${repoRef.owner}/${repoRef.repo}#${selectedPr}`;
-  }, [repoRef?.owner, repoRef?.repo, selectedPr]);
-
-  const selectedFileCacheKey = useMemo(() => {
-    if (!repoScopeKey || !selectedFilePath) {
-      return null;
-    }
-    return `${repoScopeKey}:${selectedFilePath}`;
-  }, [repoScopeKey, selectedFilePath]);
-
-
   useEffect(() => {
     if (replyingToCommentId === null) {
       return;
@@ -762,6 +735,22 @@ function App() {
   }, [environmentId, environments, selectedEnvironmentId]);
 
   const environmentStorageId = environmentId ?? "github.com";
+  const environmentStorageKey = (baseKey: string) =>
+    environmentStorageId === "github.com"
+      ? baseKey
+      : `${baseKey}-${environmentStorageId}`;
+  const [prFileCounts, setPrFileCounts] = useLocalStorage<Record<string, number>>({
+    key: environmentStorageKey("pr-file-counts"),
+    defaultValue: {},
+  });
+  const [prTitles, setPrTitles] = useLocalStorage<Record<string, string>>({
+    key: environmentStorageKey("pr-titles"),
+    defaultValue: {},
+  });
+  const [prMetadata, setPrMetadata] = useLocalStorage<Record<string, { state: string; merged: boolean; locked?: boolean }>>({
+    key: environmentStorageKey("pr-metadata"),
+    defaultValue: {},
+  });
   const repoMruStorageKey =
     environmentStorageId === "github.com"
       ? "repo-mru"
@@ -772,6 +761,18 @@ function App() {
       key: `pr-under-review-overrides-${environmentStorageId}`,
       defaultValue: {},
     });
+  const repoScopeKey = useMemo(() => {
+    if (!repoRef || selectedPr === null) {
+      return null;
+    }
+    return `${environmentStorageId}:${repoRef.owner}/${repoRef.repo}#${selectedPr}`;
+  }, [environmentStorageId, repoRef?.owner, repoRef?.repo, selectedPr]);
+  const selectedFileCacheKey = useMemo(() => {
+    if (!repoScopeKey || !selectedFilePath) {
+      return null;
+    }
+    return `${repoScopeKey}:${selectedFilePath}`;
+  }, [repoScopeKey, selectedFilePath]);
 
   const togglePrUnderReview = useCallback(
     (
@@ -1001,7 +1002,7 @@ function App() {
   });
 
   const pullsQuery = useQuery({
-    queryKey: ["pull-requests", repoRef?.owner, repoRef?.repo, showClosedPRs],
+    queryKey: ["pull-requests", environmentStorageId, repoRef?.owner, repoRef?.repo, showClosedPRs],
     queryFn: async () => {
       try {
         const data = await invoke<PullRequestSummary[]>("cmd_list_pull_requests", {
@@ -1044,6 +1045,7 @@ function App() {
   const pullDetailQuery = useQuery({
     queryKey: [
       "pull-request",
+      environmentStorageId,
       repoRef?.owner,
       repoRef?.repo,
       selectedPr,
@@ -1075,7 +1077,7 @@ function App() {
         
         // Cache the result
         if (repoRef && selectedPr) {
-          await offlineCache.cachePRDetail(repoRef.owner, repoRef.repo, selectedPr, data);
+          await offlineCache.cachePRDetail(repoRef.owner, repoRef.repo, selectedPr, data, environmentStorageId);
           console.log(`💾 Cached PR #${selectedPr} for offline access`);
         }
         
@@ -1098,7 +1100,7 @@ function App() {
           
           // Try cache as fallback
           if (repoRef && selectedPr) {
-            const cached = await offlineCache.getCachedPRDetail(repoRef.owner, repoRef.repo, selectedPr);
+            const cached = await offlineCache.getCachedPRDetail(repoRef.owner, repoRef.repo, selectedPr, environmentStorageId);
             if (cached) {
               console.log(`📦 Loaded PR #${selectedPr} from offline cache (after network error)`);
               return cached;
@@ -1144,15 +1146,15 @@ function App() {
       // Remove query when online to force fresh fetch, invalidate when offline to preserve cached data
       if (isOnline) {
         queryClient.removeQueries({ 
-          queryKey: ["pull-request", repoRef.owner, repoRef.repo, selectedPr, userLogin]
+          queryKey: ["pull-request", environmentStorageId, repoRef.owner, repoRef.repo, selectedPr, userLogin]
         });
       } else {
         queryClient.invalidateQueries({ 
-          queryKey: ["pull-request", repoRef.owner, repoRef.repo, selectedPr, userLogin]
+          queryKey: ["pull-request", environmentStorageId, repoRef.owner, repoRef.repo, selectedPr, userLogin]
         });
       }
     }
-  }, [repoRef?.owner, repoRef?.repo, selectedPr, userLogin, isOnline, queryClient]);
+  }, [repoRef?.owner, repoRef?.repo, selectedPr, userLogin, isOnline, queryClient, environmentStorageId]);
 
   // Auto-cache all files when PR opens (if online)
   useEffect(() => {
@@ -1183,7 +1185,8 @@ function App() {
             prDetail.head_sha,
             prDetail.base_sha,
             headContent,
-            baseContent
+            baseContent,
+            environmentStorageId,
           );
           cached++;
         } catch (error) {
@@ -1195,7 +1198,7 @@ function App() {
     };
     
     cacheAllFiles();
-  }, [prDetail, repoRef, selectedPr, isOnline]);
+  }, [prDetail, repoRef, selectedPr, isOnline, environmentStorageId]);
 
   // Memoized ReactMarkdown component overrides
   const markdownComponents = useMarkdownComponents({
@@ -1220,11 +1223,11 @@ function App() {
       // Remove query when online to force fresh fetch, invalidate when offline to preserve cached data
       if (isOnline) {
         queryClient.removeQueries({ 
-          queryKey: ["pull-request", repoRef.owner, repoRef.repo, selectedPr, userLogin]
+          queryKey: ["pull-request", environmentStorageId, repoRef.owner, repoRef.repo, selectedPr, userLogin]
         });
       } else {
         queryClient.invalidateQueries({ 
-          queryKey: ["pull-request", repoRef.owner, repoRef.repo, selectedPr, userLogin]
+          queryKey: ["pull-request", environmentStorageId, repoRef.owner, repoRef.repo, selectedPr, userLogin]
         });
       }
     }
@@ -1281,6 +1284,7 @@ function App() {
     isLocalDirectoryMode,
     activeLocalDir,
     authLogin: userLogin ?? null,
+    environmentId: environmentStorageId,
     selectedPr,
     editingComment,
   });
@@ -1499,6 +1503,7 @@ function App() {
     repo: repoRef?.repo ?? null,
     selectedPr,
     allFilePaths: files.map((f: PullRequestFile) => f.path),
+    environmentId: environmentStorageId,
   });
 
   // Use TOC-based file sorting hook
@@ -1667,7 +1672,7 @@ function App() {
     const preloadNextFile = async () => {
       for (const file of visibleFiles) {
         // Check if this file's contents are already in the cache
-        const cacheKey = ["file-contents", repoRef.owner, repoRef.repo, file.path, prDetail.base_sha, prDetail.head_sha];
+        const cacheKey = ["file-contents", environmentStorageId, repoRef.owner, repoRef.repo, file.path, prDetail.base_sha, prDetail.head_sha];
         const cached = queryClient.getQueryData(cacheKey);
         
         if (!cached) {
@@ -1695,7 +1700,7 @@ function App() {
     };
 
     preloadNextFile();
-  }, [visibleFiles, prDetail, repoRef, queryClient]);
+  }, [visibleFiles, prDetail, repoRef, queryClient, environmentStorageId]);
 
   const openInlineComment = useCallback(async (filePath?: string) => {
     const targetFilePath = filePath ?? selectedFilePath;
@@ -1805,6 +1810,7 @@ function App() {
     markOnline,
     markOffline,
     activeLocalDir,
+    environmentId: environmentStorageId,
   });
 
   // Memoize markdown preview content to prevent re-rendering on every keystroke
@@ -2280,7 +2286,10 @@ function App() {
   // Load drafts from localStorage on mount
   useEffect(() => {
     if (repoRef && selectedPr) {
-      const key = `drafts_${repoRef.owner}_${repoRef.repo}_${selectedPr}`;
+      const key =
+        environmentStorageId === "github.com"
+          ? `drafts_${repoRef.owner}_${repoRef.repo}_${selectedPr}`
+          : `drafts_${environmentStorageId}_${repoRef.owner}_${repoRef.repo}_${selectedPr}`;
       const stored = localStorage.getItem(key);
       if (stored) {
         try {
@@ -2322,13 +2331,16 @@ function App() {
         }
       }
     }
-  }, [repoRef, selectedPr]);
+  }, [repoRef, selectedPr, environmentStorageId]);
 
   // Save drafts to localStorage whenever they change (debounced to avoid lag during typing)
   useEffect(() => {
     if (!repoRef || !selectedPr) return;
     
-    const key = `drafts_${repoRef.owner}_${repoRef.repo}_${selectedPr}`;
+    const key =
+      environmentStorageId === "github.com"
+        ? `drafts_${repoRef.owner}_${repoRef.repo}_${selectedPr}`
+        : `drafts_${environmentStorageId}_${repoRef.owner}_${repoRef.repo}_${selectedPr}`;
     
     // Debounce localStorage writes to improve typing performance
     const timeoutId = setTimeout(() => {
@@ -2336,7 +2348,7 @@ function App() {
     }, 500); // Wait 500ms after last change before saving
     
     return () => clearTimeout(timeoutId);
-  }, [draftsByFile, repoRef, selectedPr]);
+  }, [draftsByFile, repoRef, selectedPr, environmentStorageId]);
 
   // Automatically restore inline draft when file with draft is selected
   useEffect(() => {
@@ -3115,7 +3127,7 @@ function App() {
         const prKey = `${pr.owner}/${pr.repo}#${pr.number}`;
         try {
           const metadata = await queryClient.fetchQuery({
-            queryKey: ["pull-request-metadata", pr.owner, pr.repo, pr.number],
+            queryKey: ["pull-request-metadata", environmentStorageId, pr.owner, pr.repo, pr.number],
             queryFn: async () =>
               await invoke<PullRequestMetadata>("cmd_get_pull_request_metadata", {
                 owner: pr.owner,
@@ -3165,7 +3177,7 @@ function App() {
         }
         // Use fetchQuery instead of prefetchQuery to get results immediately
         void queryClient.fetchQuery({
-          queryKey: ["pull-request", pr.owner, pr.repo, pr.number, userLogin],
+          queryKey: ["pull-request", environmentStorageId, pr.owner, pr.repo, pr.number, userLogin],
           queryFn: async () => {
             return await invoke<PullRequestDetail>("cmd_get_pull_request", {
               owner: pr.owner,
@@ -3186,7 +3198,7 @@ function App() {
           return;
         }
         void queryClient.prefetchQuery({
-          queryKey: ["pull-request", pr.owner, pr.repo, pr.number, userLogin],
+          queryKey: ["pull-request", environmentStorageId, pr.owner, pr.repo, pr.number, userLogin],
           queryFn: async () => {
             return await invoke<PullRequestDetail>("cmd_get_pull_request", {
               owner: pr.owner,

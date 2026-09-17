@@ -3,9 +3,8 @@
  * Persists viewed files to localStorage and provides convenient helper functions.
  */
 
-import { useState, useCallback, useEffect, useMemo } from "react";
-
-const STORAGE_KEY = "viewed-files";
+import { useCallback, useMemo } from "react";
+import { useLocalStorage } from "./useLocalStorage";
 
 /** Type for the viewed files record (PR key -> array of file paths) */
 export type ViewedFilesState = Record<string, string[]>;
@@ -19,6 +18,8 @@ export interface UseViewedFilesOptions {
   selectedPr: number | null;
   /** List of all files in the PR */
   allFilePaths?: string[];
+  /** Active GitHub environment ID */
+  environmentId?: string;
 }
 
 export interface UseViewedFilesReturn {
@@ -59,15 +60,15 @@ export function useViewedFiles({
   repo,
   selectedPr,
   allFilePaths = [],
+  environmentId = "github.com",
 }: UseViewedFilesOptions): UseViewedFilesReturn {
-  // Initialize from localStorage
-  const [viewedFiles, setViewedFiles] = useState<ViewedFilesState>(() => {
-    try {
-      const stored = localStorage.getItem(STORAGE_KEY);
-      return stored ? JSON.parse(stored) : {};
-    } catch {
-      return {};
-    }
+  const storageKey =
+    environmentId === "github.com"
+      ? "viewed-files"
+      : `viewed-files-${environmentId}`;
+  const [viewedFiles, setViewedFiles] = useLocalStorage<ViewedFilesState>({
+    key: storageKey,
+    defaultValue: {},
   });
 
   // Compute PR key for current selection
@@ -81,11 +82,6 @@ export function useViewedFiles({
     if (!prKey) return [];
     return viewedFiles[prKey] || [];
   }, [prKey, viewedFiles]);
-
-  // Persist to localStorage when state changes
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(viewedFiles));
-  }, [viewedFiles]);
 
   /** Check if a specific file is viewed */
   const isFileViewed = useCallback(
@@ -108,7 +104,7 @@ export function useViewedFiles({
         return { ...prev, [prKey]: updated };
       });
     },
-    [prKey]
+    [prKey, setViewedFiles]
   );
 
   /** Mark all files in the current PR as viewed */
@@ -119,7 +115,7 @@ export function useViewedFiles({
       ...prev,
       [prKey]: allFilePaths,
     }));
-  }, [prKey, allFilePaths]);
+  }, [prKey, allFilePaths, setViewedFiles]);
 
   return {
     viewedFiles,

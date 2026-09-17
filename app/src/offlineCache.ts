@@ -1,9 +1,10 @@
 // IndexedDB cache for offline support
 const DB_NAME = 'github-review-cache';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const CACHE_EXPIRY_DAYS = 7;
 
 interface CachedFileContent {
+  environmentId: string;
   owner: string;
   repo: string;
   prNumber: number;
@@ -16,6 +17,7 @@ interface CachedFileContent {
 }
 
 interface CachedPRDetail {
+  environmentId: string;
   owner: string;
   repo: string;
   prNumber: number;
@@ -43,17 +45,19 @@ function openDB(): Promise<IDBDatabase> {
       const db = (event.target as IDBOpenDBRequest).result;
 
       // Store for file contents
-      if (!db.objectStoreNames.contains('fileContents')) {
-        const fileStore = db.createObjectStore('fileContents', { keyPath: ['owner', 'repo', 'prNumber', 'filePath'] });
-        fileStore.createIndex('cachedAt', 'cachedAt', { unique: false });
-        fileStore.createIndex('pr', ['owner', 'repo', 'prNumber'], { unique: false });
+      if (db.objectStoreNames.contains('fileContents')) {
+        db.deleteObjectStore('fileContents');
       }
+      const fileStore = db.createObjectStore('fileContents', { keyPath: ['environmentId', 'owner', 'repo', 'prNumber', 'filePath'] });
+      fileStore.createIndex('cachedAt', 'cachedAt', { unique: false });
+      fileStore.createIndex('pr', ['environmentId', 'owner', 'repo', 'prNumber'], { unique: false });
 
       // Store for PR details
-      if (!db.objectStoreNames.contains('prDetails')) {
-        const prStore = db.createObjectStore('prDetails', { keyPath: ['owner', 'repo', 'prNumber'] });
-        prStore.createIndex('cachedAt', 'cachedAt', { unique: false });
+      if (db.objectStoreNames.contains('prDetails')) {
+        db.deleteObjectStore('prDetails');
       }
+      const prStore = db.createObjectStore('prDetails', { keyPath: ['environmentId', 'owner', 'repo', 'prNumber'] });
+      prStore.createIndex('cachedAt', 'cachedAt', { unique: false });
     };
   });
 }
@@ -66,13 +70,15 @@ export async function cacheFileContent(
   headSha: string,
   baseSha: string,
   headContent: string | null,
-  baseContent: string | null
+  baseContent: string | null,
+  environmentId = 'github.com'
 ): Promise<void> {
   const db = await openDB();
   const transaction = db.transaction(['fileContents'], 'readwrite');
   const store = transaction.objectStore('fileContents');
 
   const data: CachedFileContent = {
+    environmentId,
     owner,
     repo,
     prNumber,
@@ -97,14 +103,15 @@ export async function getCachedFileContent(
   prNumber: number,
   filePath: string,
   headSha: string,
-  baseSha: string
+  baseSha: string,
+  environmentId = 'github.com'
 ): Promise<{ headContent: string | null; baseContent: string | null } | null> {
   const db = await openDB();
   const transaction = db.transaction(['fileContents'], 'readonly');
   const store = transaction.objectStore('fileContents');
 
   return new Promise((resolve, reject) => {
-    const request = store.get([owner, repo, prNumber, filePath]);
+    const request = store.get([environmentId, owner, repo, prNumber, filePath]);
     request.onsuccess = () => {
       const result = request.result as CachedFileContent | undefined;
       if (!result) {
@@ -139,13 +146,15 @@ export async function cachePRDetail(
   owner: string,
   repo: string,
   prNumber: number,
-  data: any
+  data: any,
+  environmentId = 'github.com'
 ): Promise<void> {
   const db = await openDB();
   const transaction = db.transaction(['prDetails'], 'readwrite');
   const store = transaction.objectStore('prDetails');
 
   const cached: CachedPRDetail = {
+    environmentId,
     owner,
     repo,
     prNumber,
@@ -163,14 +172,15 @@ export async function cachePRDetail(
 export async function getCachedPRDetail(
   owner: string,
   repo: string,
-  prNumber: number
+  prNumber: number,
+  environmentId = 'github.com'
 ): Promise<any | null> {
   const db = await openDB();
   const transaction = db.transaction(['prDetails'], 'readonly');
   const store = transaction.objectStore('prDetails');
 
   return new Promise((resolve, reject) => {
-    const request = store.get([owner, repo, prNumber]);
+    const request = store.get([environmentId, owner, repo, prNumber]);
     request.onsuccess = () => {
       const result = request.result as CachedPRDetail | undefined;
       if (!result) {
@@ -239,7 +249,12 @@ export async function cleanExpiredCache(): Promise<void> {
   });
 }
 
-export async function clearPRCache(owner: string, repo: string, prNumber: number): Promise<void> {
+export async function clearPRCache(
+  owner: string,
+  repo: string,
+  prNumber: number,
+  environmentId = 'github.com',
+): Promise<void> {
   const db = await openDB();
   
   // Clear file contents for this PR
@@ -248,7 +263,7 @@ export async function clearPRCache(owner: string, repo: string, prNumber: number
   const fileIndex = fileStore.index('pr');
   
   return new Promise((resolve, reject) => {
-    const fileRequest = fileIndex.openCursor(IDBKeyRange.only([owner, repo, prNumber]));
+    const fileRequest = fileIndex.openCursor(IDBKeyRange.only([environmentId, owner, repo, prNumber]));
     fileRequest.onsuccess = (event) => {
       const cursor = (event.target as IDBRequest).result;
       if (cursor) {
@@ -262,7 +277,7 @@ export async function clearPRCache(owner: string, repo: string, prNumber: number
       // Clear PR detail
       const prTransaction = db.transaction(['prDetails'], 'readwrite');
       const prStore = prTransaction.objectStore('prDetails');
-      const prRequest = prStore.delete([owner, repo, prNumber]);
+      const prRequest = prStore.delete([environmentId, owner, repo, prNumber]);
       
       prRequest.onsuccess = () => resolve();
       prRequest.onerror = () => reject(prRequest.error);

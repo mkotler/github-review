@@ -111,7 +111,7 @@ async fn test_update_comment() {
     storage.start_review("owner", "repo", 1, "commit1", None, None).unwrap();
     let comment = storage.add_comment("owner", "repo", 1, "file.rs", 10, "RIGHT", "Original", "commit1", None).await.unwrap();
     
-    let updated = storage.update_comment(comment.id, "Updated text").await.unwrap();
+    let updated = storage.update_comment("owner", "repo", comment.id, "Updated text").await.unwrap();
     
     assert_eq!(updated.body, "Updated text");
     assert_ne!(updated.created_at, updated.updated_at);
@@ -126,7 +126,7 @@ async fn test_delete_comment() {
     let comment = storage.add_comment("owner", "repo", 1, "file.rs", 10, "RIGHT", "To delete", "commit1", None).await.unwrap();
     
     // Delete
-    storage.delete_comment(comment.id).await.unwrap();
+    storage.delete_comment("owner", "repo", comment.id).await.unwrap();
     
     // Should not appear in get_comments (which filters deleted)
     let comments = storage.get_comments("owner", "repo", 1).unwrap();
@@ -424,7 +424,7 @@ async fn test_delete_comment_preserve_log() {
     let comment = storage.add_comment("owner", "repo", 1, "file.rs", 10, "RIGHT", "Comment", "commit1", None).await.unwrap();
     
     // Delete preserving log (for successfully posted comments)
-    storage.delete_comment_preserve_log(comment.id).unwrap();
+    storage.delete_comment_preserve_log("owner", "repo", comment.id).unwrap();
     
     // Comment should be gone from DB
     let comments = storage.get_comments("owner", "repo", 1).unwrap();
