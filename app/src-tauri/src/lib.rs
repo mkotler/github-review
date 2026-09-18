@@ -916,6 +916,13 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
+            let environment = github_environment::initialize_active_environment()
+                .map_err(|e| format!("Failed to initialize GitHub environment: {e}"))?;
+            tracing::info!(
+                environment_id = environment.id,
+                "GitHub environment initialized"
+            );
+
             // Initialize review storage
             let data_dir = app.path().app_data_dir()
                 .map_err(|e| format!("Failed to get app data dir: {:?}", e))?;

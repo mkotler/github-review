@@ -188,6 +188,10 @@ pub fn select_environment(environment_id: Option<&str>) -> AppResult<ConfiguredG
     Ok(selected)
 }
 
+pub fn initialize_active_environment() -> AppResult<GitHubEnvironment> {
+    Ok(select_environment(None)?.environment)
+}
+
 pub fn active_environment() -> GitHubEnvironment {
     runtime_environment()
         .read()
