@@ -47,6 +47,8 @@ export interface UseAuthReturn {
   webBaseUrl: string;
   /** Function to trigger login */
   startLogin: (environmentId: string) => void;
+  /** Re-run OAuth and resolve when the replacement token is stored */
+  reauthenticate: (environmentId: string) => Promise<AuthStatus>;
   /** Whether login is in progress */
   isLoggingIn: boolean;
   /** Function to trigger logout */
@@ -173,6 +175,7 @@ export function useAuth(options: UseAuthOptions = {}) {
     
     // Login
     startLogin: (environmentId: string) => loginMutation.mutate(environmentId),
+    reauthenticate: (environmentId: string) => loginMutation.mutateAsync(environmentId),
     isLoggingIn: loginMutation.isPending,
     
     // Logout

@@ -13,6 +13,7 @@ import { useQuery } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import type { PullRequestDetail, PullRequestFile, RepoRef } from "../types";
 import * as offlineCache from "../offlineCache";
+import { shouldRetryGitHubRequest } from "../utils/githubErrors";
 
 export interface UseFileContentsOptions {
   /** The currently selected file path */
@@ -35,6 +36,8 @@ export interface UseFileContentsOptions {
   activeLocalDir: string | null;
   /** Active GitHub environment ID */
   environmentId?: string;
+  /** Whether GitHub requests are paused pending SSO approval */
+  isGitHubAccessBlocked?: boolean;
 }
 
 export interface FileContents {
@@ -78,6 +81,7 @@ export function useFileContents(options: UseFileContentsOptions): UseFileContent
     markOffline,
     activeLocalDir,
     environmentId = "github.com",
+    isGitHubAccessBlocked = false,
   } = options;
 
   // Look up file metadata from PR files list
@@ -165,7 +169,7 @@ export function useFileContents(options: UseFileContentsOptions): UseFileContent
         throw error;
       }
     },
-    enabled: Boolean(selectedFileMetadata && prDetail && repoRef && !isLocalDirectoryMode),
+    enabled: Boolean(selectedFileMetadata && prDetail && repoRef && !isLocalDirectoryMode && !isGitHubAccessBlocked),
     staleTime: Infinity, // File contents don't change for a given SHA
     retry: (failureCount, error) => {
       // Don't retry if offline and no cache available
@@ -173,7 +177,7 @@ export function useFileContents(options: UseFileContentsOptions): UseFileContent
         return false;
       }
       // Otherwise use normal retry logic
-      return failureCount < 3;
+      return shouldRetryGitHubRequest(failureCount, error, 3);
     },
     retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 30000),
   });

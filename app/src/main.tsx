@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import App from "./App";
 import "./App.css";
+import { shouldRetryGitHubRequest } from "./utils/githubErrors";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -15,8 +16,7 @@ const queryClient = new QueryClient({
         if (errorMessage.includes('NetworkError') || errorMessage.includes('Failed to fetch')) {
           return false;
         }
-        // Retry up to 2 times for other errors
-        return failureCount < 2;
+        return shouldRetryGitHubRequest(failureCount, error, 2);
       },
       retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 10000),
       staleTime: 30000, // Consider data fresh for 30 seconds

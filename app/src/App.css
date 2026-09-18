@@ -62,6 +62,54 @@ select {
   font: inherit;
 }
 
+.sso-authorization-banner {
+  position: fixed;
+  z-index: 1000;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: min(760px, calc(100vw - 32px));
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 14px;
+  border: 1px solid rgba(246, 196, 83, 0.7);
+  border-radius: 8px;
+  background: #242017;
+  color: #f4e7bd;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.sso-authorization-banner__content {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 280px;
+}
+
+.sso-authorization-banner__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.sso-authorization-banner a {
+  color: #8cb4ff;
+  white-space: nowrap;
+}
+
+.sso-authorization-banner__error {
+  color: #ffb4ab;
+}
+
+.sso-authorization-banner button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
 .sr-only {
   position: absolute;
   width: 1px;

@@ -3,6 +3,8 @@
  * Extracted from App.tsx for better modularity and reusability.
  */
 
+import { shouldRetryGitHubRequest } from "../utils/githubErrors";
+
 // =============================================================================
 // Query Keys
 // =============================================================================
@@ -15,7 +17,8 @@ export const AUTH_QUERY_KEY = ["auth-status"] as const;
 
 /** Retry configuration with exponential backoff for TanStack Query */
 export const RETRY_CONFIG = {
-  retry: 3,
+  retry: (failureCount: number, error: unknown) =>
+    shouldRetryGitHubRequest(failureCount, error, 3),
   retryDelay: (attemptIndex: number) => Math.min(1000 * 2 ** attemptIndex, 30000),
 };
 

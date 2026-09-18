@@ -15,6 +15,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { parse as parseYaml } from "yaml";
 import * as offlineCache from "../offlineCache";
 import type { PullRequestFile, PullRequestDetail, RepoRef } from "../types";
+import { shouldRetryGitHubRequest } from "../utils/githubErrors";
 
 export interface UseTocSortedFilesOptions {
   files: PullRequestFile[];
@@ -29,6 +30,7 @@ export interface UseTocSortedFilesOptions {
   hideReviewedFiles: boolean;
   isFileViewed: (path: string) => boolean;
   environmentId?: string;
+  isGitHubAccessBlocked?: boolean;
 }
 
 export interface UseTocSortedFilesResult {
@@ -83,6 +85,7 @@ export function useTocSortedFiles(options: UseTocSortedFilesOptions): UseTocSort
     hideReviewedFiles,
     isFileViewed,
     environmentId = "github.com",
+    isGitHubAccessBlocked = false,
   } = options;
 
   // Find all toc.yml files if they exist
@@ -190,13 +193,13 @@ export function useTocSortedFiles(options: UseTocSortedFilesOptions): UseTocSort
 
       return contentMap;
     },
-    enabled: Boolean(tocFilesMetadata.length > 0 && prDetail && repoRef),
+    enabled: Boolean(tocFilesMetadata.length > 0 && prDetail && repoRef && !isGitHubAccessBlocked),
     staleTime: Infinity,
     retry: (failureCount, error) => {
       if (!isOnline && error instanceof Error && error.message.includes("No cached data available")) {
         return false;
       }
-      return failureCount < 3;
+      return shouldRetryGitHubRequest(failureCount, error, 3);
     },
     retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 30000),
   });
