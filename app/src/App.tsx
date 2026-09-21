@@ -52,9 +52,11 @@ import {
   type UnderReviewOverrides,
 } from "./utils/prUnderReview";
 import {
+  GITHUB_AUTHENTICATION_REQUIRED_EVENT,
   GITHUB_SSO_REQUIRED_EVENT,
   getErrorMessage,
   shouldRetryGitHubRequest,
+  type GitHubAuthenticationRequiredDetail,
   type GitHubSsoAuthorizationDetail,
 } from "./utils/githubErrors";
 import { MemoizedAsyncImage, MermaidCode, CommentThreadItem, MediaViewer, ConfirmDialog, CommentList, CommentComposer, CommentStatus, handleCtrlEnter as handleCtrlEnterUtil } from "./components";
@@ -168,6 +170,8 @@ function App() {
     useState<string | null>(null);
   const [hasOpenedSsoAuthorization, setHasOpenedSsoAuthorization] =
     useState(false);
+  const [authenticationRequired, setAuthenticationRequired] =
+    useState<GitHubAuthenticationRequiredDetail | null>(null);
   const [repoRef, setRepoRef] = useState<RepoRef | null>(null);
   const [repoInput, setRepoInput] = useState("");
   const [repoError, setRepoError] = useState<string | null>(null);
@@ -752,27 +756,49 @@ function App() {
   useEffect(() => {
     const handleSsoAuthorizationRequired = (event: Event) => {
       const detail = (event as CustomEvent<GitHubSsoAuthorizationDetail>).detail;
+      setAuthenticationRequired(null);
       setSsoReauthenticationError(null);
       setHasOpenedSsoAuthorization(false);
       setSsoAuthorization(detail);
     };
+    const handleAuthenticationRequired = (event: Event) => {
+      const detail = (
+        event as CustomEvent<GitHubAuthenticationRequiredDetail>
+      ).detail;
+      setSsoAuthorization(null);
+      setSsoReauthenticationError(null);
+      setHasOpenedSsoAuthorization(false);
+      setAuthenticationRequired(detail);
+    };
     window.addEventListener(
       GITHUB_SSO_REQUIRED_EVENT,
       handleSsoAuthorizationRequired,
+    );
+    window.addEventListener(
+      GITHUB_AUTHENTICATION_REQUIRED_EVENT,
+      handleAuthenticationRequired,
     );
     return () => {
       window.removeEventListener(
         GITHUB_SSO_REQUIRED_EVENT,
         handleSsoAuthorizationRequired,
       );
+      window.removeEventListener(
+        GITHUB_AUTHENTICATION_REQUIRED_EVENT,
+        handleAuthenticationRequired,
+      );
     };
   }, []);
 
   useEffect(() => {
     setSsoAuthorization(null);
+    setAuthenticationRequired(null);
     setSsoReauthenticationError(null);
     setHasOpenedSsoAuthorization(false);
   }, [environmentStorageId]);
+  const isGitHubAccessBlocked = Boolean(
+    ssoAuthorization || authenticationRequired,
+  );
   const environmentStorageKey = (baseKey: string) =>
     environmentStorageId === "github.com"
       ? baseKey
@@ -938,7 +964,7 @@ function App() {
           
           return prsWithPendingReviews;
         },
-        enabled: isAuthenticated && !!currentLogin && !!environmentId && !ssoAuthorization,
+        enabled: isAuthenticated && !!currentLogin && !!environmentId && !isGitHubAccessBlocked,
         ...RETRY_CONFIG,
         staleTime: 60 * 60 * 1000, // 1 hour
         gcTime: 60 * 60 * 1000, // Keep in cache for 1 hour
@@ -1017,7 +1043,7 @@ function App() {
           
           return prsWithPendingReviews;
         },
-        enabled: isAuthenticated && !!currentLogin && !!environmentId && allOpenQueriesFinished && !ssoAuthorization,
+        enabled: isAuthenticated && !!currentLogin && !!environmentId && allOpenQueriesFinished && !isGitHubAccessBlocked,
         ...RETRY_CONFIG,
         staleTime: 60 * 60 * 1000, // 1 hour
         gcTime: 60 * 60 * 1000, // Keep in cache for 1 hour
@@ -1068,7 +1094,7 @@ function App() {
         throw error;
       }
     },
-    enabled: Boolean(repoRef && isAuthenticated && !isLocalDirectoryMode && !isLocalRepo && !ssoAuthorization),
+    enabled: Boolean(repoRef && isAuthenticated && !isLocalDirectoryMode && !isLocalRepo && !isGitHubAccessBlocked),
     ...RETRY_CONFIG,
   });
 
@@ -1152,7 +1178,7 @@ function App() {
     enabled:
       Boolean(
         (activeLocalDir && repoRef) ||
-          (!isLocalRepo && repoRef && selectedPr && isAuthenticated && userLogin && !ssoAuthorization),
+          (!isLocalRepo && repoRef && selectedPr && isAuthenticated && userLogin && !isGitHubAccessBlocked),
       ),
     staleTime: 0, // Always consider data stale to force refetch
     refetchOnMount: true, // Refetch when component mounts
@@ -1179,7 +1205,7 @@ function App() {
 
   // Force fresh data when PR selection changes
   useEffect(() => {
-    if (isLocalDirectoryMode || ssoAuthorization) return;
+    if (isLocalDirectoryMode || isGitHubAccessBlocked) return;
     if (repoRef && selectedPr) {
       // Remove query when online to force fresh fetch, invalidate when offline to preserve cached data
       if (isOnline) {
@@ -1236,7 +1262,7 @@ function App() {
     };
     
     cacheAllFiles();
-  }, [prDetail, repoRef, selectedPr, isOnline, environmentStorageId, ssoAuthorization]);
+  }, [prDetail, repoRef, selectedPr, isOnline, environmentStorageId, isGitHubAccessBlocked]);
 
   // Memoized ReactMarkdown component overrides
   const markdownComponents = useMarkdownComponents({
@@ -1558,7 +1584,7 @@ function App() {
     hideReviewedFiles,
     isFileViewed,
     environmentId: environmentStorageId,
-    isGitHubAccessBlocked: Boolean(ssoAuthorization),
+    isGitHubAccessBlocked,
   });
 
   const visibleFiles = useMemo(() => {
@@ -1701,7 +1727,7 @@ function App() {
 
   // Preload file contents in the background (one at a time, in order)
   useEffect(() => {
-    if (isLocalDirectoryMode || ssoAuthorization) {
+    if (isLocalDirectoryMode || isGitHubAccessBlocked) {
       return;
     }
 
@@ -1740,7 +1766,7 @@ function App() {
     };
 
     preloadNextFile();
-  }, [visibleFiles, prDetail, repoRef, queryClient, environmentStorageId, ssoAuthorization]);
+  }, [visibleFiles, prDetail, repoRef, queryClient, environmentStorageId, isGitHubAccessBlocked]);
 
   const openInlineComment = useCallback(async (filePath?: string) => {
     const targetFilePath = filePath ?? selectedFilePath;
@@ -1851,7 +1877,7 @@ function App() {
     markOffline,
     activeLocalDir,
     environmentId: environmentStorageId,
-    isGitHubAccessBlocked: Boolean(ssoAuthorization),
+    isGitHubAccessBlocked,
   });
 
   // Memoize markdown preview content to prevent re-rendering on every keystroke
@@ -4190,6 +4216,7 @@ function App() {
     try {
       await reauthenticate(environmentStorageId);
       setSsoAuthorization(null);
+      setAuthenticationRequired(null);
       await queryClient.invalidateQueries({
         predicate: (query) => query.queryKey[0] !== "github-environments",
       });
@@ -4306,6 +4333,31 @@ function App() {
               onClick={() => void reauthenticateAfterSsoAuthorization()}
             >
               {isLoggingIn ? "Signing in…" : "2. Sign in again"}
+            </button>
+          </div>
+        </div>
+      )}
+      {authenticationRequired && (
+        <div className="sso-authorization-banner" role="alert">
+          <div className="sso-authorization-banner__content">
+            <strong>Microsoft GitHub sign-in expired</strong>
+            <span>
+              The saved credentials are no longer valid. Sign in again to
+              continue loading pull requests.
+            </span>
+          </div>
+          {ssoReauthenticationError && (
+            <span className="sso-authorization-banner__error">
+              Sign-in failed: {ssoReauthenticationError}
+            </span>
+          )}
+          <div className="sso-authorization-banner__actions">
+            <button
+              type="button"
+              disabled={isLoggingIn}
+              onClick={() => void reauthenticateAfterSsoAuthorization()}
+            >
+              {isLoggingIn ? "Signing in…" : "Sign in again"}
             </button>
           </div>
         </div>
