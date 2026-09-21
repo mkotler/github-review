@@ -124,6 +124,10 @@ async fn ensure_success(
         "GitHub API request returned an error"
     );
 
+    if status == StatusCode::UNAUTHORIZED {
+        return Err(AppError::Unauthorized);
+    }
+
     if let Ok(api_error) = serde_json::from_str::<GitHubApiError>(&body) {
         let mut message = api_error
             .message

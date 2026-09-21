@@ -5,6 +5,8 @@
 // We test the storage logic patterns without actually touching the keyring
 // to avoid test pollution and CI issues
 
+use crate::storage::StoredToken;
+
 /// Test Case 9.1: Service name constant
 #[test]
 fn test_service_name_constant() {
@@ -137,4 +139,28 @@ fn test_unicode_login_handling() {
     // but we should handle storage gracefully
     let login = "test-user-123";
     assert!(login.chars().all(|c| c.is_alphanumeric() || c == '-'));
+}
+
+#[test]
+fn test_legacy_token_migration() {
+    let token = StoredToken::from_stored_value("gho_legacy".to_string());
+
+    assert_eq!(token.access_token, "gho_legacy");
+    assert!(token.legacy);
+    assert_eq!(token.refresh_token, None);
+    assert_eq!(token.access_token_expires_at, None);
+}
+
+#[test]
+fn test_structured_token_round_trip() {
+    let token = StoredToken {
+        access_token: "gho_access".to_string(),
+        legacy: false,
+        refresh_token: Some("ghr_refresh".to_string()),
+        access_token_expires_at: Some(1_000),
+        refresh_token_expires_at: Some(2_000),
+    };
+    let stored = serde_json::to_string(&token).unwrap();
+
+    assert_eq!(StoredToken::from_stored_value(stored), token);
 }

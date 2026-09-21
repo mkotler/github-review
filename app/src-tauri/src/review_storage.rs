@@ -888,7 +888,7 @@ impl ReviewStorage {
     }
     
     async fn fetch_pr_title(&self, owner: &str, repo: &str, pr_number: u64) -> AppResult<String> {
-        let token = require_token()?;
+        let token = require_token().await?;
         let environment = crate::github_environment::active_environment();
         let client = reqwest::Client::builder()
             .user_agent("github-review-app")

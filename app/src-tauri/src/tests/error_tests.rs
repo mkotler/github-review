@@ -124,7 +124,17 @@ fn test_sso_error_display() {
     assert!(display.contains("SSO required for org"));
 }
 
-/// Test Case 1.12: Tokio timeout converts to AppError::Timeout
+/// Test Case 1.12: AppError Display - Unauthorized
+#[test]
+fn test_unauthorized_error_display() {
+    let error = AppError::Unauthorized;
+    assert_eq!(
+        error.to_string(),
+        "GitHub authentication expired or is no longer valid. Sign in again."
+    );
+}
+
+/// Test Case 1.13: Tokio timeout converts to AppError::Timeout
 #[test]
 fn test_tokio_timeout_conversion() {
     use tokio::time::error::Elapsed;

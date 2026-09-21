@@ -4,7 +4,7 @@ A desktop application built with Tauri and React that streamlines the GitHub pul
 
 ## Key Capabilities
 
-- **OAuth Authentication** - Secure GitHub login via OAuth 2.0 flow with credential storage in system keyring
+- **OAuth Authentication** - Secure GitHub login via OAuth 2.0 with automatic access-token refresh and credential storage in the system keyring
 - **PR Browsing & Viewing** - List and filter pull requests with pagination (100 PRs per page) and real-time search by PR number, title, or author
 - **Most Recently Used (MRU) Repositories** - Dropdown menu stores up to 10 recently accessed repositories with auto-load functionality and localStorage persistence
 - **Smart File Loading** - Progressive file loading prioritized by toc.yml order with background content preloading for instant file viewing
@@ -204,7 +204,9 @@ The application provides comprehensive offline capabilities for working in envir
 - 7-day cache expiration with automatic cleanup on application startup
 
 **Secure Offline Authentication:**
-- OAuth token remains in system keyring (secure OS-level storage)
+- OAuth access and refresh tokens remain in system keyring (secure OS-level storage)
+- Expiring access tokens are refreshed automatically shortly before expiration
+- Existing sessions created before refresh-token support require one new sign-in
 - Last successful login cached for offline identification
 - Network errors don't trigger logout (preserves workflow)
 - Automatic re-authentication when network returns via multiple mechanisms:

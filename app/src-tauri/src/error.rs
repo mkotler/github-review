@@ -30,6 +30,8 @@ pub enum AppError {
     Internal(String),
     #[error("{0}")]
     SsoAuthorizationRequired(String),
+    #[error("GitHub authentication expired or is no longer valid. Sign in again.")]
+    Unauthorized,
     #[error("{0}")]
     Api(String),
 }

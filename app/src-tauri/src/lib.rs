@@ -603,7 +603,7 @@ async fn cmd_github_update_comment(
     body: String,
 ) -> Result<(), String> {
     use auth::require_token;
-    let token = require_token().map_err(|e| e.to_string())?;
+    let token = require_token().await.map_err(|e| e.to_string())?;
     github::update_review_comment(&token, &owner, &repo, comment_id, &body)
         .await
         .map_err(|e| e.to_string())
@@ -616,7 +616,7 @@ async fn cmd_github_delete_comment(
     comment_id: u64,
 ) -> Result<(), String> {
     use auth::require_token;
-    let token = require_token().map_err(|e| e.to_string())?;
+    let token = require_token().await.map_err(|e| e.to_string())?;
     github::delete_review_comment(&token, &owner, &repo, comment_id)
         .await
         .map_err(|e| e.to_string())
@@ -630,7 +630,7 @@ async fn cmd_fetch_file_content(
     path: String,
 ) -> Result<String, String> {
     use auth::require_token;
-    let token = require_token().map_err(|e| e.to_string())?;
+    let token = require_token().await.map_err(|e| e.to_string())?;
     github::fetch_file_content(&token, &owner, &repo, &reference, &path)
         .await
         .map_err(|e| e.to_string())
@@ -780,7 +780,7 @@ async fn cmd_delete_review(
     use auth::require_token_for_delete;
     use github::delete_review;
     
-    let token = require_token_for_delete().map_err(|e| e.to_string())?;
+    let token = require_token_for_delete().await.map_err(|e| e.to_string())?;
     
     delete_review(&token, &owner, &repo, pr_number, review_id)
         .await
@@ -800,7 +800,7 @@ async fn cmd_get_pending_review_comments(
     use auth::require_token;
     use github::get_pending_review_comments;
     
-    let token = require_token().map_err(|e| e.to_string())?;
+    let token = require_token().await.map_err(|e| e.to_string())?;
     
     get_pending_review_comments(
         &token, 
