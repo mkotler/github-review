@@ -2975,6 +2975,7 @@ function App() {
           // Try to get PR details from cache first
           const cachedPrDetail = queryClient.getQueryData<PullRequestDetail>([
             "pull-request",
+            environmentStorageId,
             owner,
             repo,
             number,
@@ -3013,12 +3014,14 @@ function App() {
             // Check pulls query cache for this repo (both open and closed)
             const cachedOpenPulls = queryClient.getQueryData<PullRequestSummary[]>([
               "pull-requests",
+              environmentStorageId,
               owner,
               repo,
               false, // showClosedPRs
             ]);
             const cachedClosedPulls = queryClient.getQueryData<PullRequestSummary[]>([
               "pull-requests",
+              environmentStorageId,
               owner,
               repo,
               true, // showClosedPRs
@@ -3085,6 +3088,7 @@ function App() {
       // Check if this PR is loaded in cache
       const cachedPrDetail = queryClient.getQueryData<PullRequestDetail>([
         "pull-request",
+        environmentStorageId,
         pr.owner,
         pr.repo,
         pr.number,
@@ -3167,11 +3171,11 @@ function App() {
         local_folder: pr.local_folder ?? null,
       } as PrUnderReview : null;
     }).filter((pr): pr is NonNullable<typeof pr> => pr !== null);
-  }, [prsUnderReviewQuery.data, viewedFiles, prFileCounts, prTitles, prMetadata, queryClient, userLogin, repoMRU, mruOpenPrsQueries, mruClosedPrsQueries, showAllFileTypes, underReviewOverrides, repoRef, pullsQuery.data]);
+  }, [prsUnderReviewQuery.data, viewedFiles, prFileCounts, prTitles, prMetadata, queryClient, userLogin, repoMRU, mruOpenPrsQueries, mruClosedPrsQueries, showAllFileTypes, underReviewOverrides, repoRef, pullsQuery.data, environmentStorageId]);
 
   // Fetch PR state/merged/locked for PRs under review that are missing it.
   useEffect(() => {
-    if (!isAuthenticated || ssoAuthorization) return;
+    if (!isAuthenticated || isGitHubAccessBlocked) return;
 
     const candidates = enhancedPrsUnderReview
       .filter(pr => !(pr.owner === "__local__" && pr.repo === "local"))
@@ -3225,59 +3229,69 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [isAuthenticated, enhancedPrsUnderReview, prMetadata, queryClient, ssoAuthorization, environmentStorageId]);
+  }, [isAuthenticated, enhancedPrsUnderReview, prMetadata, queryClient, isGitHubAccessBlocked, environmentStorageId]);
 
-  // Prefetch PR details for PRs under review that don't have titles
+  // Prefetch PR details for PRs under review that lack titles or file counts.
   // Prioritize PRs with local reviews for immediate fetching
   useEffect(() => {
-    if (!userLogin || ssoAuthorization) return;
+    if (!userLogin || isGitHubAccessBlocked) return;
     
-    // Separate PRs with local reviews from others
-    const prsWithLocalReviews = enhancedPrsUnderReview.filter(pr => pr.has_local_review);
-    const otherPrs = enhancedPrsUnderReview.filter(pr => !pr.has_local_review);
-    
-    // Immediately fetch PRs with local reviews that lack titles (high priority)
-    prsWithLocalReviews.forEach(pr => {
-      if (!pr.title || pr.title === "") {
-        if (pr.owner === "__local__" && pr.repo === "local") {
-          return;
+    const cacheDetailMetadata = (pr: PrUnderReview, detail: PullRequestDetail) => {
+      const prKey = `${pr.owner}/${pr.repo}#${pr.number}`;
+      const fileCount = showAllFileTypes
+        ? detail.files.length
+        : detail.files.filter(
+            file => file.language === "markdown" || file.language === "yaml",
+          ).length;
+      setPrFileCounts(previous => ({ ...previous, [prKey]: fileCount }));
+      setPrTitles(previous => ({ ...previous, [prKey]: detail.title }));
+    };
+    const needsDetailMetadata = (pr: PrUnderReview) => {
+      const prKey = `${pr.owner}/${pr.repo}#${pr.number}`;
+      const hasKnownFileCount = Object.prototype.hasOwnProperty.call(
+        prFileCounts,
+        prKey,
+      );
+      return !pr.title || pr.title === "" || (!hasKnownFileCount && pr.total_count <= 0);
+    };
+
+    const candidates = enhancedPrsUnderReview
+      .filter(pr => !(pr.owner === "__local__" && pr.repo === "local"))
+      .filter(needsDetailMetadata)
+      .sort((left, right) => Number(right.has_local_review) - Number(left.has_local_review));
+    if (candidates.length === 0) return;
+
+    let cancelled = false;
+    const run = async () => {
+      for (const pr of candidates) {
+        if (cancelled) return;
+        try {
+          const detail = await queryClient.fetchQuery({
+            queryKey: ["pull-request", environmentStorageId, pr.owner, pr.repo, pr.number, userLogin],
+            queryFn: async () => {
+              return await invoke<PullRequestDetail>("cmd_get_pull_request", {
+                owner: pr.owner,
+                repo: pr.repo,
+                number: pr.number,
+                currentLogin: userLogin,
+              });
+            },
+            staleTime: 60 * 60 * 1000,
+          });
+          if (cancelled) return;
+          cacheDetailMetadata(pr, detail);
+        } catch {
+          // Keep processing the queue; transient failures can retry on a later render.
         }
-        // Use fetchQuery instead of prefetchQuery to get results immediately
-        void queryClient.fetchQuery({
-          queryKey: ["pull-request", environmentStorageId, pr.owner, pr.repo, pr.number, userLogin],
-          queryFn: async () => {
-            return await invoke<PullRequestDetail>("cmd_get_pull_request", {
-              owner: pr.owner,
-              repo: pr.repo,
-              number: pr.number,
-              currentLogin: userLogin,
-            });
-          },
-          staleTime: 60 * 60 * 1000, // Cache for 1 hour
-        });
       }
-    });
-    
-    // Prefetch other PRs in the background (lower priority)
-    otherPrs.forEach(pr => {
-      if (!pr.title || pr.title === "") {
-        if (pr.owner === "__local__" && pr.repo === "local") {
-          return;
-        }
-        void queryClient.prefetchQuery({
-          queryKey: ["pull-request", environmentStorageId, pr.owner, pr.repo, pr.number, userLogin],
-          queryFn: async () => {
-            return await invoke<PullRequestDetail>("cmd_get_pull_request", {
-              owner: pr.owner,
-              repo: pr.repo,
-              number: pr.number,
-              currentLogin: userLogin,
-            });
-          },
-        });
-      }
-    });
-  }, [enhancedPrsUnderReview, queryClient, userLogin, ssoAuthorization, environmentStorageId]);
+    };
+
+    void run();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [enhancedPrsUnderReview, queryClient, userLogin, isGitHubAccessBlocked, environmentStorageId, showAllFileTypes, prFileCounts, setPrFileCounts, setPrTitles]);
 
   // Add to MRU when pulls load successfully
   useEffect(() => {
